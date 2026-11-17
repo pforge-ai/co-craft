@@ -1,0 +1,312 @@
+<div id="cocraft-directions" aria-label="CoCraft 工作台布局探索">
+  <style>
+    #cocraft-directions { width:100%; }
+    #cocraft-directions .co-window {
+      --co-bg:light-dark(#f2f3f5,#151619); --co-panel:light-dark(#fafbfc,#1c1e22); --co-raised:light-dark(#ffffff,#25282d); --co-line:light-dark(#dcdfe5,#33363e); --co-text:light-dark(#242832,#e6e8ec); --co-dim:light-dark(#616977,#a1a7b2); --co-accent:#6384b8; --co-soft:light-dark(#e3ebf6,#2b3a50); --co-clip:light-dark(#d2dff0,#354a66); --co-audio:light-dark(#d7e7df,#2c443c); --co-caption:light-dark(#e9e0cc,#4c4434); --co-preview:light-dark(#182630,#122029); --co-white:#f8f9fb;
+      color:var(--co-text); background:var(--co-bg); border:1px solid var(--co-line); border-radius:12px; overflow:hidden; font:400 12px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; min-height:640px; width:100%; box-sizing:border-box; display:grid; grid-template-columns:155px minmax(0,1fr) var(--agent-width,250px); grid-template-rows:48px 310px 250px 30px; grid-template-areas:"header header header" "assets viewer agent" "editor editor agent" "footer footer footer";
+    }
+    #cocraft-directions .co-window * { box-sizing:border-box; }
+    #cocraft-directions .co-window button, #cocraft-directions .co-window input { font:inherit; color:inherit; }
+    #cocraft-directions .co-window button { background:transparent; border:1px solid transparent; padding:5px 8px; border-radius:5px; white-space:nowrap; }
+    #cocraft-directions .co-window button:hover { background:var(--co-soft); }
+    #cocraft-directions .co-window button:focus-visible, #cocraft-directions input:focus-visible { outline:2px solid var(--co-accent); outline-offset:2px; }
+    #cocraft-directions .co-window button[aria-pressed="true"] { background:var(--co-raised); border-color:var(--co-line); }
+    #cocraft-directions .co-window svg { width:15px; height:15px; flex:none; }
+    #cocraft-directions .co-window b, #cocraft-directions .co-window strong { font-weight:500; }
+    #cocraft-directions .co-header { grid-area:header; display:flex; gap:12px; align-items:center; padding:0 16px; border-bottom:1px solid var(--co-line); background:var(--co-panel); }
+    #cocraft-directions .co-lights { display:flex; gap:6px; margin-right:5px; }
+    #cocraft-directions .co-lights i { width:9px; height:9px; background:var(--co-line); border-radius:50%; }
+    #cocraft-directions .co-brand { font-weight:500; letter-spacing:.02em; }
+    #cocraft-directions .co-project { color:var(--co-dim); overflow-wrap:anywhere; }
+    #cocraft-directions .co-pill { padding:2px 6px; border-radius:4px; background:var(--co-raised); border:1px solid var(--co-line); color:var(--co-dim); font-size:11px; }
+    #cocraft-directions .co-header-actions { display:flex; gap:5px; margin-left:auto; align-items:center; }
+    #cocraft-directions .co-export { background:var(--co-text); color:var(--co-bg); padding:4px 11px; border-radius:5px; }
+    #cocraft-directions .co-assets { grid-area:assets; background:var(--co-panel); border-right:1px solid var(--co-line); padding:16px 12px; min-width:0; }
+    #cocraft-directions .co-section-label { display:flex; align-items:center; justify-content:space-between; gap:8px; font-weight:500; margin-bottom:12px; }
+    #cocraft-directions .co-subtle { color:var(--co-dim); font-weight:400; font-size:11px; }
+    #cocraft-directions .co-search { border:1px solid var(--co-line); border-radius:5px; padding:6px 8px; background:var(--co-bg); width:100%; margin-bottom:14px; }
+    #cocraft-directions .co-asset { display:grid; grid-template-columns:42px minmax(0,1fr); gap:8px; align-items:center; margin-bottom:14px; }
+    #cocraft-directions .co-asset-name { font-size:11px; overflow-wrap:anywhere; }
+    #cocraft-directions .co-thumb { height:32px; background:linear-gradient(160deg,var(--co-clip) 45%,var(--co-soft) 45%); border-radius:3px; }
+    #cocraft-directions .co-thumb.alt { background:linear-gradient(25deg,var(--co-audio) 55%,var(--co-clip) 55%); }
+    #cocraft-directions .co-thumb.sound { background:var(--co-audio); display:grid; place-items:center; }
+    #cocraft-directions .co-viewer { grid-area:viewer; min-width:0; display:flex; flex-direction:column; gap:12px; padding:13px 18px 10px; justify-content:center; }
+    #cocraft-directions .co-viewer-title { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--co-dim); font-size:11px; }
+    #cocraft-directions .co-frame { aspect-ratio:16/9; width:100%; max-width:435px; align-self:center; background:var(--co-preview); position:relative; overflow:hidden; display:flex; align-items:flex-end; justify-content:center; border-radius:3px; }
+    #cocraft-directions .co-sky { position:absolute; inset:0; background:linear-gradient(180deg,#8ca6b3,#b8bfb3 49%,#536f77 50%,#395562); opacity:.8; }
+    #cocraft-directions .co-shore { position:absolute; inset:18% -1% -1%; background:#29444d; clip-path:polygon(100% 12%,75% 35%,69% 48%,50% 57%,43% 72%,12% 100%,100% 100%); }
+    #cocraft-directions .co-road { position:absolute; inset:42% 0 0; background:#afac98; clip-path:polygon(100% 0,96% 18%,78% 37%,71% 58%,51% 75%,39% 100%,50% 100%,61% 80%,78% 60%,83% 39%,100% 23%); opacity:.7; }
+    #cocraft-directions .co-frame-text { color:var(--co-white); font-size:16px; font-weight:500; z-index:1; padding:0 12px 20px; letter-spacing:.08em; text-shadow:0 1px 4px #162831; text-align:center; }
+    #cocraft-directions .co-frame-label { position:absolute; top:10px; left:10px; z-index:1; color:var(--co-white); background:#18313b; padding:3px 6px; font-size:11px; border-radius:3px; }
+    #cocraft-directions .co-playback { display:flex; align-items:center; justify-content:space-between; gap:8px; font-variant-numeric:tabular-nums; font-size:11px; }
+    #cocraft-directions .co-play-controls { display:flex; gap:4px; align-items:center; }
+    #cocraft-directions .co-agent { grid-area:agent; background:var(--co-panel); border-left:1px solid var(--co-line); padding:14px; display:flex; flex-direction:column; gap:14px; min-width:0; }
+    #cocraft-directions .co-agent-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    #cocraft-directions .co-agent-title { display:flex; align-items:center; gap:7px; font-weight:500; }
+    #cocraft-directions .co-state-dot { width:6px; height:6px; background:var(--co-accent); border-radius:50%; }
+    #cocraft-directions .co-agent-request { padding:10px 11px; border-radius:7px; background:var(--co-bg); }
+    #cocraft-directions .co-agent-status { font-size:11px; color:var(--co-dim); display:flex; gap:7px; align-items:center; }
+    #cocraft-directions .co-step { display:flex; align-items:center; gap:7px; padding:4px 0; font-size:11px; }
+    #cocraft-directions .co-result { background:var(--co-raised); padding:12px; border:1px solid var(--co-line); border-radius:7px; }
+    #cocraft-directions .co-result-title { font-weight:500; margin-bottom:5px; }
+    #cocraft-directions .co-result-details { font-size:11px; color:var(--co-dim); margin-bottom:9px; }
+    #cocraft-directions .co-result button { border-color:var(--co-line); }
+    #cocraft-directions .co-protected { font-size:11px; color:var(--co-dim); display:flex; gap:6px; align-items:center; }
+    #cocraft-directions .co-composer { margin-top:auto; border:1px solid var(--co-line); padding:10px; border-radius:8px; background:var(--co-raised); }
+    #cocraft-directions .co-reference { display:inline-flex; align-items:center; gap:4px; font-size:11px; background:var(--co-soft); padding:2px 5px; border-radius:3px; margin-bottom:8px; }
+    #cocraft-directions .co-composer input { background:transparent; border:0; width:100%; outline-offset:1px; padding:4px 0; }
+    #cocraft-directions .co-composer-bottom { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-top:8px; }
+    #cocraft-directions .co-send { background:var(--co-text)!important; color:var(--co-bg)!important; }
+    #cocraft-directions .co-editor { grid-area:editor; border-top:1px solid var(--co-line); background:var(--co-panel); min-width:0; padding:0 12px 12px; }
+    #cocraft-directions .co-editor-tools { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:9px 0; }
+    #cocraft-directions .co-tabs { display:flex; gap:3px; }
+    #cocraft-directions .co-editor-tools .co-subtle { display:flex; align-items:center; gap:6px; }
+    #cocraft-directions .co-ruler { display:flex; justify-content:space-between; padding:0 0 7px 43px; font-size:11px; font-variant-numeric:tabular-nums; color:var(--co-dim); }
+    #cocraft-directions .co-track { display:flex; gap:5px; align-items:center; margin-bottom:5px; }
+    #cocraft-directions .co-track-name { flex:0 0 32px; font-size:11px; color:var(--co-dim); }
+    #cocraft-directions .co-track-lane { position:relative; display:flex; gap:3px; width:100%; min-height:32px; background:var(--co-bg); border-radius:3px; }
+    #cocraft-directions .co-window .co-clip { background:var(--co-clip); min-width:0; display:flex; align-items:center; gap:5px; padding:7px!important; font-size:11px!important; border-radius:3px!important; overflow-wrap:anywhere; white-space:normal!important; text-align:left; flex:1; }
+    #cocraft-directions .co-clip.is-current { box-shadow:inset 0 0 0 2px var(--co-accent); }
+    #cocraft-directions .co-clip.is-locked::after { content:'锁定'; font-size:11px; margin-left:auto; }
+    #cocraft-directions .co-track-lane.audio .co-clip { background:var(--co-audio); }
+    #cocraft-directions .co-track-lane.captions .co-clip { background:var(--co-caption); padding:4px 7px!important; }
+    #cocraft-directions .co-track-lane.captions { min-height:26px; }
+    #cocraft-directions .co-cutline { position:absolute; width:1px; top:0; bottom:0; left:37%; background:var(--co-text); pointer-events:none; opacity:.6; }
+    #cocraft-directions .co-storyboard { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; padding-top:4px; }
+    #cocraft-directions .co-shot { padding:0!important; text-align:left; white-space:normal!important; }
+    #cocraft-directions .co-shot .co-thumb { height:65px; margin-bottom:7px; border-radius:3px; }
+    #cocraft-directions .co-shot.is-current .co-thumb { box-shadow:inset 0 0 0 2px var(--co-accent); }
+    #cocraft-directions .co-script { padding:10px 5px; font-size:13px; }
+    #cocraft-directions .co-script-line { padding:8px 10px; margin-bottom:5px; display:flex; gap:14px; }
+    #cocraft-directions .co-script-line.selected { background:var(--co-soft); border-radius:4px; }
+    #cocraft-directions .co-script-line span:first-child { color:var(--co-dim); font-size:11px; }
+    #cocraft-directions [hidden] { display:none!important; }
+    #cocraft-directions .co-inspector { display:none; grid-area:inspector; border-left:1px solid var(--co-line); background:var(--co-panel); padding:14px; }
+    #cocraft-directions .co-property { display:flex; justify-content:space-between; align-items:center; margin:13px 0; gap:10px; }
+    #cocraft-directions .co-property span { color:var(--co-dim); }
+    #cocraft-directions .co-value { background:var(--co-bg); border:1px solid var(--co-line); border-radius:4px; padding:4px 8px; font-variant-numeric:tabular-nums; }
+    #cocraft-directions .co-footer { grid-area:footer; padding:6px 12px; border-top:1px solid var(--co-line); color:var(--co-dim); display:flex; justify-content:space-between; gap:12px; align-items:center; font-size:11px; background:var(--co-panel); }
+    #cocraft-directions .co-footer-message { overflow-wrap:anywhere; }
+    #cocraft-directions .co-review { grid-template-rows:48px 380px 180px 30px; grid-template-areas:"header header header" "assets viewer agent" "assets editor agent" "footer footer footer"; grid-template-columns:120px minmax(0,1fr) var(--agent-width,250px); }
+    #cocraft-directions .co-review .co-frame { max-width:560px; }
+    #cocraft-directions .co-review .co-asset { grid-template-columns:1fr; gap:5px; }
+    #cocraft-directions .co-review .co-asset .co-thumb { height:48px; }
+    #cocraft-directions .co-review .co-editor { padding:0 10px 8px; }
+    #cocraft-directions .co-review .co-storyboard .co-thumb { height:48px; }
+    #cocraft-directions .co-review .co-track-lane { min-height:24px; }
+    #cocraft-directions .co-review .co-clip { padding:4px!important; }
+    #cocraft-directions .co-review .co-script { padding:0; font-size:12px; }
+    #cocraft-directions .co-review .co-script-line { padding:4px; }
+    #cocraft-directions .co-precision { grid-template-columns:170px minmax(0,1fr) 190px; grid-template-rows:48px 238px 220px 104px 28px; grid-template-areas:"header header header" "assets viewer inspector" "editor editor editor" "agent agent agent" "footer footer footer"; }
+    #cocraft-directions .co-precision .co-viewer { padding:10px 30px; gap:5px; }
+    #cocraft-directions .co-precision .co-assets { padding:10px 12px; }
+    #cocraft-directions .co-precision .co-assets .co-section-label { margin-bottom:6px; }
+    #cocraft-directions .co-precision .co-assets .co-search { margin-bottom:6px; padding:4px 8px; }
+    #cocraft-directions .co-precision .co-assets .co-asset { margin-bottom:4px; }
+    #cocraft-directions .co-precision .co-assets > .co-subtle { display:none; }
+    #cocraft-directions .co-precision .co-frame { max-width:302px; }
+    #cocraft-directions .co-precision .co-inspector { display:block; }
+    #cocraft-directions .co-precision .co-agent { display:grid; grid-template-columns:175px minmax(0,1fr) minmax(200px,1fr); grid-template-areas:"agenthead result composer" "agentstate result composer"; border-left:0; border-top:1px solid var(--co-line); gap:6px 12px; padding:10px 14px; }
+    #cocraft-directions .co-precision .co-agent-head { grid-area:agenthead; }
+    #cocraft-directions .co-precision .co-agent-status { grid-area:agentstate; }
+    #cocraft-directions .co-precision .co-agent-request, #cocraft-directions .co-precision .co-steps, #cocraft-directions .co-precision .co-protected { display:none; }
+    #cocraft-directions .co-precision .co-result { grid-area:result; padding:8px 11px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    #cocraft-directions .co-precision .co-result-details { margin:0; }
+    #cocraft-directions .co-precision .co-composer { grid-area:composer; margin:0; padding:6px 10px; }
+    #cocraft-directions .co-precision .co-reference, #cocraft-directions .co-precision .co-composer-bottom .co-subtle { display:none; }
+    #cocraft-directions .co-precision .co-composer-bottom { margin:0; justify-content:flex-end; }
+    @media(max-width:800px) {
+      #cocraft-directions .co-window { grid-template-columns:120px minmax(0,1fr) 215px; }
+      #cocraft-directions .co-header { gap:8px; padding:0 10px; }
+      #cocraft-directions .co-project { font-size:11px; }
+      #cocraft-directions .co-viewer { padding:10px; }
+      #cocraft-directions .co-agent { padding:11px; }
+      #cocraft-directions .co-precision { grid-template-columns:140px minmax(0,1fr) 165px; }
+      #cocraft-directions .co-precision .co-viewer { padding:10px 15px; }
+      #cocraft-directions .co-precision .co-agent { grid-template-columns:155px minmax(0,1fr) 215px; }
+      #cocraft-directions .co-asset { grid-template-columns:1fr; gap:4px; }
+      #cocraft-directions .co-asset .co-thumb { display:none; }
+    }
+    @media(max-width:650px) {
+      #cocraft-directions .co-window { grid-template-columns:minmax(0,1fr) 210px; grid-template-rows:48px 300px 260px 34px; grid-template-areas:"header header" "viewer agent" "editor agent" "footer footer"; }
+      #cocraft-directions .co-assets, #cocraft-directions .co-inspector, #cocraft-directions .co-header .co-pill, #cocraft-directions .co-lights { display:none!important; }
+      #cocraft-directions .co-review { grid-template-rows:48px 360px 200px 34px; }
+      #cocraft-directions .co-precision { grid-template-columns:1fr; grid-template-rows:48px 240px 220px 100px 34px; grid-template-areas:"header" "viewer" "editor" "agent" "footer"; }
+      #cocraft-directions .co-precision .co-agent { grid-template-columns:150px minmax(0,1fr); grid-template-areas:"agenthead composer" "agentstate composer"; }
+      #cocraft-directions .co-precision .co-result { display:none; }
+      #cocraft-directions .co-frame-text { font-size:14px; }
+      #cocraft-directions .co-ruler span:nth-child(even) { display:none; }
+      #cocraft-directions .co-editor-tools .co-subtle { display:none; }
+    }
+    @media(max-width:480px) {
+      #cocraft-directions .co-window, #cocraft-directions .co-review, #cocraft-directions .co-precision { grid-template-columns:minmax(0,1fr); grid-template-rows:auto 240px auto auto auto; grid-template-areas:"header" "viewer" "editor" "agent" "footer"; min-height:1000px; }
+      #cocraft-directions .co-header { min-height:48px; flex-wrap:wrap; padding:8px; gap:8px; }
+      #cocraft-directions .co-header-actions { margin-left:auto; }
+      #cocraft-directions .co-project { max-width:110px; }
+      #cocraft-directions .co-editor { padding-bottom:16px; }
+      #cocraft-directions .co-agent, #cocraft-directions .co-precision .co-agent { display:flex; border-left:0; border-top:1px solid var(--co-line); padding:12px; gap:10px; }
+      #cocraft-directions .co-precision .co-agent-request, #cocraft-directions .co-precision .co-result, #cocraft-directions .co-precision .co-protected { display:block; }
+      #cocraft-directions .co-precision .co-result { padding:10px; }
+      #cocraft-directions .co-precision .co-result button { margin-top:6px; }
+      #cocraft-directions .co-window .co-steps { display:none; }
+      #cocraft-directions .co-composer { margin-top:5px; }
+      #cocraft-directions .co-footer { flex-wrap:wrap; }
+      #cocraft-directions .co-storyboard { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      #cocraft-directions .co-storyboard .co-thumb { height:40px!important; }
+      #cocraft-directions .co-shot { font-size:11px!important; }
+      #cocraft-directions .co-track-name { flex-basis:25px; }
+      #cocraft-directions .co-window .co-clip { padding:4px!important; }
+      #cocraft-directions .co-clip.is-locked::after { display:none; }
+    }
+    @media(pointer:coarse) { #cocraft-directions .co-window button { min-height:44px; } }
+  </style>
+  <div class="viz-carousel" aria-label="工作台布局方向" data-previous-label="上一个布局" data-next-label="下一个布局">
+    <section data-variant="协作工作台" aria-label="协作工作台布局"><article class="co-window co-balanced" aria-label="协作工作台界面" data-view="timeline"></article></section>
+    <section data-variant="审片优先" aria-label="审片优先布局" hidden><article class="co-window co-review" aria-label="审片优先界面" data-view="storyboard"></article></section>
+    <section data-variant="精剪优先" aria-label="精剪优先布局" hidden><article class="co-window co-precision" aria-label="精剪优先界面" data-view="timeline"></article></section>
+  </div>
+  <template id="co-workspace-template">
+    <header class="co-header">
+      <div class="co-lights" aria-hidden="true"><i></i><i></i><i></i></div><span class="co-brand">CoCraft</span><span class="co-project">沿海公路 · 短片</span><span class="co-pill">版本 03</span>
+      <div class="co-header-actions"><button class="co-compare cursor-interaction" type="button" aria-pressed="false">对比</button><span class="co-export">导出</span></div>
+    </header>
+    <aside class="co-assets" aria-label="素材库">
+      <div class="co-section-label">素材 <span class="co-subtle">8 项</span></div>
+      <input class="co-search" aria-label="查找素材" placeholder="查找素材…">
+      <div class="co-asset" data-name="海岸航拍"><div class="co-thumb"></div><div><div class="co-asset-name">海岸航拍</div><div class="co-subtle">00:18 · 视频</div></div></div>
+      <div class="co-asset" data-name="沿海公路"><div class="co-thumb alt"></div><div><div class="co-asset-name">沿海公路</div><div class="co-subtle">00:24 · 视频</div></div></div>
+      <div class="co-asset" data-name="山间晨雾"><div class="co-thumb"></div><div><div class="co-asset-name">山间晨雾</div><div class="co-subtle">00:12 · 视频</div></div></div>
+      <div class="co-asset" data-name="旁白"><div class="co-thumb sound"><i data-lucide="audio-lines" aria-hidden="true"></i></div><div><div class="co-asset-name">旁白 · 第 2 版</div><div class="co-subtle">01:32 · 音频</div></div></div>
+      <div class="co-subtle">已使用 4 / 8</div>
+    </aside>
+    <section class="co-viewer" aria-label="画面预览">
+      <div class="co-viewer-title"><span class="co-viewer-name">当前版本 · 镜头 03</span><span>16:9</span></div>
+      <div class="co-frame" role="img" aria-label="示意画面：海岸与沿海公路"><div class="co-sky"></div><div class="co-shore"></div><div class="co-road"></div><span class="co-frame-label">镜头示意</span><span class="co-frame-text">沿着海岸，慢一点。</span></div>
+      <div class="co-playback"><span>00:24:08 <span class="co-subtle">/ 01:32:00</span></span><div class="co-play-controls"><button class="co-lock cursor-interaction" type="button" aria-pressed="false" aria-label="锁定当前镜头"><i data-lucide="lock-open" aria-hidden="true"></i></button><button class="co-preview cursor-interaction" type="button" aria-label="预览剪辑变化"><i data-lucide="play" aria-hidden="true"></i></button></div></div>
+    </section>
+    <aside class="co-inspector" aria-label="镜头属性">
+      <div class="co-section-label">镜头属性</div><div class="co-subtle">03 · 沿海公路</div>
+      <div class="co-property"><span>缩放</span><div class="co-value">100%</div></div><div class="co-property"><span>时长</span><div class="co-value">00:08:12</div></div><div class="co-property"><span>音量</span><div class="co-value">−6 dB</div></div><div class="co-property"><span>转场</span><div class="co-value">叠化</div></div>
+    </aside>
+    <section class="co-editor" aria-label="内容编辑区">
+      <div class="co-editor-tools"><div class="co-tabs" aria-label="编辑视图"><button type="button" data-view="script" class="cursor-interaction">文稿</button><button type="button" data-view="storyboard" class="cursor-interaction">分镜</button><button type="button" data-view="timeline" class="cursor-interaction">时间线</button></div><div class="co-subtle"><i data-lucide="magnet" aria-hidden="true"></i> 吸附开启</div></div>
+      <div class="co-editor-view co-tracks" data-panel="timeline">
+        <div class="co-ruler"><span>00:00</span><span>00:15</span><span>00:30</span><span>00:45</span><span>01:00</span><span>01:15</span></div>
+        <div class="co-track"><span class="co-track-name">画面</span><div class="co-track-lane"><button type="button" class="co-clip cursor-interaction" data-shot="01" style="flex:1.1">海岸航拍</button><button type="button" class="co-clip is-current cursor-interaction" data-shot="03" style="flex:1.8">沿海公路</button><button type="button" class="co-clip cursor-interaction" data-shot="04" style="flex:1.4">山间晨雾</button><button type="button" class="co-clip cursor-interaction" data-shot="05">落日</button><span class="co-cutline"></span></div></div>
+        <div class="co-track"><span class="co-track-name">字幕</span><div class="co-track-lane captions"><span class="co-clip">出发</span><span class="co-clip" style="flex:2">沿着海岸，慢一点。</span><span class="co-clip">看见远方</span></div></div>
+        <div class="co-track"><span class="co-track-name">旁白</span><div class="co-track-lane audio"><span class="co-clip">旁白 · 第 2 版</span></div></div>
+        <div class="co-track"><span class="co-track-name">音乐</span><div class="co-track-lane audio"><span class="co-clip">海风 · −18 dB</span></div></div>
+      </div>
+      <div class="co-editor-view co-storyboard" data-panel="storyboard" hidden>
+        <button type="button" class="co-shot cursor-interaction" data-shot="01"><div class="co-thumb"></div><span>01 海岸航拍</span><div class="co-subtle">开场 · 8 秒</div></button>
+        <button type="button" class="co-shot cursor-interaction" data-shot="03"><div class="co-thumb alt"></div><span>03 沿海公路</span><div class="co-subtle">行进 · 12 秒</div></button>
+        <button type="button" class="co-shot cursor-interaction" data-shot="04"><div class="co-thumb"></div><span>04 山间晨雾</span><div class="co-subtle">停留 · 10 秒</div></button>
+        <button type="button" class="co-shot cursor-interaction" data-shot="05"><div class="co-thumb alt"></div><span>05 落日</span><div class="co-subtle">结尾 · 已锁定</div></button>
+      </div>
+      <div class="co-editor-view co-script" data-panel="script" hidden><div class="co-script-line"><span>00:08</span><span>有些风景，需要慢下来才看得见。</span></div><div class="co-script-line selected"><span>00:24</span><span>沿着海岸，慢一点。</span></div><div class="co-script-line"><span>00:38</span><span>拐过下一个弯，山就出现了。</span></div></div>
+    </section>
+    <aside class="co-agent" aria-label="Agent 协作区">
+      <div class="co-agent-head"><span class="co-agent-title"><i data-lucide="sparkles" aria-hidden="true"></i> 剪辑助手</span><button class="co-pause cursor-interaction" type="button">暂停</button></div>
+      <div class="co-agent-request">开头再紧凑些，保留公路镜头里的呼吸感。</div>
+      <div class="co-agent-status"><span class="co-state-dot"></span><span class="co-status-text">正在调整开头的节奏</span></div>
+      <div class="co-steps"><div class="co-step"><i data-lucide="check" aria-hidden="true"></i> 已缩短开场 3.2 秒</div><div class="co-step"><i data-lucide="check" aria-hidden="true"></i> 已同步字幕与旁白</div><div class="co-step"><i data-lucide="circle" aria-hidden="true"></i> 检查镜头衔接</div></div>
+      <div class="co-result"><div><div class="co-result-title">开场修改</div><div class="co-result-details">00:00—00:18 · 3 处变化</div></div><button class="co-preview cursor-interaction" type="button">查看变化</button></div>
+      <div class="co-protected"><i data-lucide="lock-keyhole" aria-hidden="true"></i><span class="co-protection-text">结尾镜头已锁定</span></div>
+      <div class="co-composer"><div class="co-reference"><i data-lucide="film" aria-hidden="true"></i><span class="co-ref-text">镜头 03 · 沿海公路</span></div><input class="co-message" aria-label="补充剪辑意见" placeholder="继续描述你的想法…"><div class="co-composer-bottom"><span class="co-subtle">仅修改选中镜头</span><button class="co-send cursor-interaction" type="button" aria-label="提交示例意见"><i data-lucide="arrow-up" aria-hidden="true"></i></button></div></div>
+    </aside>
+    <footer class="co-footer"><span class="co-footer-message" aria-live="polite">工作台交互草图</span><span>本地工程 · 1080p</span></footer>
+  </template>
+  <script>
+    (() => {
+      const root = document.getElementById('cocraft-directions');
+      const template = document.getElementById('co-workspace-template');
+      const settings = { appearance:'auto', accent:'#6384b8', agentWidth:250 };
+      const saved = window.openai && window.openai.widgetState;
+      if (saved && saved.privateContent && saved.privateContent.settings) Object.assign(settings, saved.privateContent.settings);
+      const windows = [...root.querySelectorAll('.co-window')];
+      const names = { '01':'海岸航拍', '03':'沿海公路', '04':'山间晨雾', '05':'落日' };
+      const lines = { '01':'有些风景，需要慢下来。', '03':'沿着海岸，慢一点。', '04':'拐过下一个弯，山就出现了。', '05':'把这一刻，留久一点。' };
+      function save() {
+        if (window.openai && window.openai.setWidgetState) window.openai.setWidgetState({ modelContent:{ theme:settings.appearance, accent:settings.accent, agentPanelWidth:settings.agentWidth },privateContent:{settings} }).catch(()=>{});
+      }
+      function applySettings() {
+        windows.forEach(win=>{
+          win.style.colorScheme = settings.appearance === 'auto' ? 'inherit' : settings.appearance;
+          win.style.setProperty('--co-accent',settings.accent);
+          win.style.setProperty('--agent-width',settings.agentWidth+'px');
+        });
+      }
+      windows.forEach(win=>{
+        win.appendChild(template.content.cloneNode(true));
+        let currentShot='03'; let paused=false; let locked=false; let comparison=false;
+        const lockedShots=new Set(['05']);
+        win.querySelectorAll('[data-shot]').forEach(item=>{item.classList.toggle('is-current',item.dataset.shot===currentShot);item.classList.toggle('is-locked',lockedShots.has(item.dataset.shot));});
+        const note = text => {win.querySelector('.co-footer-message').textContent=text;};
+        function setView(view) {
+          win.querySelectorAll('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==view);
+          win.querySelectorAll('.co-tabs button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.view===view)));
+        }
+        setView(win.dataset.view);
+        win.querySelectorAll('.co-tabs button').forEach(button=>button.addEventListener('click',()=>setView(button.dataset.view)));
+        win.querySelectorAll('[data-shot]').forEach(button=>button.addEventListener('click',()=>{
+          currentShot=button.dataset.shot;
+          win.querySelectorAll('[data-shot]').forEach(item=>item.classList.toggle('is-current',item.dataset.shot===currentShot));
+          win.querySelector('.co-viewer-name').textContent='当前版本 · 镜头 '+currentShot;
+          win.querySelector('.co-frame-text').textContent=lines[currentShot];
+          win.querySelector('.co-ref-text').textContent='镜头 '+currentShot+' · '+names[currentShot];
+          locked=lockedShots.has(currentShot);
+          win.querySelector('.co-lock').setAttribute('aria-pressed',String(locked));
+          win.querySelector('.co-lock').textContent=locked?'已锁定':'锁定';
+          win.querySelector('.co-lock').setAttribute('aria-label',locked?'解除当前镜头锁定':'锁定当前镜头');
+          note('已选择镜头 '+currentShot+' · 可直接补充修改意见');
+        }));
+        win.querySelector('.co-search').addEventListener('input',event=>{
+          const q=event.target.value.trim();
+          win.querySelectorAll('.co-asset').forEach(item=>item.hidden=!item.dataset.name.includes(q));
+        });
+        win.querySelector('.co-pause').addEventListener('click',event=>{
+          paused=!paused; event.currentTarget.textContent=paused?'继续':'暂停';
+          win.querySelector('.co-status-text').textContent=paused?'已暂停 · 可以直接手动修改':'正在调整开头的节奏';
+          note(paused?'Agent 已暂停，已完成的修改保留':'Agent 根据当前工程继续');
+        });
+        win.querySelector('.co-lock').addEventListener('click',event=>{
+          locked=!locked; event.currentTarget.setAttribute('aria-pressed',String(locked));
+          if(locked)lockedShots.add(currentShot); else lockedShots.delete(currentShot);
+          event.currentTarget.textContent=locked?'已锁定':'锁定';
+          event.currentTarget.setAttribute('aria-label',locked?'解除当前镜头锁定':'锁定当前镜头');
+          win.querySelectorAll('[data-shot]').forEach(item=>{if(item.dataset.shot===currentShot)item.classList.toggle('is-locked',locked);});
+          win.querySelector('.co-protection-text').textContent=locked?'镜头 '+currentShot+' 已锁定':'结尾镜头已锁定';
+          note(locked?'当前镜头已锁定，Agent 将保留你的选择':'当前镜头已解除锁定');
+        });
+        const compare = ()=>{
+          comparison=!comparison;
+          win.querySelector('.co-compare').setAttribute('aria-pressed',String(comparison));
+          win.querySelector('.co-viewer-name').textContent=comparison?'上一版 · 开头 18.0 秒':'当前版本 · 开头 14.8 秒';
+          note(comparison?'正在对比上一版；再次点击回到当前版本':'已回到当前版本 · 开头缩短 3.2 秒');
+        };
+        win.querySelector('.co-compare').addEventListener('click',compare);
+        win.querySelectorAll('.co-preview').forEach(button=>button.addEventListener('click',compare));
+        function send(){
+          const input=win.querySelector('.co-message');
+          if(!input.value.trim()) {input.focus(); return;}
+          win.querySelector('.co-agent-request').textContent=input.value.trim();
+          note('示例意见已关联镜头 '+currentShot+'，未执行真实剪辑'); input.value='';
+        }
+        win.querySelector('.co-send').addEventListener('click',send);
+        win.querySelector('.co-message').addEventListener('keydown',event=>{if(event.key==='Enter')send();});
+      });
+      applySettings();
+      if(globalThis.lucide) lucide.createIcons({ attrs:{width:15,height:15} });
+      if(globalThis.Tweak){
+        const tweak=new Tweak({container:root,onChange:()=>{applySettings();save();}});
+        tweak.addSelect(settings,'appearance',{label:'明暗模式',options:[{label:'跟随系统',value:'auto'},{label:'浅色',value:'light'},{label:'深色',value:'dark'}]});
+        tweak.addColorPicker(settings,'accent',{label:'选中与工作状态强调色',reference:'--co-accent'});
+        tweak.addSlider(settings,'agentWidth',{label:'Agent 面板宽度',min:230,max:300,step:10,unit:'px'});
+      }
+      window.addEventListener('openai:set_globals',event=>{
+        const state=event.detail && event.detail.globals && event.detail.globals.widgetState;
+        if(state && state.privateContent && state.privateContent.settings){Object.assign(settings,state.privateContent.settings); applySettings();}
+      });
+    })();
+  </script>
+</div>

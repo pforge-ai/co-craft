@@ -1,0 +1,98 @@
+{
+  "name": "cocraft",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A video workbench for people and coding agents",
+  "type": "module",
+  "main": "dist/main.mjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "start": "electron .",
+    "smoke": "tsx scripts/smoke.ts",
+    "package": "npm run build && electron-builder --mac dir --arm64",
+    "test:ui": "node scripts/functional-check.mjs",
+    "smoke:agent": "node scripts/agent-smoke.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@remotion/media": "4.0.544",
+    "@remotion/player": "4.0.544",
+    "@remotion/renderer": "4.0.544",
+    "@sinclair/typebox": "0.34.41",
+    "esbuild": "^0.27.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "remotion": "4.0.544"
+  },
+  "devDependencies": {
+    "@remotion/bundler": "4.0.544",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "45.3.3",
+    "electron-builder": "^26.0.12",
+    "playwright": "^1.56.0",
+    "prettier": "3.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  },
+  "build": {
+    "appId": "studio.cocraft.desktop",
+    "productName": "CoCraft",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!dist/render-bundle/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources",
+        "filter": [
+          "public/**/*",
+          "skills/**/*",
+          "icon.icns"
+        ]
+      },
+      {
+        "from": "dist/render-bundle",
+        "to": "render-bundle"
+      },
+      {
+        "from": "node_modules/@remotion/compositor-darwin-arm64",
+        "to": "media-tools",
+        "filter": [
+          "ffmpeg",
+          "ffprobe",
+          "remotion",
+          "*.dylib",
+          "LICENSE.md"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": "dir",
+      "identity": null,
+      "icon": "resources/icon.icns",
+      "minimumSystemVersion": "15.0"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "asarUnpack": [
+      "node_modules/@esbuild/**/*",
+      "node_modules/esbuild/**/*",
+      "node_modules/@remotion/compositor-*/**/*",
+      "node_modules/@silvia-odwyer/**/*"
+    ],
+    "electronDist": "node_modules/electron/dist"
+  },
+  "author": "CoCraft"
+}

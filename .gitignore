@@ -1,0 +1,20 @@
+.DS_Store
+node_modules/
+dist/
+dist-electron/
+release/
+coverage/
+.cache/
+.env
+.env.*
+!.env.example
+*.log
+
+# Local execution data and private media
+.cocraft-local/
+test-projects/local/
+media/local/
+
+# Generated preview and video exports (kept locally)
+artifacts/
+resources/icon.iconset/

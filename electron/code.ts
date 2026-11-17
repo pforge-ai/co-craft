@@ -1,0 +1,60 @@
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { CodeComponent } from '../src/core/types';
+export async function compileComponent(
+  source: string,
+  id: string,
+  name: string,
+  cwd: string,
+  props: CodeComponent['props'] = {},
+): Promise<CodeComponent> {
+  const unpacked = join(
+    process.resourcesPath || '',
+    'app.asar.unpacked',
+    'node_modules',
+    '@esbuild',
+    `darwin-${process.arch}`,
+    'bin',
+    'esbuild',
+  );
+  if (existsSync(unpacked)) process.env.ESBUILD_BINARY_PATH = unpacked;
+  const { build } = await import('esbuild');
+  const root = await realpath(cwd);
+  const result = await build({
+    absWorkingDir: cwd,
+    stdin: { contents: source, loader: 'tsx', resolveDir: cwd, sourcefile: `${name}.tsx` },
+    bundle: true,
+    write: false,
+    format: 'cjs',
+    platform: 'browser',
+    target: 'es2022',
+    jsx: 'transform',
+    external: ['react', 'remotion', 'react/jsx-runtime'],
+    logLevel: 'silent',
+    plugins: [
+      {
+        name: 'project-files',
+        setup(builder) {
+          builder.onLoad({ filter: /.*/, namespace: 'file' }, async (args) => {
+            const path = await realpath(args.path);
+            if (path !== root && !path.startsWith(root + '/')) throw new Error('组件依赖必须位于项目工作区');
+            return undefined;
+          });
+        },
+      },
+    ],
+  });
+  const compiled = result.outputFiles[0].text;
+  return {
+    id,
+    name,
+    source,
+    compiled,
+    props,
+    hash: createHash('sha256')
+      .update(source + compiled)
+      .digest('hex'),
+  };
+}

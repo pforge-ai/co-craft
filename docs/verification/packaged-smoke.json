@@ -1,0 +1,15 @@
+{
+  "testedAt": "2026-11-17T18:04:37.038Z",
+  "data": "/var/folders/x3/11y0w2jj7c35hxhpz5wc2bqm0000gn/T/cocraft-final-check-ijfbmZ",
+  "results": [
+    {
+      "check": "Packaged local Chinese voice",
+      "status": "pass",
+      "duration": 3.328542
+    },
+    {
+      "check": "Failed component render preserves published revision",
+      "status": "pass"
+    }
+  ]
+}
