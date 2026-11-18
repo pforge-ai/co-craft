@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "id": "stereo-meter",
+  "name": "立体声电平",
+  "version": "1.0.0",
+  "author": "CoCraft · deepseek-flash",
+  "license": "CC0-1.0",
+  "templates": [
+    {
+      "id": "stereo-meter",
+      "name": "立体声电平表",
+      "entry": "StereoMeter.tsx",
+      "durationSeconds": 3,
+      "defaultProps": {
+        "label": "信号监测",
+        "title": "立体声电平",
+        "caption": "L / R 双通道 · 琥珀为峰值",
+        "accent": "#a9d8c2",
+        "peakColor": "#f4af78",
+        "segments": 20,
+        "durationFrames": 90,
+        "panelColor": "#192521",
+        "scale": 1,
+        "top": 58,
+        "right": 66
+      },
+      "parameters": [
+        {
+          "key": "label",
+          "label": "栏目标记",
+          "type": "text"
+        },
+        {
+          "key": "title",
+          "label": "主标题",
+          "type": "text"
+        },
+        {
+          "key": "caption",
+          "label": "说明",
+          "type": "text"
+        },
+        {
+          "key": "accent",
+          "label": "电平颜色",
+          "type": "color"
+        },
+        {
+          "key": "peakColor",
+          "label": "峰值颜色",
+          "type": "color"
+        },
+        {
+          "key": "segments",
+          "label": "电平格数",
+          "type": "number",
+          "min": 8,
+          "max": 48,
+          "step": 1
+        },
+        {
+          "key": "durationFrames",
+          "label": "动效长度（帧）",
+          "type": "number",
+          "min": 15,
+          "max": 1800,
+          "step": 1
+        },
+        {
+          "key": "panelColor",
+          "type": "color",
+          "label": "面板底色"
+        },
+        {
+          "key": "scale",
+          "type": "number",
+          "label": "整体缩放",
+          "min": 0.5,
+          "max": 2,
+          "step": 0.05
+        },
+        {
+          "key": "top",
+          "type": "number",
+          "label": "顶部留白",
+          "min": 0,
+          "max": 500,
+          "step": 2
+        },
+        {
+          "key": "right",
+          "type": "number",
+          "label": "右侧留白",
+          "min": 0,
+          "max": 1000,
+          "step": 2
+        }
+      ]
+    }
+  ]
+}

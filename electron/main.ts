@@ -8,11 +8,14 @@ import { SettingsStore } from './settings';
 import { MediaServer } from './server';
 import { JobService } from './jobs';
 import { AgentHost } from './agents';
+import { studioCatalog, addStudioAsset } from './studio-media';
+import { GenerationService } from './generation';
+import { importMaterialPack } from './packs';
 import { createDemo } from './demo';
 import { importMedia, run, binary } from './media';
 import { compileComponent } from './code';
 import { newClip, uid, applyOperations } from '../src/core/project';
-import type { EditOperation, ProjectEnvelope, StockVideo, Task } from '../src/core/types';
+import type { Asset, EditOperation, ProjectEnvelope, StockVideo, Task } from '../src/core/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 if (process.env.COCRAFT_DATA_DIR) app.setPath('userData', resolve(process.env.COCRAFT_DATA_DIR));
@@ -23,16 +26,18 @@ let win: BrowserWindow,
   settings: SettingsStore,
   media: MediaServer,
   jobs: JobService,
+  generation: GenerationService,
   agents: AgentHost;
 const resources = app.isPackaged ? join(process.resourcesPath, 'resources') : join(here, '../resources');
 const renderDir = app.isPackaged ? join(process.resourcesPath, 'render-bundle') : join(here, 'render-bundle');
+let studioMedia: Asset[] = [];
 const knownStock = new Map<number, StockVideo>();
 const emit = (channel: string, data: unknown) => {
   if (win && !win.isDestroyed()) win.webContents.send('cocraft:' + channel, data);
 };
 async function changed(target: ProjectStore, envelope: ProjectEnvelope) {
   media.register(envelope.project.assets);
-  await library.remember(target);
+  await library.remember(target, false);
   if (store.path === target.path) emit('project', envelope);
 }
 async function importFiles(paths: string[], append = false) {
@@ -111,12 +116,19 @@ async function handle(method: string, arg: any = {}) {
         current: await store.envelope(),
         settings: await settings.get(),
         jobs: jobs.jobs,
+        studioMedia,
         previewOrigin: media.origin,
         version: app.getVersion(),
         skills: await listSkills(),
       };
     case 'project.list':
       return library.list();
+    case 'project.demo': {
+      store = await createDemo(library, resources);
+      const envelope = await store.envelope();
+      media.register(envelope.project.assets);
+      return envelope;
+    }
     case 'project.create': {
       store = await library.create(String(arg.name || '未命名项目'));
       media.register((await store.project()).assets);
@@ -142,6 +154,7 @@ async function handle(method: string, arg: any = {}) {
       return true;
     case 'project.edit': {
       const target = store;
+      if (arg.projectId && (await target.project()).id !== arg.projectId) throw new Error('工程已经切换');
       if (arg.operations.some((op: EditOperation) => op.type === 'putComponent'))
         await jobs.validateComponents(
           applyOperations(await target.project(), arg.operations, 'you'),
@@ -251,18 +264,65 @@ async function handle(method: string, arg: any = {}) {
       await writeFile(d.filePath, content);
       return d.filePath;
     }
-    case 'code.compile':
-      return compileComponent(
+    case 'code.compile': {
+      const target = store;
+      const existing = (await target.project()).components.find((c) => c.id === arg.id);
+      const pack = existing?.pack;
+      const component = await compileComponent(
         arg.source,
         arg.id || uid('component'),
         arg.name || '自定义画面',
-        store.path,
+        target.path,
         arg.props,
+        pack ? dirname(join(pack.sourceDirectory, pack.entry || 'index.tsx')) : target.path,
       );
+      return pack ? { ...component, pack } : component;
+    }
+    case 'studio.add': {
+      const target = store;
+      const result = await addStudioAsset(target, studioMedia, arg.id, arg.sequenceId, arg.at, arg.projectId);
+      await changed(target, result.envelope);
+      return result;
+    }
+    case 'packs.import': {
+      const target = store;
+      let directory = join(resources, 'packs', 'studio-signature');
+      if (!arg.example) {
+        const picked = await dialog.showOpenDialog(win, {
+          title: '选择含 cocraft-pack.json 的素材包',
+          properties: ['openDirectory'],
+        });
+        if (picked.canceled) return null;
+        directory = picked.filePaths[0];
+      }
+      const project = await target.project();
+      const pack = await importMaterialPack(directory, target.path, project);
+      if (!pack.operations.length) return target.envelope();
+      await jobs.validateComponents(applyOperations(project, pack.operations, 'you'), pack.operations);
+      const next = await target.edit({
+        baseRevision: project.revision,
+        name: '导入素材包 · ' + pack.packName,
+        operations: pack.operations,
+      });
+      await changed(target, next);
+      return next;
+    }
+    case 'tasks.model': {
+      const target = store;
+      if (
+        arg.modelId &&
+        !(await settings.get()).models.some((m) => m.id === arg.modelId && m.capabilities.includes('agent'))
+      )
+        throw new Error('会话模型已移除');
+      return target.updateTaskDetails(arg.id, { modelId: arg.modelId || undefined });
+    }
+    case 'tasks.rename':
+      return store.updateTaskDetails(arg.id, { name: String(arg.name || '') });
     case 'tasks.create': {
       const task: Task = {
         id: uid('task'),
-        name: arg.name || '新的创作',
+        name: arg.name || '新会话',
+        modelId: arg.modelId || undefined,
         sequenceId: arg.sequenceId,
         createdAt: new Date().toISOString(),
         messages: [],
@@ -271,10 +331,24 @@ async function handle(method: string, arg: any = {}) {
       await store.saveTask(task);
       return task;
     }
-    case 'agent.start':
-      return agents.start(store, arg.taskId, arg.prompt, await settings.get(true), arg.context || '');
+    case 'agent.start': {
+      const target = store;
+      return agents.start(
+        target,
+        arg.taskId,
+        arg.prompt,
+        async () => settings.agent(arg.modelId, (await target.project()).modelDefaults),
+        arg.context || '',
+      );
+    }
     case 'agent.stop':
       return agents.stop(arg.taskId);
+    case 'providers.inspect':
+      return generation.inspectProvider(arg);
+    case 'generation.start':
+      return generation.start(store, arg);
+    case 'generation.resume':
+      return generation.resume(arg.id);
     case 'settings.get':
       return settings.get();
     case 'settings.save': {
@@ -330,8 +404,8 @@ async function handle(method: string, arg: any = {}) {
       await shell.openPath(join(store.path, 'skills'));
       return true;
     case 'stock.search': {
-      const s = await settings.get(true);
-      if (!s.pexelsKey) throw new Error('在设置中填写 Pexels API Key，即可搜索视频素材。');
+      const pexelsKey = await settings.stockKey();
+      if (!pexelsKey) throw new Error('在设置中填写 Pexels API Key，即可搜索视频素材。');
       const response = await fetch(
         'https://api.pexels.com/v1/videos/search?' +
           new URLSearchParams({
@@ -339,7 +413,7 @@ async function handle(method: string, arg: any = {}) {
             per_page: '12',
             orientation: arg.orientation || 'landscape',
           }),
-        { headers: { Authorization: s.pexelsKey } },
+        { headers: { Authorization: pexelsKey } },
       );
       if (!response.ok) throw new Error(`Pexels 搜索失败 (${response.status})`);
       const data = (await response.json()) as any;
@@ -382,37 +456,14 @@ async function handle(method: string, arg: any = {}) {
       return e;
     }
     case 'voice.generate': {
-      if (!String(arg.text || '').trim()) throw new Error('先输入配音文稿');
-      const file = join(store.path, 'assets', `voice-${Date.now()}.wav`);
-      const voices = await run('/usr/bin/say', ['-v', '?']);
-      const preferred =
-        voices
-          .split('\n')
-          .find((l) => l.includes('zh_CN'))
-          ?.split(/\s{2,}/)[0] || 'Tingting';
-      await run('/usr/bin/say', [
-        '-v',
-        preferred,
-        '-r',
-        String(arg.rate || 175),
-        '--file-format=WAVE',
-        '--data-format=LEI16@24000',
-        '-o',
-        file,
-        '--',
-        arg.text,
-      ]);
-      const asset = await importMedia(file, store.path);
-      asset.name = '配音 · ' + arg.text.slice(0, 16);
-      asset.source = { provider: 'macOS', license: '系统语音' };
-      const p = await store.project();
-      const e = await store.edit({
-        baseRevision: p.revision,
-        name: '生成本地配音',
-        operations: [{ type: 'addAsset', asset }],
+      const target = store;
+      const job = await generation.start(target, {
+        use: 'speech',
+        prompt: arg.text,
+        parameters: arg.rate ? { rate: arg.rate } : {},
       });
-      await changed(store, e);
-      return e;
+      await generation.wait(job.id);
+      return target.envelope();
     }
     default:
       throw new Error('未知操作：' + method);
@@ -493,6 +544,8 @@ app
       }
     media = new MediaServer(join(here, 'renderer'), renderDir, process.env.COCRAFT_DEV_URL);
     await media.start();
+    studioMedia = await studioCatalog(resources);
+    media.register(studioMedia);
     media.register((await store.project()).assets);
     jobs = new JobService(
       root,
@@ -503,6 +556,7 @@ app
       app.isPackaged ? undefined : join(here, '..'),
     );
     await jobs.init();
+    generation = new GenerationService(settings, jobs, changed, (path) => library.resolveStore(path));
     agents = new AgentHost(
       join(here, 'agent-worker.mjs'),
       join(resources, 'skills'),
@@ -510,6 +564,8 @@ app
       jobs,
       (e) => emit('agent', e),
       (s, e) => void changed(s, e),
+      generation,
+      studioMedia,
     );
     ipcMain.handle('cocraft:call', async (event, method, payload) => {
       if (event.sender.id !== win.webContents.id || event.senderFrame !== win.webContents.mainFrame)
@@ -541,6 +597,7 @@ app
           label: '文件',
           submenu: [
             { label: '新建项目', accelerator: 'CmdOrCtrl+N', click: action('new-project') },
+            { label: '新建示例工程', click: action('demo-project') },
             { label: '打开项目', accelerator: 'CmdOrCtrl+O', click: action('open-project') },
             { label: '导入素材', accelerator: 'CmdOrCtrl+I', click: action('import') },
             { type: 'separator' },

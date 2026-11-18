@@ -2,6 +2,7 @@ import { utilityProcess } from 'electron';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { atomicJSON, readJSON } from './store';
 import type { Project, Job, EditOperation } from '../src/core/types';
 import { uid, clone, newClip } from '../src/core/project';
@@ -9,6 +10,9 @@ import type { MediaServer } from './server';
 export class JobService {
   jobs: Job[] = [];
   private processes = new Map<string, Electron.UtilityProcess>();
+  private controllers = new Map<string, AbortController>();
+  private settling = new Map<string, Promise<void>>();
+  private writes: Promise<unknown> = Promise.resolve();
   constructor(
     private root: string,
     private workerPath: string,
@@ -23,18 +27,99 @@ export class JobService {
     for (const job of this.jobs)
       if (job.status === 'running' || job.status === 'queued') {
         job.status = 'failed';
-        job.error = '应用关闭时作业中断，可重新导出';
-        job.stage = '需要重新导出';
+        if (job.result) {
+          job.error = '结果已保存，可以继续处理本地结果';
+          job.stage = '可恢复结果';
+        } else if (job.remote) {
+          job.error = '应用已停止等待。可以用原任务编号继续查询';
+          job.stage = '可恢复查询';
+        } else {
+          job.error =
+            job.type === 'export'
+              ? '应用关闭时导出中断，可重新导出'
+              : '应用关闭时请求中断。再次提交前请核对服务商记录';
+          job.stage = '已中断';
+        }
       }
     await this.persist();
   }
   private async persist() {
-    await atomicJSON(join(this.root, 'jobs.json'), this.jobs);
+    const snapshot = structuredClone(this.jobs);
+    const write = this.writes.then(() => atomicJSON(join(this.root, 'jobs.json'), snapshot));
+    this.writes = write.catch(() => {});
+    await write;
     this.onChange(this.jobs);
   }
-  async validateComponents(project: Project, operations: EditOperation[]) {
+  async update(job: Job, patch: Partial<Job>) {
+    Object.assign(job, patch);
+    await this.persist();
+  }
+  async runTask(
+    job: Job,
+    task: (signal: AbortSignal) => Promise<Job['result']>,
+    owner?: AbortSignal,
+    stage?: string,
+  ): Promise<Job> {
+    if (job.status === 'completed') return job;
+    // A cancelled POST may still be receiving its remote ID. Only one invocation owns the job at a time.
+    if (this.controllers.has(job.id)) {
+      if (job.status === 'running') return job;
+      await this.settling.get(job.id);
+      return this.runTask(job, task, owner, stage);
+    }
+    owner?.throwIfAborted();
+    const controller = new AbortController();
+    this.controllers.set(job.id, controller);
+    const cancel = () => {
+      void this.cancel(job.id);
+    };
+    owner?.addEventListener('abort', cancel, { once: true });
+    if (!this.jobs.some((j) => j.id === job.id)) this.jobs.unshift(job);
+    Object.assign(job, { status: 'running', error: undefined, ...(stage ? { stage } : {}) });
+    const started = this.persist();
+    const done = (async () => {
+      try {
+        await started;
+        controller.signal.throwIfAborted();
+        const result = await task(controller.signal);
+        // The task checks abort at its commit point. Once it has committed, expose that actual result.
+        Object.assign(job, { result, status: 'completed', progress: 1, stage: '已完成' });
+      } catch (error) {
+        if (controller.signal.aborted || job.status === 'cancelled') return;
+        job.status = 'failed';
+        job.error = error instanceof Error ? error.message : String(error);
+        job.stage = job.result
+          ? '结果已保存'
+          : job.remote && !['failed', 'expired', 'cancelled', 'canceled'].includes(job.remote.status || '')
+            ? '查询中断 · 可继续查询'
+            : '未完成';
+      } finally {
+        owner?.removeEventListener('abort', cancel);
+        await this.persist();
+      }
+    })().finally(() => {
+      this.controllers.delete(job.id);
+      this.settling.delete(job.id);
+    });
+    this.settling.set(job.id, done);
+    void done.catch((error) => console.error('无法保存作业状态', error));
+    await started;
+    return job;
+  }
+  async wait(id: string, signal?: AbortSignal): Promise<NonNullable<Job['result']>> {
+    while (true) {
+      signal?.throwIfAborted();
+      const job = this.jobs.find((j) => j.id === id);
+      if (!job) throw new Error('作业不存在');
+      if (job.status === 'completed') return job.result || {};
+      if (job.status === 'failed' || job.status === 'cancelled') throw new Error(job.error || job.stage);
+      await sleep(100, undefined, { signal });
+    }
+  }
+  async validateComponents(project: Project, operations: EditOperation[], signal?: AbortSignal) {
     for (const op of operations) {
       if (op.type !== 'putComponent') continue;
+      signal?.throwIfAborted();
       const candidate = clone(project);
       const existing = candidate.sequences
         .flatMap((s) => s.clips.map((c) => ({ s, c })))
@@ -54,18 +139,20 @@ export class JobService {
         frame: Math.min(clip.duration - 1, Math.round(sequence.fps * 0.5)),
         scale: 0.25,
       });
-      await new Promise<void>((resolve, reject) => {
-        const timer = setInterval(() => {
-          if (job.status === 'completed') {
-            clearInterval(timer);
-            resolve();
-          }
-          if (job.status === 'failed' || job.status === 'cancelled') {
-            clearInterval(timer);
-            reject(new Error('画面检查未通过，原版本已保留：' + (job.error || '检查已取消')));
-          }
-        }, 100);
-      });
+      const cancel = () => {
+        void this.cancel(job.id);
+      };
+      signal?.addEventListener('abort', cancel, { once: true });
+      try {
+        await this.wait(job.id, signal);
+      } catch (error) {
+        cancel();
+        throw new Error(
+          '画面检查未通过，原版本已保留：' + (error instanceof Error ? error.message : String(error)),
+        );
+      } finally {
+        signal?.removeEventListener('abort', cancel);
+      }
     }
   }
   async render(
@@ -149,7 +236,8 @@ export class JobService {
     const job = this.jobs.find((j) => j.id === id);
     if (!job || job.status !== 'running') return;
     job.status = 'cancelled';
-    job.stage = '已取消';
+    job.stage = job.remote || job.stage === '正在提交云端任务' ? '已停止等待，云端可能继续执行' : '已取消';
+    this.controllers.get(id)?.abort(new Error('已停止等待'));
     const worker = this.processes.get(id);
     worker?.postMessage({ type: 'cancel' });
     setTimeout(() => worker?.kill(), 1500);

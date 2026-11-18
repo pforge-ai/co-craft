@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "studio-signature",
+  "name": "Studio Signature",
+  "version": "1.0.0",
+  "author": "CoCraft",
+  "license": "CC0-1.0",
+  "templates": [
+    {
+      "id": "signature",
+      "name": "Signature · 品牌署名",
+      "entry": "Signature.tsx",
+      "durationSeconds": 5,
+      "defaultProps": {
+        "text": "Made with intention.",
+        "subtitle": "STUDIO SIGNATURE",
+        "accent": "#b9a6ff",
+        "markAssetId": "@asset/mark",
+        "showMark": true
+      },
+      "parameters": [
+        { "key": "text", "label": "主文案", "type": "text" },
+        { "key": "subtitle", "label": "品牌落款", "type": "text" },
+        { "key": "accent", "label": "强调色", "type": "color" },
+        { "key": "showMark", "label": "显示品牌标记", "type": "boolean" }
+      ]
+    }
+  ],
+  "assets": [{ "id": "mark", "path": "mark.svg", "name": "Signature 标记", "license": "CC0-1.0" }]
+}

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative, isAbsolute } from 'node:path';
 import type { CodeComponent } from '../src/core/types';
 export async function compileComponent(
   source: string,
@@ -9,6 +9,7 @@ export async function compileComponent(
   name: string,
   cwd: string,
   props: CodeComponent['props'] = {},
+  sourceDirectory = cwd,
 ): Promise<CodeComponent> {
   const unpacked = join(
     process.resourcesPath || '',
@@ -22,9 +23,13 @@ export async function compileComponent(
   if (existsSync(unpacked)) process.env.ESBUILD_BINARY_PATH = unpacked;
   const { build } = await import('esbuild');
   const root = await realpath(cwd);
+  const resolveDir = await realpath(sourceDirectory);
+  const subdir = relative(root, resolveDir);
+  if (subdir === '..' || subdir.startsWith('../') || isAbsolute(subdir))
+    throw new Error('组件入口必须位于工程工作区');
   const result = await build({
     absWorkingDir: cwd,
-    stdin: { contents: source, loader: 'tsx', resolveDir: cwd, sourcefile: `${name}.tsx` },
+    stdin: { contents: source, loader: 'tsx', resolveDir, sourcefile: `${name}.tsx` },
     bundle: true,
     write: false,
     format: 'cjs',

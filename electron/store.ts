@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
 import { renameSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { applyOperations, clone, diffSummary, newProject, validateProject } from '../src/core/project';
 import type {
   Project,
@@ -113,6 +113,19 @@ export class ProjectStore {
       await atomicJSON(join(this.meta, 'tasks.json'), tasks);
     });
   }
+  async updateTaskDetails(id: string, changes: Pick<Partial<Task>, 'name' | 'modelId'>) {
+    return this.serial(async () => {
+      const tasks = await this.tasks();
+      const task = tasks.find((t) => t.id === id);
+      if (!task) throw new Error('会话不存在');
+      if (changes.name !== undefined && !changes.name.trim()) throw new Error('请输入有效的会话名称');
+      if (task.status === 'running') throw new Error('会话运行结束后可以修改');
+      if (changes.name !== undefined) task.name = changes.name.trim().slice(0, 100);
+      if ('modelId' in changes) task.modelId = changes.modelId;
+      await atomicJSON(join(this.meta, 'tasks.json'), tasks);
+      return task;
+    });
+  }
   async snapshot(revision: number) {
     return (await readJSON<{ project: Project }>(this.snapshotPath(revision))).project;
   }
@@ -188,6 +201,8 @@ export class ProjectStore {
   }
 }
 export class Library {
+  private stores = new Map<string, ProjectStore>();
+  private indexWrite: Promise<unknown> = Promise.resolve();
   constructor(readonly root: string) {}
   private get index() {
     return join(this.root, 'projects.json');
@@ -196,15 +211,21 @@ export class Library {
     await mkdir(this.root, { recursive: true });
     return readJSON(this.index, []);
   }
-  async remember(store: ProjectStore) {
-    const p = await store.project();
-    const list = await this.list();
-    const next = [
-      { id: p.id, name: p.name, path: store.path, updatedAt: p.updatedAt },
-      ...list.filter((x) => x.id !== p.id),
-    ];
-    await atomicJSON(this.index, next);
-    return next;
+  remember(store: ProjectStore, activate = true) {
+    const operation = this.indexWrite.then(async () => {
+      const project = await store.project();
+      const items = await this.list();
+      const entry = { id: project.id, name: project.name, path: store.path, updatedAt: project.updatedAt };
+      const exists = items.some((item) => item.id === project.id);
+      const next =
+        activate || !exists
+          ? [entry, ...items.filter((item) => item.id !== project.id)]
+          : items.map((item) => (item.id === project.id ? entry : item));
+      await atomicJSON(this.index, next);
+      return next;
+    });
+    this.indexWrite = operation.catch(() => {});
+    return operation;
   }
   async create(name: string, baseDir?: string) {
     const p = newProject(name);
@@ -214,12 +235,22 @@ export class Library {
     );
     const store = new ProjectStore(path);
     await store.init(p);
+    this.stores.set(store.path, store);
     await this.remember(store);
     return store;
   }
-  async open(path: string) {
-    const store = new ProjectStore(path);
+  async resolveStore(path: string) {
+    const key = resolve(path);
+    let store = this.stores.get(key);
+    if (!store) {
+      store = new ProjectStore(key);
+      this.stores.set(key, store);
+    }
     await store.project();
+    return store;
+  }
+  async open(path: string) {
+    const store = await this.resolveStore(path);
     await this.remember(store);
     return store;
   }

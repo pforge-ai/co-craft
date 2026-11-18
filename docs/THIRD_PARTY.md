@@ -16,3 +16,9 @@
 CoCraft 内置海岸/沙丘/夜色 SVG、图标和合成氛围音为本轮原创，不是远程素材下载。macOS 本地配音调用用户系统已安装的声音。
 
 包体没有打包用户当前的 Chrome。渲染优先寻找系统 Chrome/Chromium；缺失时由 Remotion 下载官方渲染浏览器到应用缓存。
+
+## 0.2 新增资源
+
+会话文本使用 MIT 许可的 react-markdown 与 remark-gfm。三张随附摄影由 ImageGen 为 CoCraft 生成，四段声音来自随仓库提供的双声道合成源码。模板与 Signature 素材包的许可随清单保存。用户可从素材详情查看来源和适用许可。[随附摄影和音效许可](../resources/public/studio/LICENSE.md) · [素材包许可](../resources/packs/studio-signature/LICENSE.md)
+
+本地发布使用 ad-hoc 签名，产物经过 `codesign --verify --deep --strict`。正式外部分发需使用相应的 Developer ID、Apple 公证及第三方许可。

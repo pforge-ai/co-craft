@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, LoaderCircle } from 'lucide-react';
+import { BrandMark } from './BrandMark';
 export function IconButton({
   label,
   children,
@@ -35,12 +36,14 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  className = '',
 }: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
   onClose: () => void;
   wide?: boolean;
+  className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -79,7 +82,7 @@ export function Modal({
     >
       <div
         ref={ref}
-        className={`modal ${wide ? 'wide' : ''}`}
+        className={`modal ${wide ? 'wide' : ''} ${className}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -161,13 +164,6 @@ export function Field({
   );
 }
 export const Spinner = () => <LoaderCircle className="spin" size={15} />;
-export function Mark({ small = false }: { small?: boolean }) {
-  return (
-    <span className={`cocraft-mark ${small ? 'small' : ''}`} aria-hidden="true">
-      <i />
-      <i />
-      <i />
-      <i />
-    </span>
-  );
+export function Mark({small=false}:{small?:boolean}) {
+  return <BrandMark size={small ? 16 : 32} tone="accent" />;
 }

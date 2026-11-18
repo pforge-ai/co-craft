@@ -1,3 +1,5 @@
+import { PresetContent } from './Presets';
+import { getPreset } from '../core/presets';
 import React, { useMemo } from 'react';
 import * as Remotion from 'remotion';
 import * as JSXRuntime from 'react/jsx-runtime';
@@ -190,6 +192,7 @@ function Code({
 function Content({ clip, project, mediaOrigin }: { clip: Clip; project: Project; mediaOrigin: string }) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  if (getPreset(String(clip.props.presetId || ''))) return <PresetContent clip={clip} />;
   if (clip.kind === 'title' || clip.kind === 'caption') return <Title clip={clip} />;
   if (clip.kind === 'shape') return <Background clip={clip} />;
   if (clip.kind === 'code') {
@@ -212,6 +215,7 @@ function Content({ clip, project, mediaOrigin }: { clip: Clip; project: Project;
   const style: React.CSSProperties = {
     width: '100%',
     height: '100%',
+    objectPosition: `${Math.max(0, Math.min(100, Number(clip.props.focalX ?? 50)))}% ${Math.max(0, Math.min(100, Number(clip.props.focalY ?? 50)))}%`,
     objectFit: clip.props.fit || 'cover',
     transform: `translate(${Number(clip.props.x || 0)}px,${Number(clip.props.y || 0)}px) scale(${Number(clip.props.scale || 1) * (clip.kind === 'image' ? motion : 1)})`,
     opacity: Number(clip.props.opacity ?? 1),
@@ -234,7 +238,9 @@ export function Film({ project, sequenceId, mediaOrigin }: FilmProps) {
   return (
     <AbsoluteFill style={{ background: sequence.background }}>
       {[...sequence.clips]
-        .sort((a, b) => layers[a.track] - layers[b.track] || a.start - b.start)
+        .sort(
+          (a, b) => layers[a.track] - layers[b.track] || (a.layer ?? 0) - (b.layer ?? 0) || a.start - b.start,
+        )
         .map((clip) => (
           <Sequence
             key={clip.id}

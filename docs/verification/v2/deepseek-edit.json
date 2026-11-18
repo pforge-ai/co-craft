@@ -1,0 +1,40 @@
+{
+  "verifiedAt": "2026-11-18T00:29:52.761Z",
+  "model": "deepseek-flash",
+  "version": "0.2.0",
+  "prompt": "在当前主片的第 8 秒加入一条持续 3 秒的动态角标，主文案为「现场录音」，用内置可编辑模板制作。请读取工程和素材目录并直接发布到时间线，只新增这一个片段，保留其他片段和竖版。完成后说明实际时间与模板。",
+  "before": 0,
+  "after": 1,
+  "clip": {
+    "title": "聚焦 · 信息注释",
+    "start": 240,
+    "duration": 90,
+    "fps": 30,
+    "preset": "focus-callout",
+    "text": "现场录音"
+  },
+  "tools": [
+    "read",
+    "read_project",
+    "read",
+    "read_project",
+    "list_presets",
+    "list_presets",
+    "bash",
+    "list_presets",
+    "list_presets",
+    "bash",
+    "bash",
+    "bash",
+    "prepare_preset",
+    "prepare_preset",
+    "publish_edit",
+    "publish_edit",
+    "preview_frame",
+    "preview_frame",
+    "bash",
+    "bash"
+  ],
+  "response": "我先读取技能文档和当前工程状态。已发布到横版主片（revision 1），只新增了一个片段。\n\n**实际时间**\n- 序列：`seq_af3bdfe7-287`「横版 · 相位之间」1920×1080 / 30 fps\n- 位置：第 240 帧起（= 8.000 s），时长 90 帧（= 3.000 s），即 8.000 s – 11.000 s，覆盖到第 330 帧\n- 轨道：overlay，名称「聚焦 · 信息注释」，clip id `clip_3d65f302-dae`，未锁定\n\n**模板**\n- 内置可编辑模板 `focus-callout`「聚焦 · 信息注释」（CoCraft Originals，CC0-1.0，原默认 5 s，本次改为 3 s）\n- 参数：主文案「现场录音」，补充文案留空，强调色改为工程暖色 `#f4af78`，底色保持 `transparent`，以便叠加在波形画面上不挡画面。\n\n**未改动**\n- 横版其余 7 个片段（四段叙事、两段摄影、音轨）全部保留；竖版 `seq_ff3ff4cc-53b` 完全未动。\n\n**需要注意**\n- 该角标 8–11 s 与「错开半周」段落（270 帧 = 9 s 开始）在 overlay 轨道上有 270–330 帧的重叠，后入的段落可能压住角标一段时间。按你的要求我没有调整它；若需要避开，可把角标提前到 240–269（约 1 s）或改为 8.0–9.0 s。\n- 视觉校验未完成：`preview_frame` 返回“请在「设置 → 用途默认值」中选择「画面理解」的模型”，因此我没有实际看到渲染帧。配置好后可用 `preview_frame(seq_af3bdfe7-287, 288)` 复查角标位置与可读性。",
+  "seconds": 50
+}

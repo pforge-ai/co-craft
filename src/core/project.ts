@@ -115,6 +115,7 @@ export function validateProject(p: Project): void {
         c.sourceIn < 0
       )
         throw new Error('片段时间必须是有效帧数');
+      if (c.layer !== undefined && !Number.isSafeInteger(c.layer)) throw new Error('片段图层序号无效');
       if (c.assetId && !assets.has(c.assetId)) throw new Error('引用的素材不存在');
       if (['video', 'audio', 'image'].includes(c.kind) && !c.assetId) throw new Error('媒体片段缺少素材');
       if (c.kind === 'code' && (!c.componentId || !components.has(c.componentId)))
@@ -142,7 +143,7 @@ export function applyOperations(
   };
   for (const op of operations) {
     if (op.type === 'updateProject') {
-      only(op.changes, ['name', 'brief']);
+      only(op.changes, ['name', 'brief', 'modelDefaults']);
       Object.assign(p, op.changes);
       continue;
     }
@@ -172,7 +173,14 @@ export function applyOperations(
       continue;
     }
     if (op.type === 'addClip') {
-      s.clips.push(clone(op.clip));
+      const added = clone(op.clip);
+      if (added.layer === undefined)
+        added.layer =
+          s.clips.reduce(
+            (top, other) => (other.track === added.track ? Math.max(top, other.layer ?? 0) : top),
+            0,
+          ) + 1;
+      s.clips.push(added);
       continue;
     }
     const c = s.clips.find((c) => c.id === op.clipId);
@@ -189,6 +197,7 @@ export function applyOperations(
         'name',
         'kind',
         'track',
+        'layer',
         'start',
         'duration',
         'sourceIn',
@@ -223,6 +232,7 @@ export function splitOperations(sequence: Sequence, clip: Clip, at: number): Edi
       sequenceId: sequence.id,
       clip: {
         ...clone(clip),
+        layer: clip.layer ?? 0,
         id: uid('clip'),
         name: clip.name + ' · 2',
         start: at,

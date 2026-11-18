@@ -191,7 +191,7 @@ a {
 .app {
   height: 100%;
   display: grid;
-  grid-template-columns: 222px minmax(0, 1fr) var(--agent-width, 318px);
+  grid-template-columns: var(--nav-width, 240px) minmax(0, 1fr) var(--agent-width, 318px);
   grid-template-rows: 52px minmax(0, 1fr) 27px;
   grid-template-areas: 'title title title' 'nav main right' 'status status status';
   background: var(--bg);
@@ -202,7 +202,7 @@ a {
   grid-template-areas: 'title title' 'main right' 'status status';
 }
 .app.right-hidden {
-  grid-template-columns: 222px minmax(0, 1fr);
+  grid-template-columns: var(--nav-width, 240px) minmax(0, 1fr);
   grid-template-areas: 'title title' 'nav main' 'status status';
 }
 .app.nav-hidden.right-hidden {
@@ -2888,10 +2888,10 @@ a {
 }
 @media (max-width: 1250px) {
   .app {
-    grid-template-columns: 195px minmax(0, 1fr) var(--agent-width);
+    grid-template-columns: var(--nav-width, 240px) minmax(0, 1fr) var(--agent-width);
   }
   .app.right-hidden {
-    grid-template-columns: 195px minmax(0, 1fr);
+    grid-template-columns: var(--nav-width, 240px) minmax(0, 1fr);
   }
   .sidebar {
     padding-left: 9px;

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "stereo-meter",
+  "name": "立体声电平",
+  "version": "1.0.0",
+  "author": "CoCraft · deepseek-flash",
+  "license": "CC0-1.0",
+  "templates": [
+    {
+      "id": "stereo-meter",
+      "name": "立体声电平表",
+      "entry": "StereoMeter.tsx",
+      "durationSeconds": 3,
+      "defaultProps": {
+        "label": "信号监测",
+        "title": "立体声电平",
+        "caption": "L / R 双通道 · 琥珀为峰值",
+        "accent": "#a9d8c2",
+        "peakColor": "#f4af78",
+        "segments": 20,
+        "durationFrames": 90
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "cocraft",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A video workbench for people and coding agents",
   "type": "module",
@@ -11,8 +11,10 @@
     "start": "electron .",
     "smoke": "tsx scripts/smoke.ts",
     "package": "npm run build && electron-builder --mac dir --arm64",
-    "test:ui": "node scripts/functional-check.mjs",
-    "smoke:agent": "node scripts/agent-smoke.mjs"
+    "test:ui": "node scripts/functional-check-v2.mjs",
+    "smoke:agent": "node scripts/agent-smoke.mjs",
+    "smoke:models": "node scripts/generation-smoke.mjs",
+    "check:materials": "node scripts/material-check.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.5.2",
@@ -25,6 +27,8 @@
     "lucide-react": "^0.468.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "remotion": "4.0.544"
   },
   "devDependencies": {
@@ -57,7 +61,8 @@
         "filter": [
           "public/**/*",
           "skills/**/*",
-          "icon.icns"
+          "icon.icns",
+          "packs/**/*"
         ]
       },
       {
@@ -79,12 +84,13 @@
     "mac": {
       "category": "public.app-category.video",
       "target": "dir",
-      "identity": null,
+      "identity": "-",
       "icon": "resources/icon.icns",
-      "minimumSystemVersion": "15.0"
+      "minimumSystemVersion": "15.0",
+      "hardenedRuntime": false
     },
     "directories": {
-      "output": "release"
+      "output": "release/0.2"
     },
     "asarUnpack": [
       "node_modules/@esbuild/**/*",

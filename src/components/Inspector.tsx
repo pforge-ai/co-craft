@@ -2,6 +2,8 @@ import React from 'react';
 import { Lock, Unlock, ArrowUpRight, Copy, Trash2, Code2, SlidersHorizontal } from 'lucide-react';
 import type { Clip, Sequence, Project, EditOperation } from '../core/types';
 import { newClip, uid, clone } from '../core/project';
+import { PresetControls, ParameterControls } from './ResourceLibrary';
+import { getPreset } from '../core/presets';
 import { Field, IconButton } from './ui';
 export function Inspector({
   clip,
@@ -22,7 +24,7 @@ export function Inspector({
     return (
       <div className="inspector-empty">
         <SlidersHorizontal size={25} />
-        <h3>每一处细节，都能接管。</h3>
+        <h3>片段属性</h3>
         <p>在时间线上选择片段，调整画面、声音与时间。</p>
         <div className="composition-info">
           <span>画幅</span>
@@ -42,6 +44,14 @@ export function Inspector({
   const isText = clip.kind === 'title' || clip.kind === 'caption',
     media = ['image', 'video', 'audio'].includes(clip.kind);
   const component = project.components.find((c) => c.id === clip.componentId);
+  const overlaps = sequence.clips.filter(
+    (other) =>
+      other.id !== clip.id &&
+      other.track === clip.track &&
+      other.start < clip.start + clip.duration &&
+      other.start + other.duration > clip.start,
+  );
+  const preset = getPreset(String(clip.props.presetId || ''));
   return (
     <div className="inspector">
       <div className="inspector-title">
@@ -101,7 +111,21 @@ export function Inspector({
           />
         )}
       </section>
-      {isText && (
+      {preset && (
+        <section>
+          <h4>{preset.name} · 参数</h4>
+          <fieldset disabled={clip.locked} className="preset-inspector">
+            <PresetControls
+              key={clip.id}
+              commitOnBlur
+              presetId={preset.id}
+              values={clip.props}
+              onChange={prop}
+            />
+          </fieldset>
+        </section>
+      )}
+      {!preset && isText && (
         <section>
           <h4>文字</h4>
           <Field
@@ -232,36 +256,47 @@ export function Inspector({
           <h4>
             组件参数 <span className="badge">CODE</span>
           </h4>
-          {Object.entries({ ...component.props, ...clip.props })
-            .filter(([k]) => !['opacity', 'scale', 'fit', 'volume'].includes(k))
-            .map(([k, v]) =>
-              typeof v === 'boolean' ? (
-                <label className="check-field" key={k}>
-                  <input
-                    type="checkbox"
-                    checked={v}
+          {component.pack?.parameters?.length ? (
+            <ParameterControls
+              key={clip.id}
+              parameters={component.pack.parameters}
+              values={{ ...component.props, ...clip.props }}
+              onChange={prop}
+              commitOnBlur
+              disabled={clip.locked}
+            />
+          ) : (
+            Object.entries({ ...component.props, ...clip.props })
+              .filter(([k]) => !['opacity', 'scale', 'fit', 'volume'].includes(k))
+              .map(([k, v]) =>
+                typeof v === 'boolean' ? (
+                  <label className="check-field" key={k}>
+                    <input
+                      type="checkbox"
+                      checked={v}
+                      disabled={clip.locked}
+                      onChange={(e) => prop(k, e.target.checked)}
+                    />
+                    {k}
+                  </label>
+                ) : (
+                  <Field
+                    key={k}
+                    label={k}
+                    value={String(v)}
+                    type={typeof v === 'number' ? 'number' : 'text'}
                     disabled={clip.locked}
-                    onChange={(e) => prop(k, e.target.checked)}
+                    onCommit={(value) => prop(k, typeof v === 'number' ? Number(value) : value)}
                   />
-                  {k}
-                </label>
-              ) : (
-                <Field
-                  key={k}
-                  label={k}
-                  value={String(v)}
-                  type={typeof v === 'number' ? 'number' : 'text'}
-                  disabled={clip.locked}
-                  onCommit={(value) => prop(k, typeof v === 'number' ? Number(value) : value)}
-                />
-              ),
-            )}
+                ),
+              )
+          )}
           <button className="button subtle full" onClick={onCode}>
             <Code2 size={14} /> 查看与编辑源码
           </button>
         </section>
       )}
-      {clip.kind === 'shape' && (
+      {!preset && clip.kind === 'shape' && (
         <section>
           <h4>背景</h4>
           <label className="field">
@@ -286,6 +321,37 @@ export function Inspector({
               onChange={(e) => prop('color', e.target.value)}
             />
           </label>
+        </section>
+      )}
+      {overlaps.length > 0 && clip.kind !== 'audio' && (
+        <section>
+          <h4>同轨叠放顺序</h4>
+          <div className="field-row">
+            <button
+              className="button subtle"
+              disabled={clip.locked}
+              onClick={() =>
+                update(
+                  { layer: Math.max(clip.layer ?? 0, ...overlaps.map((c) => c.layer ?? 0)) + 1 },
+                  '置于最前',
+                )
+              }
+            >
+              置于最前
+            </button>
+            <button
+              className="button subtle"
+              disabled={clip.locked}
+              onClick={() =>
+                update(
+                  { layer: Math.min(clip.layer ?? 0, ...overlaps.map((c) => c.layer ?? 0)) - 1 },
+                  '置于最后',
+                )
+              }
+            >
+              置于最后
+            </button>
+          </div>
         </section>
       )}
       <section className="inspector-actions">

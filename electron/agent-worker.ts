@@ -14,10 +14,12 @@ import { readFile, writeFile, mkdir, realpath, access } from 'node:fs/promises';
 import { resolve, dirname, join, extname } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type { AgentSession, ToolDefinition } from '@earendil-works/pi-coding-agent';
 const port = (process as any).parentPort;
 let session: AgentSession | undefined;
 let stopped = false;
+const earlySteers: string[] = [];
 const pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 const send = (data: unknown) => port.postMessage(data);
 function request(method: string, payload: unknown): Promise<any> {
@@ -32,6 +34,24 @@ const result = (data: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(data) }],
   details: {},
 });
+const optionalText = Type.Optional(Type.String());
+const parameterMap = Type.Optional(
+  Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
+);
+function hostTool(
+  name: string,
+  label: string,
+  description: string,
+  parameters: ReturnType<typeof Type.Object>,
+): ToolDefinition<any, any, any> {
+  return {
+    name,
+    label,
+    description,
+    parameters: parameters as any,
+    execute: async (_id, args) => result(await request(name, args)),
+  };
+}
 async function guard(file: string, roots: string[], write = false) {
   let path = resolve(file),
     probe = path;
@@ -53,6 +73,21 @@ async function guard(file: string, roots: string[], write = false) {
 async function start(data: any) {
   const { cwd, agentDir, skillsPath, settings, sessionPath, sessionDir, prompt, assetPaths } = data;
   stopped = false;
+  // One utility process serves one configured Agent connection, including the SDK's global-fetch transports.
+  const origin = new URL(settings.baseUrl).origin;
+  const http = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin !== origin) throw new Error('模型请求目标与所选提供商不同');
+    const response = await http(input, { ...init, redirect: 'error', credentials: 'omit' });
+    if (response.ok) return response;
+    const message = (await response.text()).replaceAll(settings.apiKey, '[密钥已隐藏]');
+    return new Response(message, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: { 'Content-Type': response.headers.get('Content-Type') || 'text/plain' },
+    });
+  };
   await mkdir(agentDir, { recursive: true });
   await mkdir(join(cwd, '.tmp'), { recursive: true });
   const writeRoots = [await realpath(cwd)],
@@ -147,14 +182,96 @@ async function start(data: any) {
           await request('import_asset', { ...args, path: await guard(resolve(cwd, args.path), writeRoots) }),
         ),
     },
+    hostTool(
+      'list_models',
+      '查看创作模型',
+      'List the configured models, their capabilities, connection status, and project defaults. Use a returned model id to override a default for one job.',
+      Type.Object({}),
+    ),
+    hostTool(
+      'list_studio_media',
+      '浏览随附素材',
+      'List bundled photography and audio that can be used offline, with dimensions, duration and license.',
+      Type.Object({ kind: Type.Optional(Type.Union([Type.Literal('image'), Type.Literal('audio')])) }),
+    ),
+    hostTool(
+      'prepare_studio_media',
+      '准备随附素材',
+      'Stage a bundled photo or sound by its catalog id. Returns an asset for addAsset and addClip in the next edit.',
+      Type.Object({ id: Type.String() }),
+    ),
+    hostTool(
+      'list_presets',
+      '浏览素材预设',
+      'Find a built-in editable motion preset by purpose and see its parameter schema, default props, duration and license.',
+      Type.Object({
+        category: Type.Optional(
+          Type.Union([
+            Type.Literal('titles'),
+            Type.Literal('captions'),
+            Type.Literal('graphics'),
+            Type.Literal('backgrounds'),
+          ]),
+        ),
+      }),
+    ),
+    hostTool(
+      'prepare_preset',
+      '准备预设片段',
+      'Prepare an editable preset by ID with overrides and integer frame timing. The returned operation can be included in publish_edit.',
+      Type.Object({
+        presetId: Type.String(),
+        sequenceId: optionalText,
+        start: Type.Optional(Type.Integer({ minimum: 0 })),
+        duration: Type.Optional(Type.Integer({ minimum: 1 })),
+        props: parameterMap,
+      }),
+    ),
+    hostTool(
+      'generate_media',
+      '生成创作素材',
+      'Generate an image, video or speech using the selected media model. Waits for the provider and returns a staged asset. To adopt, publish addAsset with its ID and addClip in one group. A remote job can be billable. Use a project image ID as optional reference.',
+      Type.Object({
+        use: Type.Union([Type.Literal('image'), Type.Literal('video'), Type.Literal('speech')]),
+        prompt: Type.String(),
+        modelId: optionalText,
+        referenceAssetId: optionalText,
+        size: optionalText,
+        seconds: Type.Optional(Type.Integer({ minimum: 1 })),
+        voice: optionalText,
+        parameters: parameterMap,
+      }),
+    ),
+    hostTool(
+      'transcribe_asset',
+      '转录项目素材',
+      'Transcribe speech from a project or staged asset. Returns text and only the timestamped segments actually supplied by the transcription provider, in seconds relative to source media.',
+      Type.Object({
+        assetId: Type.String(),
+        modelId: optionalText,
+        language: optionalText,
+        prompt: optionalText,
+      }),
+    ),
+    hostTool(
+      'inspect_media',
+      '分析素材画面',
+      'Ask the selected vision model to inspect an image or sampled video frames and return text. Works with text-only editing models. Accepts project and staged asset IDs.',
+      Type.Object({ assetId: Type.String(), modelId: optionalText, prompt: optionalText }),
+    ),
     {
       name: 'preview_frame',
       label: '检查预览帧',
       description:
-        'Render a still of a published sequence at an integer frame. Returns image data for visual inspection.',
-      parameters: Type.Object({ sequenceId: Type.String(), frame: Type.Number() }) as any,
+        'Render a still of a published sequence at an integer frame. Image-capable agents receive the frame. Text-only agents receive an analysis by the configured vision model.',
+      parameters: Type.Object({
+        sequenceId: Type.String(),
+        frame: Type.Integer({ minimum: 0 }),
+        prompt: optionalText,
+      }) as any,
       execute: async (_id, args) => {
         const response = await request('preview_frame', args);
+        if (response.text) return result(response);
         return {
           content: [{ type: 'image' as const, data: response.data, mimeType: 'image/png' }],
           details: {},
@@ -220,32 +337,33 @@ async function start(data: any) {
     modelsPath: null,
     refreshOnCreate: false,
   });
-  const provider = settings.provider;
-  if (settings.baseUrl || !runtime.getModel(provider, settings.model)) {
-    const baseUrl =
-      settings.baseUrl ||
-      (provider === 'deepseek'
-        ? 'https://api.deepseek.com/v1'
-        : provider === 'anthropic'
-          ? 'https://api.anthropic.com'
-          : 'https://api.openai.com/v1');
-    runtime.registerProvider(provider, {
-      baseUrl,
-      api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
-      apiKey: settings.apiKey,
-      models: [
-        {
-          id: settings.model,
-          name: settings.model,
-          reasoning: false,
-          input: ['text', 'image'],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 128000,
-          maxTokens: 16000,
-        },
-      ],
-    } as any);
-  } else await runtime.setRuntimeApiKey(provider, settings.apiKey);
+  const provider =
+    'cocraft-' +
+    createHash('sha256')
+      .update(settings.provider + settings.baseUrl)
+      .digest('hex')
+      .slice(0, 16);
+  runtime.registerProvider(provider, {
+    baseUrl: settings.baseUrl,
+    api:
+      settings.provider === 'anthropic'
+        ? 'anthropic-messages'
+        : settings.provider === 'google'
+          ? 'google-generative-ai'
+          : 'openai-completions',
+    models: [
+      {
+        id: settings.model,
+        name: settings.model,
+        reasoning: false,
+        input: settings.modelInput,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: settings.contextWindow,
+        maxTokens: settings.maxTokens,
+      },
+    ],
+  });
+  await runtime.setRuntimeApiKey(provider, settings.apiKey);
   const model = runtime.getModel(provider, settings.model);
   if (!model) throw new Error('未找到所选模型，请检查设置');
   const settingsManager = SettingsManager.inMemory({
@@ -262,7 +380,7 @@ async function start(data: any) {
     noThemes: true,
     noContextFiles: true,
     appendSystemPrompt: [
-      `You are CoCraft, a professional video editing and coding collaborator. The user remains in control. Read the cocraft-editing Skill before editing. Your cwd is a staging workspace. Read and write tools are scoped to this workspace and explicitly shared assets. Publish through publish_edit only. Locked clips are immutable. Read the latest project revision before every edit. Use Chinese. ${settings.allowShell ? `The bash tool is enabled with filesystem writes limited to the workspace. Network access is ${settings.allowNetwork ? 'enabled by the user' : 'disabled'}.` : 'Shell execution is disabled; file editing, compilation, media inspection, and publishing are available.'} Current task context: ${data.context}`,
+      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'} Current task context: ${data.context}`,
     ],
   });
   await loader.reload();
@@ -293,7 +411,9 @@ async function start(data: any) {
     if (event.type === 'message_end' && event.message?.role === 'assistant' && event.message?.errorMessage)
       send({ type: 'error', text: event.message.errorMessage });
   });
-  await session.prompt(prompt);
+  const response = session.prompt(prompt);
+  for (const message of earlySteers.splice(0)) await session.steer(message);
+  await response;
   send({ type: 'done' });
   session.dispose();
 }
@@ -308,13 +428,18 @@ port.on('message', async ({ data }: any) => {
   }
   if (data.type === 'stop') {
     stopped = true;
+    for (const call of pending.values()) call.reject(new Error('运行已停止'));
+    pending.clear();
     await session?.abort();
     session?.dispose();
     send({ type: 'done' });
     return;
   }
   if (data.type === 'steer') {
-    await session?.steer(data.text);
+    if (!stopped) {
+      if (session) await session.steer(data.text);
+      else earlySteers.push(data.text);
+    }
     return;
   }
   if (data.type === 'start')

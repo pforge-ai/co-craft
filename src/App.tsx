@@ -1,4 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { pointerDrag } from './lib/pointerDrag';
+import { ResourceLibrary } from './components/ResourceLibrary';
+import { GenerationDialog, type GenerationDraft } from './components/GenerationDialog';
+import { BrandMark } from './components/BrandMark';
+import { selectedModel } from './core/models';
+import { createPresetClip } from './core/presets';
+import { Markdown } from './components/Markdown';
 import {
   PanelLeft,
   PanelRight,
@@ -89,7 +96,9 @@ type Dialog =
   | 'templates'
   | 'code'
   | 'stock'
-  | 'voice'
+  | 'generation'
+  | 'job-result'
+  | 'rename-task'
   | 'sequence'
   | null;
 const api = <T,>(method: string, payload?: unknown) => window.cocraft.call<T>(method, payload);
@@ -108,6 +117,7 @@ export function App() {
     [jobs, setJobs] = useState<Job[]>([]);
   const [sequenceId, setSequenceId] = useState(''),
     [taskId, setTaskId] = useState(''),
+    [connectingTask, setConnectingTask] = useState(''),
     [selected, setSelected] = useState<string | null>(null),
     [frame, setFrame] = useState(70),
     [playing, setPlaying] = useState(false),
@@ -129,7 +139,8 @@ export function App() {
     [snap, setSnap] = useState(true),
     [draggingFile, setDraggingFile] = useState(false),
     [timelineHeight, setTimelineHeight] = useState(Number(localStorage.getItem('cc-timeline-height')) || 278),
-    [agentWidth, setAgentWidth] = useState(Number(localStorage.getItem('cc-agent-width')) || 318);
+    [agentWidth, setAgentWidth] = useState(Number(localStorage.getItem('cc-agent-width')) || 350),
+    [navWidth, setNavWidth] = useState(Number(localStorage.getItem('cc-nav-width')) || 240);
   const [prompt, setPrompt] = useState(''),
     [scope, setScope] = useState<Clip | null>(null),
     [stream, setStream] = useState<Record<string, string>>({}),
@@ -138,9 +149,23 @@ export function App() {
     [formName, setFormName] = useState(''),
     [command, setCommand] = useState(''),
     [codeComponent, setCodeComponent] = useState<CodeComponent | undefined>(),
-    [voiceText, setVoiceText] = useState('沿着海岸，慢一点。把时间，交给风。'),
+    [generationDraft, setGenerationDraft] = useState<GenerationDraft>({ use: 'image' }),
+    [settingsTab, setSettingsTab] = useState<string | undefined>(),
+    [returnToStudio, setReturnToStudio] = useState(false),
+    [modelOverride, setModelOverride] = useState(''),
+    [resultJob, setResultJob] = useState<Job | undefined>(),
+    [resultClip, setResultClip] = useState(''),
     [seqFormat, setSeqFormat] = useState('9:16'),
     [assetQuery, setAssetQuery] = useState('');
+  const sending = useRef(false);
+  const appRef = useRef<HTMLDivElement>(null);
+  const dragCleanup = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      dragCleanup.current?.();
+    },
+    [],
+  );
   const previewState = useRef<{ project: Project | null; sequenceId: string; mediaOrigin: string }>({
     project: null,
     sequenceId: '',
@@ -210,15 +235,17 @@ export function App() {
   }, [post, pause]);
   const edit = useCallback(
     (name: string, operations: EditOperation[]) => {
+      const projectId = envRef.current?.project.id;
       const next = queue.current.then(async () => {
         const current = envRef.current;
-        if (!current) throw new Error('工程尚未加载');
+        if (!current || current.project.id !== projectId) throw new Error('工程已经切换，请在当前工程重试');
         const result = await api<ProjectEnvelope>('project.edit', {
+          projectId,
           baseRevision: current.project.revision,
           name,
           operations,
         });
-        accept(result);
+        if (envRef.current?.project.id === projectId) accept(result);
       });
       queue.current = next.catch((e) => {
         notify(errorText(e), true);
@@ -237,13 +264,47 @@ export function App() {
     setSelected(null);
     setScope(null);
     setDoc('film');
+    setModelOverride('');
+    setPrompt('');
+    setJobsOpen(false);
+    setResultJob(undefined);
+    setGenerationDraft({ use: 'image' });
     setBriefDraft(next.project.brief);
+    void api<BootData['skills']>('skills.list').then((skills) => setBoot((b) => (b ? { ...b, skills } : b)));
+  };
+  const openSettings = (tab?: string, fromStudio = false) => {
+    setSettingsTab(tab);
+    setReturnToStudio(fromStudio);
+    setDialog('settings');
+  };
+  const openStudio = (use: GenerationDraft['use'] = 'image', assetId?: string) => {
+    setGenerationDraft({ use, assetId });
+    setDialog('generation');
   };
   const openDialog = (name: Dialog) => {
+    if (name === 'new-task') {
+      setDialog(null);
+      setTaskId('');
+      setPrompt('');
+      setScope(null);
+      setRight('agent');
+      setShowRight(true);
+      requestAnimationFrame(() => promptRef.current?.focus());
+      return;
+    }
     setFormName('');
     setCommand('');
     setDialog(name);
   };
+  useEffect(() => {
+    const reset = () => {
+      setNavWidth(240);
+      setAgentWidth(350);
+      setTimelineHeight(278);
+    };
+    window.addEventListener('cocraft:reset-layout', reset);
+    return () => window.removeEventListener('cocraft:reset-layout', reset);
+  }, []);
   const refreshSettings = async (s: Partial<Settings>) => {
     const next = await api<Settings>('settings.save', s);
     setSettings(next);
@@ -281,6 +342,7 @@ export function App() {
   }, []);
   useEffect(() => {
     if (!settings) return;
+    document.documentElement.dataset.glass = settings.glass ? 'on' : 'off';
     document.documentElement.dataset.theme =
       settings.theme === 'system'
         ? matchMedia('(prefers-color-scheme: dark)').matches
@@ -294,7 +356,7 @@ export function App() {
     };
     media.addEventListener('change', change);
     return () => media.removeEventListener('change', change);
-  }, [settings?.theme]);
+  }, [settings?.theme, settings?.glass]);
   useEffect(() => {
     if (env && !playing) setPreviewProject(env.project);
   }, [env?.project.revision, env?.project.id, playing]);
@@ -351,6 +413,9 @@ export function App() {
     task = env?.tasks.find((t) => t.id === taskId),
     duration = sequence ? durationOf(sequence) : 30;
   useEffect(() => {
+    setModelOverride(task?.modelId || '');
+  }, [taskId, task?.modelId, project?.id]);
+  useEffect(() => {
     if (project && !project.sequences.some((s) => s.id === sequenceId)) {
       pause();
       setSequenceId(project.sequences[0].id);
@@ -383,24 +448,38 @@ export function App() {
     await edit('添加素材到时间线', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
     selectClip(c.id);
   };
-  const addBuiltin = async (kind: Clip['kind'], template = 'editorial') => {
+  const addPreset = async (id: string, overrides?: Record<string, unknown>) => {
     if (!sequence) return;
-    const c = newClip(kind, frame);
-    c.props.template = template;
-    if (template === 'lower-third') {
-      c.props.text = '人物姓名';
-      c.props.subtitle = '身份 · 介绍';
-      c.props.position = 'bottom';
-      c.props.align = 'left';
-      c.props.fontSize = 72;
-    }
-    if (template === 'clean') {
-      c.props.text = '保持好奇，继续出发。';
-      c.props.fontSize = 84;
-    }
+    const c = createPresetClip(id, frame, sequence.fps, overrides);
     await edit('添加' + c.name, [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
     selectClip(c.id);
-    setDialog(null);
+    setShowRight(true);
+    notify('已添加到时间线');
+  };
+  const addCaption = async () => {
+    if (!sequence) return;
+    const c = newClip('caption', frame);
+    c.name = '对白字幕';
+    c.props.text = '输入字幕';
+    await edit('添加字幕', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
+    selectClip(c.id);
+    setShowRight(true);
+  };
+  const loadPack = async (example = false) => {
+    const next = await api<ProjectEnvelope | null>('packs.import', { example });
+    if (next) {
+      accept(next);
+      notify('素材包已载入项目');
+    }
+  };
+  const openDemo = () =>
+    work('打开示例工程', async () => {
+      await switchProject(await api<ProjectEnvelope>('project.demo'));
+      setDialog(null);
+    });
+  const askForMotion = (text: string) => {
+    openDialog('new-task');
+    setPrompt(text);
   };
   const importMedia = () =>
     work('正在导入素材', async () => {
@@ -439,39 +518,66 @@ export function App() {
       promptRef.current?.focus();
     }
   };
+  const chatModel =
+    settings &&
+    (settings.models.find((m) => m.id === modelOverride && m.capabilities.includes('agent')) ||
+      selectedModel(settings, 'agent', project?.modelDefaults));
+  const chatProvider = settings?.providers.find((p) => p.id === chatModel?.providerId);
+  const chatConnected = !!chatProvider && (!chatProvider.requiresKey || chatProvider.hasApiKey);
   const send = async () => {
-    if (!prompt.trim() || !sequence || !env) return;
-    if (!settings?.hasApiKey) {
-      setDialog('settings');
+    if (sending.current || !prompt.trim() || !sequence || !env) return;
+    if (!chatConnected && task?.status !== 'running') {
+      openSettings(
+        chatModel
+          ? 'providers'
+          : settings?.models.some((m) => m.capabilities.includes('agent'))
+            ? 'defaults'
+            : 'providers',
+      );
       return;
     }
     const text = prompt.trim();
-    await work('提交给 Agent', async () => {
-      let currentTask = task;
-      if (!currentTask) {
-        currentTask = await api<Task>('tasks.create', { name: text.slice(0, 18), sequenceId: sequence.id });
-        setTaskId(currentTask.id);
-        accept({ ...envRef.current!, tasks: [...envRef.current!.tasks, currentTask] });
-      }
-      setStream((s) => ({ ...s, [currentTask!.id]: '' }));
-      await api('agent.start', {
-        taskId: currentTask.id,
-        prompt: text,
-        context: JSON.stringify({
-          sequenceId: sequence.id,
-          frame,
-          reference: scope
-            ? { clipId: scope.id, name: scope.name, start: scope.start, duration: scope.duration }
-            : undefined,
-        }),
+    sending.current = true;
+    try {
+      await work('提交给 Agent', async () => {
+        let currentTask = task;
+        if (!currentTask) {
+          currentTask = await api<Task>('tasks.create', {
+            modelId: modelOverride || undefined,
+            name: text
+              .replace(/^[#\s]+/, '')
+              .replace(/\s+/g, ' ')
+              .slice(0, 24),
+            sequenceId: sequence.id,
+          });
+          setTaskId(currentTask.id);
+          accept({ ...envRef.current!, tasks: [...envRef.current!.tasks, currentTask] });
+        }
+        if (currentTask.status !== 'running') setConnectingTask(currentTask.id);
+        setStream((s) => ({ ...s, [currentTask!.id]: '' }));
+        await api('agent.start', {
+          taskId: currentTask.id,
+          prompt: text,
+          modelId: chatModel?.id,
+          context: JSON.stringify({
+            sequenceId: sequence.id,
+            frame,
+            reference: scope
+              ? { clipId: scope.id, name: scope.name, start: scope.start, duration: scope.duration }
+              : undefined,
+          }),
+        });
+        setPrompt((previous) => (previous.trim() === text ? '' : previous));
       });
-      setPrompt('');
-    });
+    } finally {
+      setConnectingTask('');
+      sending.current = false;
+    }
   };
   const commands = [
     { name: '导入素材', detail: '视频、音频、图片', key: '⌘ I', action: () => void importMedia() },
-    { name: '添加标题', detail: '可编辑的动态文字', key: 'T', action: () => void addBuiltin('title') },
-    { name: '添加字幕', detail: '文字与时间同步', key: '', action: () => void addBuiltin('caption') },
+    { name: '添加标题', detail: '可编辑的动态文字', key: 'T', action: () => setDialog('templates') },
+    { name: '添加字幕', detail: '文字与时间同步', key: '', action: () => void addCaption() },
     {
       name: '导入 SRT 字幕',
       detail: '从文稿继续剪辑',
@@ -483,15 +589,27 @@ export function App() {
         }),
     },
     {
-      name: '新建可编程画面',
-      detail: 'React + Remotion',
+      name: '让 Agent 新建画面',
+      detail: '根据描述生成可编辑组件',
       key: '',
-      action: () => {
-        setCodeComponent(undefined);
-        setDialog('code');
-      },
+      action: () => askForMotion('为当前成片设计一段可编辑的动态画面。'),
     },
-    { name: '生成配音', detail: '使用本机 macOS 语音', key: '', action: () => setDialog('voice') },
+    {
+      name: '动态素材库',
+      detail: '标题、字幕、信息图形与背景',
+      key: '',
+      action: () => setDialog('templates'),
+    },
+    { name: '新建示例工程', detail: '相位之间 · 横版与竖版', key: '', action: () => void openDemo() },
+    { name: '生成图像或视频', detail: '素材工作室', key: '', action: () => openStudio('image') },
+    { name: '生成配音', detail: '本机或云端语音模型', key: '', action: () => openStudio('speech') },
+    {
+      name: '转录素材',
+      detail: '识别音频并生成字幕',
+      key: '',
+      action: () => openStudio('transcription', clip?.assetId),
+    },
+    { name: '分析画面', detail: '多模态模型', key: '', action: () => openStudio('vision', clip?.assetId) },
     { name: '搜索素材', detail: 'Pexels 视频', key: '', action: () => setDialog('stock') },
     {
       name: '创建竖版 / 多平台版本',
@@ -525,7 +643,7 @@ export function App() {
         setShowRight((v) => !v);
       },
     },
-    { name: '设置', detail: '模型、外观与 Skills', key: '⌘ ,', action: () => setDialog('settings') },
+    { name: '设置', detail: '模型、外观与 Skills', key: '⌘ ,', action: () => openSettings() },
   ];
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -534,6 +652,11 @@ export function App() {
       if (mod && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         openDialog('command');
+        return;
+      }
+      if (mod && e.key === ',') {
+        e.preventDefault();
+        openSettings();
         return;
       }
       if (dialog || input) return;
@@ -569,7 +692,8 @@ export function App() {
     };
     window.addEventListener('keydown', key);
     const off = window.cocraft.on('menu', (name: string) => {
-      if (name === 'settings') setDialog('settings');
+      if (name === 'settings') openSettings();
+      if (name === 'demo-project') void openDemo();
       if (name === 'command') openDialog('command');
       if (name === 'new-project') openDialog('new-project');
       if (name === 'open-project')
@@ -593,26 +717,77 @@ export function App() {
       off();
     };
   }, [env, sequenceId, selected, dialog, playing, settings]);
-  function resize(e: React.PointerEvent, axis: 'timeline' | 'agent') {
-    e.preventDefault();
+  function resize(e: React.PointerEvent<HTMLElement>, axis: 'timeline' | 'agent' | 'nav') {
+    dragCleanup.current?.();
     const x = e.clientX,
-      y = e.clientY,
-      start = axis === 'timeline' ? timelineHeight : agentWidth;
+      y = e.clientY;
+    const navSpace = showNav
+      ? appRef.current?.querySelector('.sidebar')?.getBoundingClientRect().width || navWidth
+      : 0;
+    const agentSpace = showRight
+      ? appRef.current?.querySelector('.right-panel')?.getBoundingClientRect().width || agentWidth
+      : 0;
+    const start =
+      appRef.current
+        ?.querySelector(axis === 'timeline' ? '.editor-panel' : axis === 'nav' ? '.sidebar' : '.right-panel')
+        ?.getBoundingClientRect()[axis === 'timeline' ? 'height' : 'width'] ||
+      (axis === 'timeline' ? timelineHeight : axis === 'nav' ? navWidth : agentWidth);
+    const key = axis === 'timeline' ? '--timeline-height' : axis === 'nav' ? '--nav-width' : '--agent-width';
     let value = start;
-    const move = (ev: PointerEvent) => {
-      value =
-        axis === 'timeline'
-          ? Math.max(190, Math.min(450, start + y - ev.clientY))
-          : Math.max(278, Math.min(450, start + x - ev.clientX));
-      axis === 'timeline' ? setTimelineHeight(value) : setAgentWidth(value);
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      localStorage.setItem(axis === 'timeline' ? 'cc-timeline-height' : 'cc-agent-width', String(value));
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    dragCleanup.current = pointerDrag(
+      e,
+      (px, py) => {
+        const width = appRef.current?.clientWidth || window.innerWidth;
+        value =
+          axis === 'timeline'
+            ? Math.max(180, Math.min(window.innerHeight - 330, start + y - py))
+            : axis === 'nav'
+              ? Math.max(190, Math.min(420, width - agentSpace - 420, start + px - x))
+              : Math.max(290, Math.min(620, width - navSpace - 420, start + x - px));
+        appRef.current?.style.setProperty(key, `${Math.round(value)}px`);
+      },
+      () => {
+        value = Math.round(value);
+        (axis === 'timeline' ? setTimelineHeight : axis === 'nav' ? setNavWidth : setAgentWidth)(value);
+        localStorage.setItem(
+          axis === 'timeline' ? 'cc-timeline-height' : axis === 'nav' ? 'cc-nav-width' : 'cc-agent-width',
+          String(value),
+        );
+        dragCleanup.current = null;
+      },
+      axis === 'timeline' ? 'row-resize' : 'col-resize',
+    );
+  }
+  function keyboardResize(e: React.KeyboardEvent<HTMLElement>, axis: 'nav' | 'agent' | 'timeline') {
+    const positive = axis === 'nav' ? 'ArrowRight' : axis === 'agent' ? 'ArrowLeft' : 'ArrowUp';
+    const negative = axis === 'nav' ? 'ArrowLeft' : axis === 'agent' ? 'ArrowRight' : 'ArrowDown';
+    if (e.key !== positive && e.key !== negative && e.key !== 'Home') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const panel = e.currentTarget.parentElement!;
+    const current =
+      axis === 'timeline' ? panel.getBoundingClientRect().height : panel.getBoundingClientRect().width;
+    const opposite =
+      appRef.current?.querySelector(axis === 'nav' ? '.right-panel' : '.sidebar')?.getBoundingClientRect()
+        .width || 0;
+    const max =
+      axis === 'timeline'
+        ? window.innerHeight - 330
+        : Math.min(axis === 'nav' ? 420 : 620, window.innerWidth - opposite - 420);
+    const min = axis === 'nav' ? 190 : axis === 'agent' ? 290 : 180;
+    const value =
+      e.key === 'Home'
+        ? axis === 'nav'
+          ? 240
+          : axis === 'agent'
+            ? 350
+            : 278
+        : Math.max(min, Math.min(max, current + (e.key === positive ? 1 : -1) * (e.shiftKey ? 48 : 12)));
+    (axis === 'nav' ? setNavWidth : axis === 'agent' ? setAgentWidth : setTimelineHeight)(value);
+    localStorage.setItem(
+      axis === 'nav' ? 'cc-nav-width' : axis === 'agent' ? 'cc-agent-width' : 'cc-timeline-height',
+      String(value),
+    );
   }
   if (fatal)
     return (
@@ -629,7 +804,7 @@ export function App() {
     return (
       <div className="boot-screen">
         <Mark />
-        <p>正在准备创作空间…</p>
+        <p>正在打开工程…</p>
       </div>
     );
   const runningJob = jobs.find((j) => j.status === 'running'),
@@ -637,10 +812,12 @@ export function App() {
   const shownAssets = project.assets.filter((a) => a.name.toLowerCase().includes(assetQuery.toLowerCase()));
   return (
     <div
+      ref={appRef}
       className={`app ${!showNav ? 'nav-hidden' : ''} ${!showRight ? 'right-hidden' : ''}`}
       style={
         {
           '--agent-width': `${agentWidth}px`,
+          '--nav-width': `${navWidth}px`,
           '--timeline-height': `${timelineHeight}px`,
         } as React.CSSProperties
       }
@@ -671,7 +848,10 @@ export function App() {
           <IconButton label="切换项目侧栏" active={!showNav} onClick={() => setShowNav((v) => !v)}>
             <PanelLeft size={16} />
           </IconButton>
-          <span className="brand">CoCraft</span>
+          <span className="brand">
+            <BrandMark size={18} />
+            CoCraft
+          </span>
           <span className="titlebar-divider" />
           <span className="titlebar-project">{project.name}</span>
         </div>
@@ -694,6 +874,16 @@ export function App() {
       </header>
       {showNav && (
         <aside className="sidebar">
+          <div
+            className="nav-resizer"
+            role="separator"
+            aria-label="调整左侧栏宽度"
+            aria-orientation="vertical"
+            tabIndex={0}
+            aria-valuenow={navWidth}
+            onKeyDown={(e) => keyboardResize(e, 'nav')}
+            onPointerDown={(e) => resize(e, 'nav')}
+          />
           <div className="nav-switch">
             <button className={nav === 'projects' ? 'active' : ''} onClick={() => setNav('projects')}>
               <Folder size={13} /> 项目
@@ -705,7 +895,7 @@ export function App() {
           {nav === 'projects' ? (
             <>
               <div className="sidebar-label">
-                创作空间{' '}
+                工作空间{' '}
                 <IconButton label="新建项目" onClick={() => openDialog('new-project')}>
                   <Plus size={13} />
                 </IconButton>
@@ -737,7 +927,7 @@ export function App() {
                   ))}
                   {env.tasks.length === 0 && <div className="task-empty">从一个想法开始。</div>}
                   <button className="new-task" onClick={() => openDialog('new-task')}>
-                    <Plus size={12} /> 新任务
+                    <Plus size={12} /> 新会话
                   </button>
                 </div>
               </div>
@@ -844,15 +1034,15 @@ export function App() {
                   </div>
                 ))}
               </div>
-              <div className="sidebar-label">拓展创作</div>
+              <div className="sidebar-label">素材工具</div>
               <button className="resource-link" onClick={() => setDialog('templates')}>
-                <Type size={14} /> 内置画面与字幕 <ChevronRight size={12} />
+                <Type size={14} /> 动态素材库 <ChevronRight size={12} />
               </button>
               <button className="resource-link" onClick={() => setDialog('stock')}>
                 <Search size={14} /> 搜索 Pexels 素材 <ChevronRight size={12} />
               </button>
-              <button className="resource-link" onClick={() => setDialog('voice')}>
-                <Mic size={14} /> 生成本地配音 <ChevronRight size={12} />
+              <button className="resource-link" onClick={() => openStudio()}>
+                <AudioLines size={14} /> 素材工作室 <ChevronRight size={12} />
               </button>
             </>
           )}
@@ -867,11 +1057,11 @@ export function App() {
             >
               <FolderOpen size={14} /> 打开项目…
             </button>
-            <button onClick={() => setDialog('settings')}>
+            <button onClick={() => openSettings()}>
               <SettingsIcon size={14} /> 设置 <kbd>⌘ ,</kbd>
             </button>
             <div className="workspace-label">
-              <span className="local-dot" /> 本地工作空间 <span>0.1</span>
+              <span className="local-dot" /> 本地工作空间 <span>0.2</span>
             </div>
           </div>
         </aside>
@@ -906,7 +1096,7 @@ export function App() {
         {doc === 'brief' ? (
           <div className="brief-page">
             <div className="eyebrow">PROJECT BRIEF</div>
-            <h1>先对齐故事，再一起创作。</h1>
+            <h1>创作约定</h1>
             <p>这里的约定会进入每个 Agent 任务。写下目标、受众、节奏，以及你想保留的细节。</p>
             <textarea
               aria-label="创作约定"
@@ -969,7 +1159,7 @@ export function App() {
                 {sequence.clips.length === 0 && (
                   <div className="empty-canvas">
                     <Mark />
-                    <h2>下一个故事，从这里开始。</h2>
+                    <h2>时间线为空</h2>
                     <p>导入素材，或让一个想法先变成画面。</p>
                     <div>
                       <button className="button primary" onClick={() => void importMedia()}>
@@ -1051,6 +1241,12 @@ export function App() {
             <section className="editor-panel">
               <div
                 className="horizontal-resizer"
+                role="separator"
+                aria-label="调整时间线高度"
+                aria-orientation="horizontal"
+                tabIndex={0}
+                aria-valuenow={timelineHeight}
+                onKeyDown={(e) => keyboardResize(e, 'timeline')}
                 onPointerDown={(e) => resize(e, 'timeline')}
                 title="拖动调整时间线高度"
               />
@@ -1151,6 +1347,13 @@ export function App() {
                     </button>
                     <button
                       className="button tiny"
+                      onClick={() => openStudio('transcription', clip?.assetId)}
+                    >
+                      <AudioLines size={12} />
+                      转录素材
+                    </button>
+                    <button
+                      className="button tiny"
                       onClick={() => void api('captions.export', { sequenceId })}
                     >
                       导出 SRT
@@ -1204,7 +1407,7 @@ export function App() {
                       <FileText size={23} />
                       <p>把对白与画面连接起来。</p>
                       <span>导入 SRT 字幕，或添加一条字幕开始编辑。</span>
-                      <button className="button tiny" onClick={() => void addBuiltin('caption')}>
+                      <button className="button tiny" onClick={() => void addCaption()}>
                         <Plus size={12} /> 添加字幕
                       </button>
                     </div>
@@ -1308,7 +1511,16 @@ export function App() {
       </main>
       {showRight && (
         <aside className="right-panel">
-          <div className="vertical-resizer" onPointerDown={(e) => resize(e, 'agent')} />
+          <div
+            className="vertical-resizer"
+            role="separator"
+            aria-label="调整 Agent 面板宽度"
+            aria-orientation="vertical"
+            tabIndex={0}
+            aria-valuenow={agentWidth}
+            onKeyDown={(e) => keyboardResize(e, 'agent')}
+            onPointerDown={(e) => resize(e, 'agent')}
+          />
           <div className="right-tabs">
             <button className={right === 'agent' ? 'active' : ''} onClick={() => setRight('agent')}>
               <Mark small /> Agent
@@ -1336,22 +1548,34 @@ export function App() {
             <div className="agent-panel">
               <div className="agent-task-heading">
                 <div>
-                  <b>{task?.name || '新的创作'}</b>
+                  <b>{task?.name || '新会话'}</b>
                   <small>
                     <Film size={11} />
                     {sequence.name}
                     <span>·</span>
-                    {task?.status === 'running' ? '正在工作' : '随时可以开始'}
+                    {task?.status === 'running'
+                      ? '正在工作'
+                      : task?.id && task.id === connectingTask
+                        ? '正在连接模型…'
+                        : '随时可以开始'}
                   </small>
                 </div>
-                {task?.status === 'running' ? (
+                {task?.status === 'running' || (!!task?.id && task.id === connectingTask) ? (
                   <button className="button tiny stop" onClick={() => void api('agent.stop', { taskId })}>
                     <Square size={10} fill="currentColor" /> 停止
                   </button>
                 ) : (
-                  <IconButton label="任务设置" onClick={() => openDialog('new-task')}>
-                    <MoreHorizontal size={16} />
-                  </IconButton>
+                  task && (
+                    <IconButton
+                      label="重命名会话"
+                      onClick={() => {
+                        setFormName(task.name);
+                        setDialog('rename-task');
+                      }}
+                    >
+                      <MoreHorizontal size={16} />
+                    </IconButton>
+                  )
                 )}
               </div>
               <div className="agent-scroll">
@@ -1360,28 +1584,14 @@ export function App() {
                     <div className="welcome-mark">
                       <Mark />
                     </div>
-                    <span className="eyebrow">YOUR CREATIVE PARTNER</span>
-                    <h2>
-                      一起，把故事
-                      <br />
-                      剪出来。
-                    </h2>
-                    <p>
-                      说说你想要的感觉。
-                      <br />
-                      我来剪辑、编码，打磨每一帧。
-                      <br />
-                      你随时接管。
-                    </p>
+                    <h2>想怎样剪这条片？</h2>
+                    <p>可以从素材、某个片段或一段新画面开始。</p>
                     <div className="prompt-suggestions">
                       {[
-                        [
-                          '让开头更有吸引力',
-                          '帮我让开头更有吸引力，保留安静、有呼吸感的风格。先读工程和 Skill。',
-                        ],
+                        ['让开头更有吸引力', '分析当前素材，优化开场三秒的叙事与节奏，并直接完成修改。'],
                         [
                           '做一个更好的动态片头',
-                          '用 Remotion 编写一个与当前画面气质一致的动态片头，替换现有片头。保留可编辑的文案参数。',
+                          '制作一个专业的动态片头，结合当前内容选择合适的构图和节奏，保留可编辑参数。',
                         ],
                         ['整理一版竖屏预告', '基于主片新建一份 9:16 竖屏版本，重新安排标题位置，保留主片。'],
                       ].map(([title, text]) => (
@@ -1442,7 +1652,7 @@ export function App() {
                           <Mark small /> CoCraft
                         </div>
                       )}
-                      <p>{m.text}</p>
+                      <Markdown text={m.text} />
                     </div>
                   ),
                 )}
@@ -1451,7 +1661,7 @@ export function App() {
                     <div className="assistant-label">
                       <Mark small /> CoCraft
                     </div>
-                    <p>{stream[taskId]}</p>
+                    <Markdown text={stream[taskId]} />
                   </div>
                 )}
                 {task?.status === 'running' && (
@@ -1463,8 +1673,11 @@ export function App() {
                 <div ref={messagesEnd} />
               </div>
               <div className="composer-wrap">
-                {!settings.hasApiKey && (
-                  <button className="connect-hint" onClick={() => setDialog('settings')}>
+                {!chatConnected && (
+                  <button
+                    className="connect-hint"
+                    onClick={() => openSettings(chatModel ? 'providers' : 'defaults')}
+                  >
                     <span className="muted-dot" /> 连接模型，开启 Agent 创作 <ArrowUpRight size={11} />
                   </button>
                 )}
@@ -1494,11 +1707,51 @@ export function App() {
                     }}
                   />
                   <div className="composer-bottom">
-                    <button className="model-picker" onClick={() => setDialog('settings')}>
-                      <span className={settings.hasApiKey ? 'connected-dot' : 'muted-dot'} />
-                      {settings.hasApiKey ? settings.model : '选择模型'}
-                      <ChevronDown size={10} />
-                    </button>
+                    <div className="composer-model">
+                      <span className={chatConnected ? 'connected-dot' : 'muted-dot'} />
+                      <select
+                        aria-label="会话模型"
+                        value={modelOverride}
+                        disabled={task?.status === 'running' || (!!task?.id && task.id === connectingTask)}
+                        onChange={(e) => {
+                          if (e.target.value === ':settings') openSettings('models');
+                          else {
+                            const value = e.target.value;
+                            setModelOverride(value);
+                            if (task)
+                              void work('更新会话模型', async () => {
+                                try {
+                                  const updated = await api<Task>('tasks.model', {
+                                    id: task.id,
+                                    modelId: value,
+                                  });
+                                  const current = envRef.current;
+                                  if (current?.project.id === project.id)
+                                    accept({
+                                      ...current,
+                                      tasks: current.tasks.map((t) => (t.id === updated.id ? updated : t)),
+                                    });
+                                } catch (error) {
+                                  setModelOverride(task.modelId || '');
+                                  throw error;
+                                }
+                              });
+                          }
+                        }}
+                      >
+                        <option value="">
+                          {selectedModel(settings, 'agent', project.modelDefaults)?.name || '选择模型'}
+                        </option>
+                        {settings.models
+                          .filter((m) => m.capabilities.includes('agent'))
+                          .map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name} · {settings.providers.find((p) => p.id === m.providerId)?.name}
+                            </option>
+                          ))}
+                        <option value=":settings">管理模型…</option>
+                      </select>
+                    </div>
                     <button
                       className="send-button"
                       aria-label="发送给 Agent"
@@ -1544,7 +1797,7 @@ export function App() {
       {draggingFile && (
         <div className="drop-overlay">
           <Upload size={34} />
-          <h2>把素材带进来。</h2>
+          <h2>导入素材</h2>
           <p>视频、音频、图片 · 原文件保持不变</p>
         </div>
       )}
@@ -1566,7 +1819,7 @@ export function App() {
             </IconButton>
           </header>
           {jobs.length === 0 ? (
-            <div className="jobs-empty">导出任务会在这里显示。</div>
+            <div className="jobs-empty">导出、生成和分析作业会在这里显示。</div>
           ) : (
             jobs.slice(0, 12).map((j) => (
               <div className="job-item" key={j.id}>
@@ -1588,16 +1841,57 @@ export function App() {
                   </div>
                 )}
                 <div className="job-actions">
-                  {j.status === 'completed' && (
+                  {j.status === 'completed' && j.output && j.type === 'export' && (
                     <>
                       <button onClick={() => void api('file.open', { jobId: j.id })}>
-                        打开成片 <ArrowUpRight size={11} />
+                        {j.output?.toLowerCase().endsWith('.png') ? '打开画面' : '打开成片'}{' '}
+                        <ArrowUpRight size={11} />
                       </button>
                       <button onClick={() => void api('file.reveal', { jobId: j.id })}>
                         在 Finder 中显示
                       </button>
                     </>
                   )}
+                  {j.status === 'completed' && j.result?.text && (
+                    <button
+                      onClick={() => {
+                        setResultJob(j);
+                        setResultClip(
+                          sequence.clips.find(
+                            (c) => c.id === selected && !!c.assetId && c.assetId === j.inputAssetId,
+                          )?.id || '',
+                        );
+                        setJobsOpen(false);
+                        setDialog('job-result');
+                      }}
+                    >
+                      查看结果 <ArrowUpRight size={11} />
+                    </button>
+                  )}
+                  {j.status === 'completed' &&
+                    j.result?.asset &&
+                    j.projectPath === env.path &&
+                    project.assets.some((a) => a.id === j.result?.asset?.id) && (
+                      <button
+                        onClick={() =>
+                          void work('添加素材', async () => {
+                            await addAsset(j.result!.asset!.id);
+                            setJobsOpen(false);
+                          })
+                        }
+                      >
+                        添加到时间线
+                      </button>
+                    )}
+                  {(j.status === 'failed' || j.status === 'cancelled') &&
+                    (j.remote || j.result?.asset) &&
+                    !['failed', 'expired', 'canceled', 'cancelled'].includes(j.remote?.status || '') && (
+                      <button
+                        onClick={() => void work('继续查询', () => api('generation.resume', { id: j.id }))}
+                      >
+                        {j.result?.asset ? '恢复素材入库' : '继续查询原作业'}
+                      </button>
+                    )}
                   {j.status === 'running' && (
                     <button onClick={() => void api('jobs.cancel', { id: j.id })}>取消</button>
                   )}
@@ -1609,10 +1903,18 @@ export function App() {
       )}
       {dialog === 'settings' && (
         <SettingsDialog
+          projectDefaults={project.modelDefaults}
+          onProjectDefaults={async (modelDefaults) => {
+            await edit('更新项目模型默认值', [{ type: 'updateProject', changes: { modelDefaults } }]);
+          }}
           settings={settings}
+          initialTab={settingsTab}
           skills={boot.skills}
           onSave={refreshSettings}
-          onClose={() => setDialog(null)}
+          onClose={() => {
+            setDialog(returnToStudio ? 'generation' : null);
+            setReturnToStudio(false);
+          }}
           onOpenSkills={() => void api('skills.open')}
         />
       )}
@@ -1631,9 +1933,9 @@ export function App() {
           }}
         />
       )}
-      {(dialog === 'new-project' || dialog === 'new-task') && (
+      {(dialog === 'new-project' || dialog === 'rename-task') && (
         <Modal
-          title={dialog === 'new-project' ? '新的故事，新的空间。' : '一起完成下一次创作。'}
+          title={dialog === 'new-project' ? '新建项目' : '重命名会话'}
           subtitle={
             dialog === 'new-project'
               ? '素材、成片、任务和版本都保存在这个工程。'
@@ -1651,23 +1953,22 @@ export function App() {
                     await api<ProjectEnvelope>('project.create', { name: formName.trim() || '未命名项目' }),
                   );
                 else {
-                  const t = await api<Task>('tasks.create', {
-                    name: formName.trim() || '新的创作',
-                    sequenceId,
+                  if (!task) return;
+                  const t = await api<Task>('tasks.rename', { id: task.id, name: formName });
+                  accept({
+                    ...envRef.current!,
+                    tasks: envRef.current!.tasks.map((v) => (v.id === t.id ? t : v)),
                   });
-                  accept({ ...envRef.current!, tasks: [...envRef.current!.tasks, t] });
-                  setTaskId(t.id);
-                  setRight('agent');
                 }
                 setDialog(null);
               });
             }}
           >
             <label className="field">
-              <span>{dialog === 'new-project' ? '项目名称' : '这次想做什么？'}</span>
+              <span>{dialog === 'new-project' ? '项目名称' : '会话名称'}</span>
               <input
                 autoFocus
-                aria-label={dialog === 'new-project' ? '项目名称' : '任务名称'}
+                aria-label={dialog === 'new-project' ? '项目名称' : '会话名称'}
                 placeholder={dialog === 'new-project' ? '例如：一次沿海旅行' : '例如：打磨开场的节奏'}
                 value={formName}
                 onChange={(e) => setFormName(e.target.value)}
@@ -1675,8 +1976,12 @@ export function App() {
             </label>
             <footer className="modal-footer">
               <span className="help-copy">保存在本地，可随时重新打开。</span>
-              <button className="button primary" type="submit">
-                创建 <ArrowUpRight size={14} />
+              <button
+                className="button primary"
+                type="submit"
+                disabled={dialog === 'rename-task' && !formName.trim()}
+              >
+                {dialog === 'new-project' ? '创建' : '保存'} <ArrowUpRight size={14} />
               </button>
             </footer>
           </form>
@@ -1684,7 +1989,7 @@ export function App() {
       )}
       {dialog === 'sequence' && (
         <Modal
-          title="同一个故事，更多种表达。"
+          title="新建成片版本"
           subtitle="复制当前成片，拥有独立的时间线和画幅。"
           onClose={() => setDialog(null)}
         >
@@ -1824,74 +2129,44 @@ export function App() {
         </Modal>
       )}
       {dialog === 'templates' && (
-        <Modal
-          title="好画面，从一个好起点开始。"
-          subtitle="内置组件完全可编辑，也可以交给 Agent 继续创作。"
-          onClose={() => setDialog(null)}
-          wide
-        >
-          <div className="template-grid">
-            {[
-              {
-                kind: 'title',
-                template: 'editorial',
-                name: '叙事片头',
-                tag: '文字 · 缓缓浮现',
-                text: '让故事\n自然发生。',
-              },
-              {
-                kind: 'title',
-                template: 'clean',
-                name: '简洁标题',
-                tag: '文字 · 居中',
-                text: 'Less, but better.',
-              },
-              {
-                kind: 'title',
-                template: 'lower-third',
-                name: '人物介绍',
-                tag: '文字 · 下三分之一',
-                text: '关于那些\n认真生活的人。',
-              },
-              {
-                kind: 'caption',
-                template: 'caption',
-                name: '对白字幕',
-                tag: '字幕 · 易读',
-                text: '每句话，都有它的位置。',
-              },
-              { kind: 'shape', template: 'aurora', name: '流动光晕', tag: '背景 · 按帧运动', text: '' },
-              { kind: 'shape', template: 'grid', name: '动态网格', tag: '背景 · 参数化', text: '' },
-            ].map((t) => (
-              <button
-                className={`template-card ${t.template}`}
-                key={t.template}
-                onClick={() => void addBuiltin(t.kind as Clip['kind'], t.template)}
-              >
-                <div>
-                  <span>{t.text}</span>
-                  {!t.text && <Layers size={24} />}
-                  <i>
-                    <Plus size={16} />
-                  </i>
-                </div>
-                <b>{t.name}</b>
-                <small>{t.tag}</small>
-              </button>
-            ))}
-          </div>
-          <footer className="modal-footer">
-            <span className="help-copy">还有一个不受模板限制的入口。</span>
-            <button
-              className="button"
-              onClick={() => {
-                setCodeComponent(undefined);
-                setDialog('code');
-              }}
-            >
-              <Code2 size={14} /> 编写自己的画面
-            </button>
-          </footer>
+        <Modal title="动态素材库" onClose={() => setDialog(null)} className="material-shell" wide>
+          <ResourceLibrary
+            onAdd={addPreset}
+            onGenerate={askForMotion}
+            onImportPack={() => loadPack()}
+            onImportExample={() => loadPack(true)}
+            components={project.components}
+            stockMedia={boot.studioMedia}
+            onAddStock={async (id) => {
+              const result = await api<{ envelope: ProjectEnvelope; clipId: string }>('studio.add', {
+                id,
+                sequenceId,
+                projectId: project.id,
+                at: frame,
+              });
+              accept(result.envelope);
+              selectClip(result.clipId);
+              setShowRight(true);
+              notify('已添加到时间线');
+            }}
+            assets={project.assets}
+            previewOrigin={boot.previewOrigin}
+            onAddComponent={async (id, overrides) => {
+              const component = project.components.find((c) => c.id === id);
+              if (!component) return;
+              const nc = {
+                ...newClip('code', frame),
+                componentId: id,
+                name: component.name,
+                props: { ...component.props, ...overrides },
+                duration: Math.max(1, Math.round((component.pack?.durationSeconds || 5) * sequence.fps)),
+              };
+              await edit('添加' + component.name, [{ type: 'addClip', sequenceId, clip: nc }]);
+              selectClip(nc.id);
+              setShowRight(true);
+              notify('已添加到时间线');
+            }}
+          />
         </Modal>
       )}
       {dialog === 'code' && (
@@ -1920,7 +2195,7 @@ export function App() {
       {dialog === 'stock' && (
         <StockDialog
           onClose={() => setDialog(null)}
-          onSettings={() => setDialog('settings')}
+          onSettings={() => openSettings('assets')}
           onImport={async (id) => {
             accept(await api<ProjectEnvelope>('stock.import', { id }));
             setNav('assets');
@@ -1928,43 +2203,78 @@ export function App() {
           }}
         />
       )}
-      {dialog === 'voice' && (
-        <Modal
-          title="给故事，一个声音。"
-          subtitle="使用 macOS 中文语音在本机生成，无需模型密钥。"
+      {dialog === 'generation' && (
+        <GenerationDialog
+          settings={settings}
+          project={project}
+          initial={generationDraft}
           onClose={() => setDialog(null)}
-        >
-          <label className="field">
-            <span>配音文稿</span>
-            <textarea
-              aria-label="配音文稿"
-              value={voiceText}
-              onChange={(e) => setVoiceText(e.target.value)}
-              rows={6}
-            />
-          </label>
-          <p className="help-copy">
-            生成后的音频进入素材库，可自由剪辑与调节音量。音色取决于本机已安装的系统语音。
-          </p>
-          <footer className="modal-footer">
-            <span className="muted">
-              <Mic size={12} /> 本地生成
-            </span>
-            <button
-              className="button primary"
-              disabled={!!busy || !voiceText.trim()}
-              onClick={() =>
-                void work('正在生成配音', async () => {
-                  accept(await api<ProjectEnvelope>('voice.generate', { text: voiceText }));
-                  setDialog(null);
-                  setNav('assets');
-                  notify('配音已生成，可以添加到时间线');
-                })
-              }
-            >
-              {busy ? <Spinner /> : <AudioLines size={15} />} 生成配音
-            </button>
-          </footer>
+          onConfigure={(draft) => {
+            setGenerationDraft(draft);
+            openSettings(
+              settings.providers.some((p) => p.protocol !== 'system') ? 'models' : 'providers',
+              true,
+            );
+          }}
+          onStarted={(job) => {
+            setDialog(null);
+            setNav('assets');
+            setJobs((list) => (list.some((j) => j.id === job.id) ? list : [job, ...list]));
+            setJobsOpen(true);
+          }}
+        />
+      )}
+      {dialog === 'job-result' && resultJob && (
+        <Modal title={resultJob.name} onClose={() => setDialog(null)}>
+          <div className="result-transcript">{resultJob.result?.text}</div>
+          {resultJob.result?.segments?.length && resultJob.projectPath === env.path ? (
+            <div className="job-source">
+              <label className="field">
+                <span>字幕对齐到时间线片段</span>
+                <select value={resultClip} onChange={(e) => setResultClip(e.target.value)}>
+                  <option value="">选择同一来源的片段</option>
+                  {sequence.clips
+                    .filter((c) => c.assetId === resultJob.inputAssetId && c.assetId)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} · {timecode(c.start, sequence.fps)}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <button
+                className="button primary"
+                disabled={!resultClip}
+                onClick={() =>
+                  void work('应用字幕', async () => {
+                    const target = sequence.clips.find(
+                      (c) => c.id === resultClip && c.assetId === resultJob.inputAssetId,
+                    );
+                    if (!target) return;
+                    const ops: EditOperation[] = (resultJob.result?.segments || []).flatMap((segment) => {
+                      const first = Math.max(target.sourceIn, Math.round(segment.start * sequence.fps)),
+                        last = Math.min(
+                          target.sourceIn + target.duration,
+                          Math.round(segment.end * sequence.fps),
+                        );
+                      if (first >= last || !segment.text.trim()) return [];
+                      const c = newClip('caption', target.start + first - target.sourceIn);
+                      c.duration = last - first;
+                      c.props.text = segment.text;
+                      c.name = segment.text.slice(0, 28);
+                      return [{ type: 'addClip', sequenceId, clip: c } as EditOperation];
+                    });
+                    if (!ops.length) throw new Error('所选片段范围内没有识别到字幕');
+                    await edit('添加转录字幕', ops);
+                    setDialog(null);
+                    notify('已添加 ' + ops.length + ' 条字幕');
+                  })
+                }
+              >
+                添加字幕到时间线
+              </button>
+            </div>
+          ) : null}
         </Modal>
       )}
     </div>

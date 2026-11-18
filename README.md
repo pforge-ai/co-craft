@@ -1,21 +1,18 @@
 # CoCraft
 
-一个可以真正剪辑、编程和导出的视频创作工作台。面向 macOS，使用 Electron、React、TypeScript、Pi 与 Remotion。当前为 **0.1 本地 Alpha**。
+CoCraft 是一款 macOS 视频剪辑工作台。你可以直接操作时间线，也可以让编码 Agent 设计画面、读写项目文件并发布可撤销的剪辑。当前可运行版本为 **0.2.0**，面向 Apple Silicon。
 
 ## 直接体验
 
-打开 [CoCraft.app](release/mac-arm64/CoCraft.app)。首次启动会创建一份 24 秒的「沿海公路」示例工程，包含原创插画、动态标题和合成氛围音；不需要模型密钥即可编辑和导出。
+退出旧版后打开 CoCraft。已有用户会打开最近使用的工程，旧模型连接会自动迁移。通过「文件 → 新建示例工程」即可在独立工程里体验《相位之间》。[Mac 应用](release/0.2/mac-arm64/CoCraft.app) · [压缩包](release/CoCraft-0.2.0-mac-arm64.zip)
 
-- 选择时间线片段，在右侧「属性」修改文案、时间、构图和音量。
-- `Space` 播放，`⌘B` 分割，`L` 锁定，`⌘Z` 撤销，`⌘K` 打开命令面板。
-- 「素材」中导入视频、图片、音频；拖入时间线，或点击素材的 `＋`。
-- 「添加」使用内置标题、字幕和背景，或直接编写 React / Remotion 画面。
-- 在设置中连接模型后，Agent 可读写代码、调用剪辑工具、加载 Skills，并发布可撤销修改。
-- 导出使用固定版本；可以继续编辑。后台作业中打开 MP4 或在 Finder 中查看。
+- 用空格播放示例，在横版和竖版标签之间切换。选择片段后在右侧调整文案、颜色或时间。拖动左右面板和时间线边界可调整工作空间。
+- 在时间线点击「添加」，从 17 项动态素材、三张原创生成摄影和四段原创声音中选择。库内可试听、横竖版预览和改参数。导入源码素材包后还可以继续使用它的资源和参数。
+- 点击「新会话」并直接输入想做的修改。会话从首条指令自动命名。也可以先选中一个片段，在属性里「引用给 Agent」。
+- 在「设置 → 提供商」保存连接，在「模型」登记模型与能力，在「用途默认值」选择全局或项目默认。通过「素材 → 素材工作室」配音、转录、分析画面或生成图像与视频。
+- 用「导出」渲染当前版本。后台生成的素材可入轨，转录结果可对齐源片段生成字幕。
 
-[首版交付说明](docs/DELIVERY-0.1.md) · [功能验收](docs/verification/electron-functional.md) · [实际导出的 1080p 示例](artifacts/CoCraft-coast-demo-1080p.mp4)
-
-![CoCraft 深色工作台实拍](docs/verification/workbench-dark.png)
+[交付与验收](docs/DELIVERY-0.2.md) · [横版样片](artifacts/CoCraft-Phase-Study-1080p.mp4) · [竖版样片](artifacts/CoCraft-Phase-Study-vertical.mp4) · [工作台实拍](docs/verification/v2/v02-workbench-dark.png)
 
 ## 源码运行
 
@@ -31,6 +28,7 @@ npm start
 npm run dev          # 桌面开发；首次自动准备预览与合成 bundle
 npm run smoke        # 工程编辑、锁定、冲突、撤销重做和重开
 npm run smoke:agent  # 本地协议夹具驱动真实 Pi SDK，不调用付费模型
+npm run smoke:models # 本地多媒体协议、入库和作业恢复
 npm run test:ui      # 独立临时工程的 Electron 功能验收
 npm run package     # 构建 Apple Silicon .app
 ```
@@ -48,10 +46,11 @@ npm run package     # 构建 Apple Silicon .app
 | 预览 | 实际 Remotion Player、逐帧跳转、镜头导航、音量、播放中的版本固定 |
 | 文字 | 标题/下三分之一/字幕，参数编辑，按帧动画，SRT 导入导出与文稿编辑 |
 | 编码 | TSX 编辑与编译，参数化代码片段，标准 Skills，Pi 文件工具与可选受限脚本 |
-| 素材 | 原创示例、内置动态组件、本地系统配音、Pexels 搜索与导入连接器 |
+| 素材 | 参数化画面、随附摄影与音频、带来源的 Pexels 视频、可导入的源码包 |
+| 模型 | 分离的提供商和模型目录、六类用途、项目与全局默认值、生成作业和结果 |
 | 交付 | 后台 H.264/AAC MP4、PNG 静帧、进度/取消、固定导出版本、完成后打开 |
 
-Pi 协议、真实工具执行和编译发布已通过本地夹具验证；**尚未使用你的模型密钥验收真实模型的剪辑质量**。Pexels 同样需要你自己的 API Key；没有配置时会明确提示。自动语音转录、语义删句联动剪辑、生成式图片/视频服务、跨项目素材库、OAuth 登录、HDR 和专业多机位流程属于后续迭代，不在本版已实现范围内。
+DeepSeek 实际通过工具读取示例工程、制备模板并发布了指定时间段的片段。云端媒体接口使用本地协议服务、真实媒体文件、Pi 和 Electron 验收。按供应商协议与账号可调用范围登记模型。[真实剪辑记录](docs/verification/v2/deepseek-edit.json) · [模型服务](docs/MODEL-SERVICES.md) · [素材包和生态](docs/MATERIAL-ECOSYSTEM.md)
 
 ## 代码结构
 
@@ -74,7 +73,10 @@ electron/
   media.ts          媒体探测、缩略图、真实音频波形
   code.ts           TSX 组件构建适配器
   server.ts         有随机令牌的本机媒体/预览服务
-  settings.ts       模型连接与加密密钥
+  settings.ts       模型目录、默认路由与加密凭据
+  generation.ts     视觉、生成、配音与转录协议
+  packs.ts          素材包验证、依赖快照与导入
+  studio-media.ts   随附摄影与声音入库
 
 resources/          原创示例、应用图标、内置 Skills
 scripts/            构建、开发与必要 smoke / 功能验收
@@ -90,7 +92,7 @@ design/             早期设计原型与截图，保留作对照
 
 密钥通过 Electron safeStorage 使用 macOS 系统能力加密，不写入工程。没有自动读取 Codex 的登录态。Agent 默认可在任务工作区编辑源码；脚本执行和脚本联网分别在设置中启用。脚本写入被限制在任务工作区，已发布工程通过受控发布入口修改。第三方任意扩展的完整安全兼容性仍需逐项验证。
 
-这是供本机评估的未签名构建。公开分发前仍需签名、公证、更新渠道及 [第三方许可核对](docs/THIRD_PARTY.md)。
+0.2 的 Apple Silicon 包使用本地 ad-hoc 签名。公开分发还需 Developer ID 签名、公证、更新渠道和相应的商业分发许可。[分发记录](docs/THIRD_PARTY.md)
 
 ## 产品材料
 

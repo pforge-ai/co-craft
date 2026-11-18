@@ -118,7 +118,7 @@ let desktop;
 try {
   desktop = await electron.launch({
     executablePath: process.env.COCRAFT_SMOKE_EXECUTABLE,
-    args: process.env.COCRAFT_SMOKE_EXECUTABLE ? [] : [root],
+    args: [...(process.env.COCRAFT_SMOKE_EXECUTABLE ? [] : [root]), '--use-mock-keychain'],
     env: { ...process.env, COCRAFT_DATA_DIR: dataDir },
     timeout: 30000,
   });

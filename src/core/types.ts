@@ -18,6 +18,18 @@ export interface CodeComponent {
   name: string;
   source: string;
   compiled: string;
+  pack?: {
+    id: string;
+    name: string;
+    version: string;
+    author: string;
+    license: string;
+    durationSeconds: number;
+    parameters?: import('./presets').PresetParameter[];
+    sourceDirectory: string;
+    fingerprint?: string;
+    entry?: string;
+  };
   hash: string;
   props: Record<string, string | number | boolean>;
 }
@@ -26,6 +38,8 @@ export interface Clip {
   name: string;
   kind: ClipKind;
   track: Track;
+  /** Compositing order within this track. Legacy snapshots use chronological order at layer zero. */
+  layer?: number;
   start: number;
   duration: number;
   sourceIn: number;
@@ -71,6 +85,7 @@ export interface Project {
   assets: Asset[];
   sequences: Sequence[];
   components: CodeComponent[];
+  modelDefaults?: Partial<Record<ModelUse, string>>;
 }
 export interface Revision {
   revision: number;
@@ -88,6 +103,7 @@ export interface Message {
   status?: string;
 }
 export interface Task {
+  modelId?: string;
   id: string;
   name: string;
   sequenceId: string;
@@ -112,7 +128,7 @@ export interface ProjectEnvelope {
 }
 export interface Job {
   id: string;
-  type: 'export' | 'import' | 'transcribe';
+  type: 'export' | 'import' | 'transcribe' | 'generate';
   name: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   progress: number;
@@ -121,8 +137,54 @@ export interface Job {
   error?: string;
   createdAt: string;
   revision?: number;
+  projectPath?: string;
+  modelId?: string;
+  providerId?: string;
+  inputAssetId?: string;
+  result?: { asset?: Asset; text?: string; segments?: { start: number; end: number; text: string }[] };
+  remote?: {
+    id: string;
+    adapter: ModelAdapter;
+    modelId: string;
+    providerId: string;
+    prompt: string;
+    status?: string;
+  };
+}
+export type ModelUse = 'agent' | 'vision' | 'transcription' | 'speech' | 'image' | 'video';
+export type ModelAdapter =
+  | 'chat'
+  | 'openai-image'
+  | 'openai-speech'
+  | 'openai-transcription'
+  | 'openai-video'
+  | 'ark-image'
+  | 'ark-video'
+  | 'system-speech';
+export interface ProviderConnection {
+  id: string;
+  name: string;
+  protocol: 'openai' | 'anthropic' | 'google' | 'ark' | 'system';
+  baseUrl: string;
+  apiKey?: string;
+  hasApiKey: boolean;
+  requiresKey: boolean;
+}
+export interface ModelDefinition {
+  id: string;
+  providerId: string;
+  name: string;
+  modelId: string;
+  capabilities: ModelUse[];
+  adapter: ModelAdapter;
+  parameters: Record<string, string | number | boolean>;
 }
 export interface Settings {
+  schemaVersion?: 2;
+  providers: ProviderConnection[];
+  models: ModelDefinition[];
+  defaults: Partial<Record<ModelUse, string>>;
+  glass: boolean;
   provider: string;
   model: string;
   baseUrl: string;
@@ -142,7 +204,10 @@ export type EditOperation =
   | { type: 'deleteClip'; sequenceId: string; clipId: string; ripple?: boolean }
   | { type: 'updateSequence'; sequenceId: string; changes: Partial<Omit<Sequence, 'clips' | 'id'>> }
   | { type: 'addSequence'; sequence: Sequence }
-  | { type: 'updateProject'; changes: { name?: string; brief?: string } }
+  | {
+      type: 'updateProject';
+      changes: { name?: string; brief?: string; modelDefaults?: Partial<Record<ModelUse, string>> };
+    }
   | { type: 'addAsset'; asset: Asset }
   | { type: 'putComponent'; component: CodeComponent };
 export interface EditRequest {
@@ -153,6 +218,7 @@ export interface EditRequest {
   runId?: string;
 }
 export interface BootData {
+  studioMedia: Asset[];
   projects: ProjectSummary[];
   current: ProjectEnvelope;
   settings: Settings;
