@@ -315,6 +315,10 @@ const endpoint = await serve(async (req, res) => {
       return json(res, { data: [{ b64_json: jpeg.toString('base64') }] });
     }
     assert.equal(data.model, 'custom/image-id');
+    if (data.prompt === 'ssrf-alibaba')
+      return json(res, { data: [{ url: 'http://100.100.100.200/latest/meta-data/' }] });
+    if (data.prompt === 'ssrf-v6')
+      return json(res, { data: [{ url: 'https://[::ffff:127.0.0.1]/secret' }] });
     return json(res, { data: [{ url: cdn + '/image.png' }] });
   }
   if (path.endsWith('/images/edits')) {
@@ -702,8 +706,30 @@ try {
   assert.equal(terminal.remote.status, 'failed');
   assert.ok(!terminal.error.includes(secrets.ark));
   await assert.rejects(call('generation.resume', { id: failed.id }), /终止/);
+  const ssrfAliJob = await call('generation.start', {
+    use: 'image',
+    modelId: 'image-open',
+    prompt: 'ssrf-alibaba',
+  });
+  const ssrfAliDone = await until(
+    () => readJob(ssrfAliJob.id),
+    (j) => j?.status === 'failed',
+    'ssrf alibaba blocked',
+  );
+  assert.match(ssrfAliDone.error, /云元数据|内网|拦截/);
+  const ssrfV6Job = await call('generation.start', {
+    use: 'image',
+    modelId: 'image-open',
+    prompt: 'ssrf-v6',
+  });
+  const ssrfV6Done = await until(
+    () => readJob(ssrfV6Job.id),
+    (j) => j?.status === 'failed',
+    'ssrf v6 blocked',
+  );
+  assert.match(ssrfV6Done.error, /本机|内网|拦截/);
   console.log(
-    'PASS cancel during submission, restart and concurrent resume with one POST, terminal statuses, multipart Videos compatibility',
+    'PASS cancel during submission, restart and concurrent resume with one POST, terminal statuses, multipart Videos compatibility, SSRF blocks (100.100.100.200 & ::ffff:127.0.0.1)',
   );
   const packBaseline = await call('packs.import', { example: true });
   const original = packBaseline.project.components.find((c) => c.pack?.entry);

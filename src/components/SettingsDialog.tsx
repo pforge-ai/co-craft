@@ -162,39 +162,37 @@ export function SettingsDialog({
     if (!suite) return;
     let added = 0;
     let firstId = '';
-    setDraft((d) => {
-      const nextModels = [...d.models];
-      const nextDefaults = { ...d.defaults };
-      const byModelId = new Map<string, ModelDefinition>();
-      for (const existing of nextModels) {
-        if (existing.providerId === p.id) byModelId.set(existing.modelId, existing);
+    const nextModels = [...draft.models];
+    const nextDefaults = { ...draft.defaults };
+    const byModelId = new Map<string, ModelDefinition>();
+    for (const existing of nextModels) {
+      if (existing.providerId === p.id) byModelId.set(existing.modelId, existing);
+    }
+    for (const tpl of suite.models) {
+      let entry = byModelId.get(tpl.modelId);
+      if (!entry) {
+        entry = {
+          id: uid('model'),
+          providerId: p.id,
+          name: tpl.name,
+          modelId: tpl.modelId,
+          capabilities: [...tpl.capabilities],
+          adapter: tpl.adapter,
+          parameters: { ...tpl.parameters },
+        };
+        nextModels.push(entry);
+        byModelId.set(tpl.modelId, entry);
+        added++;
       }
-      for (const tpl of suite.models) {
-        let entry = byModelId.get(tpl.modelId);
-        if (!entry) {
-          entry = {
-            id: uid('model'),
-            providerId: p.id,
-            name: tpl.name,
-            modelId: tpl.modelId,
-            capabilities: [...tpl.capabilities],
-            adapter: tpl.adapter,
-            parameters: { ...tpl.parameters },
-          };
-          nextModels.push(entry);
-          byModelId.set(tpl.modelId, entry);
-          added++;
-        }
-        if (!firstId) firstId = entry.id;
+      if (!firstId) firstId = entry.id;
+    }
+    for (const [use, mId] of Object.entries(suite.defaultRoles) as [ModelUse, string][]) {
+      const target = byModelId.get(mId);
+      if (target && (!nextDefaults[use] || (use === 'speech' && nextDefaults[use] === 'system-speech'))) {
+        nextDefaults[use] = target.id;
       }
-      for (const [use, mId] of Object.entries(suite.defaultRoles) as [ModelUse, string][]) {
-        const target = byModelId.get(mId);
-        if (target && (!nextDefaults[use] || (use === 'speech' && nextDefaults[use] === 'system-speech'))) {
-          nextDefaults[use] = target.id;
-        }
-      }
-      return { ...d, models: nextModels, defaults: nextDefaults };
-    });
+    }
+    setDraft((d) => ({ ...d, models: nextModels, defaults: nextDefaults }));
     if (firstId) setModelId(firstId);
     setError('');
     setInfo(
@@ -334,7 +332,7 @@ export function SettingsDialog({
                   ['播放 / 暂停', 'Space'],
                   ['命令面板', '⌘ K'],
                   ['切换 创作 / 精剪模式', '⌘ 1 / ⌘ 2'],
-                  ['收起 / 展开左右栏', '⌘ \\ / ⌘ J'],
+                  ['收起 / 展开左栏 / 底栏', '⌘ \\ / ⌘ J'],
                   ['分割片段', '⌘ B'],
                   ['撤销 / 重做', '⌘ Z / ⇧ ⌘ Z'],
                   ['导入素材', '⌘ I'],

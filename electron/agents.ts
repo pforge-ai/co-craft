@@ -1,11 +1,12 @@
 import { nativeImage, utilityProcess } from 'electron';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile, cp, realpath, lstat, rm } from 'node:fs/promises';
 import { join, resolve, dirname, basename, relative } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ProjectStore, atomicJSON } from './store';
 import { compileComponent } from './code';
 import { binary, importMedia } from './media';
-import { uid, applyOperations } from '../src/core/project';
+import { uid, applyOperations, preflightSequence } from '../src/core/project';
 import type {
   Task,
   Settings,
@@ -45,7 +46,34 @@ interface Run {
   scope?: EditScope;
   closing?: Promise<void>;
 }
-type AgentSettings = Settings & { modelInput?: string[]; modelParameters?: Record<string, unknown> };
+type AgentSettings = Settings & {
+  protocol?: string;
+  modelInput?: string[];
+  modelParameters?: Record<string, unknown>;
+};
+function encodeImageAttachments(attachments: ComposerAttachment[], supportsImages: boolean) {
+  const images: { type: 'image'; data: string; mimeType: string }[] = [];
+  if (!supportsImages) return images;
+  for (const att of attachments) {
+    if (att.kind !== 'image') continue;
+    try {
+      const img = nativeImage.createFromPath(att.path);
+      if (!img.isEmpty()) {
+        const sz = img.getSize();
+        const scaled =
+          Math.max(sz.width, sz.height) > 1568
+            ? img.resize(sz.width >= sz.height ? { width: 1568 } : { height: 1568 })
+            : img;
+        images.push({
+          type: 'image',
+          data: scaled.toJPEG(85).toString('base64'),
+          mimeType: 'image/jpeg',
+        });
+      }
+    } catch {}
+  }
+  return images;
+}
 type SettingsSource = AgentSettings | (() => Promise<AgentSettings>);
 type AgentStartOptions = {
   thinkingLevel?: ThinkingLevelChoice;
@@ -77,7 +105,7 @@ export class AgentHost {
     options?: AgentStartOptions,
   ): Promise<{ queued: true } | { runId: string }> {
     const existing = this.runs.get(taskId);
-    if (existing?.active) {
+    if (existing?.active && !existing.finished) {
       // Flush any streamed assistant text before appending the user's mid-run steer so history stays strictly chronological.
       if (existing.text.trim() || existing.thinking.trim()) {
         existing.task.messages.push({
@@ -92,17 +120,24 @@ export class AgentHost {
         this.emit({ taskId, runId: existing.id, type: 'text-commit' });
       }
       if (scope) existing.scope = scope;
-      const steerAttNote = options?.attachments?.length
-        ? `\n[附带文件: ${options.attachments.map((a) => `${a.name} (${a.path})`).join(', ')}]`
+      const steerAtts = options?.attachments || [];
+      const steerImages = encodeImageAttachments(steerAtts, existing.supportsImages);
+      const steerAttNote = steerAtts.length
+        ? `\n[附带文件: ${steerAtts.map((a) => `${a.name} (${a.path})`).join(', ')}]`
         : '';
-      existing.process.postMessage({ type: 'steer', text: prompt + steerAttNote });
+      existing.process.postMessage({
+        type: 'steer',
+        text: prompt + steerAttNote,
+        images: steerImages,
+        extraReadPaths: steerAtts.map((a) => a.path).filter(Boolean),
+      });
       existing.task.messages.push({
         id: uid('msg'),
         role: 'user',
         text: prompt,
-        ...(options?.attachments?.length
+        ...(steerAtts.length
           ? {
-              attachments: options.attachments.map(({ id, name, kind, previewDataUrl }) => ({
+              attachments: steerAtts.map(({ id, name, kind, previewDataUrl }) => ({
                 id,
                 name,
                 kind,
@@ -145,7 +180,7 @@ export class AgentHost {
     if (previous) await this.finish(previous);
     const settings = typeof source === 'function' ? await source() : source;
     if (!settings.apiKey || !settings.model) throw new Error('先在设置中连接模型，即可让 Agent 开始工作。');
-    const connection = chatEndpoint(settings.provider, settings.baseUrl, settings.model);
+    const connection = chatEndpoint(settings.protocol || settings.provider, settings.baseUrl, settings.model);
     abort.signal.throwIfAborted();
     const task = (await store.tasks()).find((t) => t.id === taskId);
     if (!task) throw new Error('任务不存在');
@@ -157,7 +192,12 @@ export class AgentHost {
     await mkdir(join(workspace, 'components'), { recursive: true });
     await atomicJSON(join(workspace, 'project.json'), project);
     await writeFile(join(workspace, 'brief.md'), project.brief, 'utf8');
-    await cp(join(store.path, 'skills'), join(workspace, 'skills'), { recursive: true });
+    // Project skills are passed read-only outside writable workspace (prevents tampering & stale copies).
+    const projectSkillsPath = join(store.path, 'skills');
+    await mkdir(projectSkillsPath, { recursive: true });
+    await rm(join(workspace, 'skills'), { recursive: true, force: true }).catch(() => {});
+    const agentRuntimeDir = join(store.path, '.cocraft', 'agent-runtime', taskId);
+    await mkdir(agentRuntimeDir, { recursive: true });
     const packEntries = new Map<string, CodeComponent>();
     const copiedPacks = new Set<string>();
     for (const c of project.components) {
@@ -230,27 +270,7 @@ export class AgentHost {
     };
     const attachments = options?.attachments || [];
     const activeSkills = Array.from(new Set([...(project.activeSkillIds || []), ...(options?.skillIds || [])]));
-    const images: { type: 'image'; data: string; mimeType: string }[] = [];
-    if (run.supportsImages) {
-      for (const att of attachments) {
-        if (att.kind !== 'image') continue;
-        try {
-          const img = nativeImage.createFromPath(att.path);
-          if (!img.isEmpty()) {
-            const sz = img.getSize();
-            const scaled =
-              Math.max(sz.width, sz.height) > 1568
-                ? img.resize(sz.width >= sz.height ? { width: 1568 } : { height: 1568 })
-                : img;
-            images.push({
-              type: 'image',
-              data: scaled.toJPEG(85).toString('base64'),
-              mimeType: 'image/jpeg',
-            });
-          }
-        } catch {}
-      }
-    }
+    const images = encodeImageAttachments(attachments, run.supportsImages);
     let enrichedContext = context;
     if (attachments.length || activeSkills.length) {
       try {
@@ -264,131 +284,148 @@ export class AgentHost {
         enrichedContext = `${context}\n${attachments.length ? `Attachments: ${attachments.map((a) => `${a.name} (${a.path})`).join(', ')}` : ''}`;
       }
     }
-    this.runs.set(taskId, run);
-    task.status = 'running';
-    task.messages.push({
-      id: uid('msg'),
-      role: 'user',
-      text: prompt,
-      ...(attachments.length
-        ? {
-            attachments: attachments.map(({ id: attId, name, kind, previewDataUrl }) => ({
-              id: attId,
-              name,
-              kind,
-              previewDataUrl,
-            })),
+    try {
+      this.runs.set(taskId, run);
+      task.status = 'running';
+      task.messages.push({
+        id: uid('msg'),
+        role: 'user',
+        text: prompt,
+        ...(attachments.length
+          ? {
+              attachments: attachments.map(({ id: attId, name, kind, previewDataUrl }) => ({
+                id: attId,
+                name,
+                kind,
+                previewDataUrl,
+              })),
+            }
+          : {}),
+        ...(options?.skillIds?.length ? { skillIds: options.skillIds } : {}),
+        createdAt: new Date().toISOString(),
+      });
+      await store.saveTask(task);
+      abort.signal.throwIfAborted();
+      this.changed(store, await store.envelope());
+      let stderr = '';
+      worker.stderr?.on('data', (d) => (stderr = (stderr + d).slice(-2000)));
+      worker.on('message', async (data: any) => {
+        if (data.type === 'request') {
+          try {
+            if (!run.active) throw new Error('运行已停止');
+            const result = await this.request(run, data.method, data.payload);
+            if (run.active) worker.postMessage({ type: 'response', id: data.id, result });
+          } catch (e) {
+            if (run.active)
+              worker.postMessage({
+                type: 'response',
+                id: data.id,
+                error: e instanceof Error ? e.message : String(e),
+              });
           }
-        : {}),
-      ...(options?.skillIds?.length ? { skillIds: options.skillIds } : {}),
-      createdAt: new Date().toISOString(),
-    });
-    await store.saveTask(task);
-    abort.signal.throwIfAborted();
-    this.changed(store, await store.envelope());
-    let stderr = '';
-    worker.stderr?.on('data', (d) => (stderr = (stderr + d).slice(-2000)));
-    worker.on('message', async (data: any) => {
-      if (data.type === 'request') {
-        try {
-          if (!run.active) throw new Error('运行已停止');
-          const result = await this.request(run, data.method, data.payload);
-          if (run.active) worker.postMessage({ type: 'response', id: data.id, result });
-        } catch (e) {
-          if (run.active)
-            worker.postMessage({
-              type: 'response',
-              id: data.id,
-              error: e instanceof Error ? e.message : String(e),
-            });
+          return;
         }
-        return;
-      }
-      if (!run.active) return;
-      if (data.type === 'session') {
-        task.sessionPath = data.path;
-        await store.saveTask(task);
-        return;
-      }
-      if (run.finished) return;
-      if (data.type === 'usage' && data.usage) {
-        const prev = task.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 };
-        task.usage = {
-          inputTokens: prev.inputTokens + (Number(data.usage.input) || 0),
-          outputTokens: prev.outputTokens + (Number(data.usage.output) || 0),
-          totalTokens: prev.totalTokens + (Number(data.usage.total) || 0),
-          requests: prev.requests + 1,
-        };
-        return;
-      }
-      if (data.type === 'text') run.text += data.text;
-      if (data.type === 'thinking') run.thinking += data.text || '';
-      if (data.type === 'tool-start' || data.type === 'tool-end')
-        task.messages.push({
-          id: uid('msg'),
-          role: 'tool',
-          tool: data.tool,
-          text: data.text || (data.type === 'tool-start' ? '' : '完成'),
-          status: data.type,
-          createdAt: new Date().toISOString(),
-        });
-      if (data.type === 'error') {
-        task.status = 'error';
-        task.messages.push({
-          id: uid('msg'),
-          role: 'system',
-          text: data.text,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      if (['text', 'thinking', 'tool-start', 'tool-end', 'error'].includes(data.type))
-        this.emit({ taskId, runId: id, ...data });
-      if (data.type === 'done') await this.finish(run);
-    });
-    worker.on('exit', async (code) => {
-      if (!run.finished) {
-        if (run.active && code !== 0) {
+        if (!run.active) return;
+        if (data.type === 'session') {
+          task.sessionPath = data.path;
+          await store.saveTask(task);
+          return;
+        }
+        if (run.finished) return;
+        if (data.type === 'usage' && data.usage) {
+          const prev = task.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 };
+          task.usage = {
+            inputTokens: prev.inputTokens + (Number(data.usage.input) || 0),
+            outputTokens: prev.outputTokens + (Number(data.usage.output) || 0),
+            totalTokens: prev.totalTokens + (Number(data.usage.total) || 0),
+            requests: prev.requests + 1,
+          };
+          return;
+        }
+        if (data.type === 'text') run.text += data.text;
+        if (data.type === 'thinking') run.thinking += data.text || '';
+        if (data.type === 'tool-start' || data.type === 'tool-end')
+          task.messages.push({
+            id: uid('msg'),
+            role: 'tool',
+            tool: data.tool,
+            text: data.text || (data.type === 'tool-start' ? '' : '完成'),
+            status: data.type,
+            createdAt: new Date().toISOString(),
+          });
+        if (data.type === 'error') {
           task.status = 'error';
           task.messages.push({
             id: uid('msg'),
             role: 'system',
-            text: stderr.replaceAll(settings.apiKey!, '[密钥已隐藏]') || `Agent 进程退出 (${code})`,
+            text: data.text,
             createdAt: new Date().toISOString(),
           });
         }
-        await this.finish(run);
+        if (['text', 'thinking', 'tool-start', 'tool-end', 'error'].includes(data.type))
+          this.emit({ taskId, runId: id, ...data });
+        if (data.type === 'done') await this.finish(run);
+      });
+      worker.on('exit', async (code) => {
+        if (!run.finished) {
+          if (run.active && code !== 0) {
+            task.status = 'error';
+            task.messages.push({
+              id: uid('msg'),
+              role: 'system',
+              text: stderr.replaceAll(settings.apiKey!, '[密钥已隐藏]') || `Agent 进程退出 (${code})`,
+              createdAt: new Date().toISOString(),
+            });
+          }
+          await this.finish(run);
+        }
+      });
+      abort.signal.throwIfAborted();
+      worker.postMessage({
+        type: 'start',
+        cwd: workspace,
+        agentDir: agentRuntimeDir,
+        skillsPath: this.skillsPath,
+        projectSkillsPath,
+        userSkillsPath: this.userSkillsPath,
+        activeSkills,
+        thinkingLevel: options?.thinkingLevel || 'off',
+        images,
+        settings: {
+          provider: settings.provider,
+          protocol: settings.protocol || settings.provider,
+          model: connection.modelId,
+          baseUrl: connection.baseUrl,
+          apiKey: settings.apiKey,
+          modelInput: run.supportsImages ? ['text', 'image'] : ['text'],
+          maxTokens: Number(settings.modelParameters?.maxTokens) || 16000,
+          contextWindow: Number(settings.modelParameters?.contextWindow) || 128000,
+          allowShell: settings.allowShell,
+          allowNetwork: settings.allowNetwork,
+        },
+        sessionPath: task.sessionPath,
+        sessionDir,
+        prompt,
+        context: enrichedContext,
+        appRoot: this.appRoot,
+        mediaToolsPath: dirname(binary('ffmpeg')),
+        assetPaths: [...project.assets.map((a) => a.path), ...attachments.map((a) => a.path)].filter(
+          (p): p is string => typeof p === 'string' && p.length > 0,
+        ),
+      });
+      return { runId: id };
+    } catch (err) {
+      run.active = false;
+      run.finished = true;
+      worker.kill();
+      if (this.runs.get(taskId) === run) this.runs.delete(taskId);
+      if (task.status === 'running') {
+        task.status = 'idle';
+        await store.saveTask(task).catch(() => {});
+        this.changed(store, await store.envelope().catch(() => null as any));
       }
-    });
-    abort.signal.throwIfAborted();
-    worker.postMessage({
-      type: 'start',
-      cwd: workspace,
-      agentDir: join(workspace, '.pi-runtime'),
-      skillsPath: this.skillsPath,
-      userSkillsPath: this.userSkillsPath,
-      activeSkills,
-      thinkingLevel: options?.thinkingLevel || 'low',
-      images,
-      settings: {
-        provider: settings.provider,
-        model: connection.modelId,
-        baseUrl: connection.baseUrl,
-        apiKey: settings.apiKey,
-        modelInput: run.supportsImages ? ['text', 'image'] : ['text'],
-        maxTokens: Number(settings.modelParameters?.maxTokens) || 16000,
-        contextWindow: Number(settings.modelParameters?.contextWindow) || 128000,
-        allowShell: settings.allowShell,
-        allowNetwork: settings.allowNetwork,
-      },
-      sessionPath: task.sessionPath,
-      sessionDir,
-      prompt,
-      context: enrichedContext,
-      appRoot: this.appRoot,
-      mediaToolsPath: dirname(binary('ffmpeg')),
-      assetPaths: [...project.assets.map((a) => a.path), ...attachments.map((a) => a.path)],
-    });
-    return { runId: id };
+      throw err;
+    }
   }
   private finish(run: Run) {
     if (run.closing) return run.closing;
@@ -439,13 +476,22 @@ export class AgentHost {
     await this.finish(run);
     return { stopped: true };
   }
+  async stopAll() {
+    for (const pending of this.launching.values()) {
+      pending.abort.abort(new Error('应用退出'));
+    }
+    const ids = [...this.runs.keys()];
+    await Promise.allSettled(ids.map((id) => this.stop(id)));
+  }
   private async request(run: Run, method: string, args: any): Promise<unknown> {
     if (method === 'read_project') {
       const project = await run.store.project();
       const paths = new Map([...run.packEntries].map(([entry, c]) => [c.id, relative(run.workspace, entry)]));
       return {
         ...project,
-        components: project.components.map((c) => ({
+        // Strip heavy waveform arrays and compiled JS bundles to save LLM context tokens.
+        assets: project.assets.map(({ waveform: _w, ...rest }) => rest),
+        components: project.components.map(({ compiled: _c, ...c }) => ({
           ...c,
           workspaceEntry: paths.get(c.id) || `components/${c.id.replace(/[^a-zA-Z0-9_-]/g, '_')}.tsx`,
         })),
@@ -608,6 +654,9 @@ export class AgentHost {
       const before = await run.store.project();
       const required = new Map<string, Asset>();
       for (const op of args.operations) {
+        if (op.type === 'relinkAsset') {
+          throw new Error('Agent 不能直接重连素材路径，请由用户在界面中重新定位素材');
+        }
         if (op.type === 'addAsset') {
           const asset = run.assets.get(op.asset?.id);
           if (!asset)
@@ -619,7 +668,25 @@ export class AgentHost {
           if (compiled) {
             op.component = compiled;
             for (const asset of run.componentAssets.get(compiled.id) || []) required.set(asset.id, asset);
-          } else if (op.component?.pack) throw new Error('请先从任务工作区编译素材包组件');
+          } else {
+            throw new Error('请先使用 compile_component 编译任务工作区中的组件，再通过 putComponent 发布');
+          }
+          // Protect other sequences (Copy-on-Write boundary): refuse overwriting a component referenced outside the active sequence.
+          const targetSeqId = run.scope?.sequenceId || run.task.sequenceId;
+          const usedElsewhere = before.sequences.some(
+            (s) =>
+              s.id !== targetSeqId &&
+              s.clips.some(
+                (c) =>
+                  c.componentId === op.component.id ||
+                  (c.takes || []).some((t) => t.componentId === op.component.id),
+              ),
+          );
+          if (usedElsewhere) {
+            throw new Error(
+              `组件 ${op.component.id} 正被其他成片分支引用，请使用新的组件 ID 编译后再发布，以免影响其他成片`,
+            );
+          }
         }
       }
       for (const id of before.assets.map((a) => a.id)) required.delete(id);
@@ -678,7 +745,8 @@ export class AgentHost {
       const project = await run.store.project();
       const seq = project.sequences.find((s) => s.id === args.sequenceId) || project.sequences[0];
       const frame = Math.max(0, Math.round(Number(args.frame || 0)));
-      const output = join(run.workspace, `preview-${Date.now()}.png`);
+      const output = join(run.workspace, '.tmp', `preview-${randomUUID()}.png`);
+      await mkdir(dirname(output), { recursive: true });
       const job = await this.jobs.render(project, seq.id, output, {
         still: true,
         frame,
@@ -692,44 +760,67 @@ export class AgentHost {
         if (!run.active) await this.jobs.cancel(job.id);
         run.jobs.delete(job.id);
       }
-      if (!run.supportsImages) {
-        let tempAssetPath: string | undefined;
-        try {
-          const asset = await importMedia(output, run.store.path);
-          tempAssetPath = asset.path;
-          run.assets.set(asset.id, asset);
-          return await this.generate(run, {
-            use: 'vision',
-            assetId: asset.id,
-            prompt:
-              args.prompt || '检查这个视频画面的排版、文字溢出、层次、对比度和视觉质量，提供具体改进建议。',
-          });
-        } catch (err) {
-          if (tempAssetPath) await rm(tempAssetPath, { force: true }).catch(() => {});
-          if (/(未配置|请在「设置|用途默认值|缺少提供商|保存 API Key)/.test(String(err))) {
-            const activeClips = seq.clips
-              .filter((c) => frame >= c.start && frame < c.start + c.duration)
-              .map((c) => ({
-                id: c.id,
-                name: c.name,
-                track: c.track,
-                kind: c.kind,
-                text: c.props.text || undefined,
-                presetId: c.props.presetId || undefined,
-              }));
-            return {
-              renderedOk: true,
-              text: '静帧已成功实际渲染（无代码或画面异常）；当前未单独配置视觉理解模型，已返回该帧可见图层结构摘要。',
-              sequence: seq.name,
-              dimensions: `${seq.width}x${seq.height}`,
-              frame,
-              visibleLayers: activeClips,
-            };
+      try {
+        if (!run.supportsImages) {
+          let tempAssetId: string | undefined;
+          try {
+            const asset = await importMedia(output, run.store.path);
+            tempAssetId = asset.id;
+            run.assets.set(asset.id, asset);
+            return await this.generate(run, {
+              use: 'vision',
+              assetId: asset.id,
+              prompt:
+                args.prompt || '检查这个视频画面的排版、文字溢出、层次、对比度和视觉质量，提供具体改进建议。',
+            });
+          } catch (err) {
+            if (/(未配置|请在「设置|用途默认值|缺少提供商|保存 API Key)/.test(String(err))) {
+              const activeClips = seq.clips
+                .filter((c) => frame >= c.start && frame < c.start + c.duration)
+                .map((c) => ({
+                  id: c.id,
+                  name: c.name,
+                  track: c.track,
+                  kind: c.kind,
+                  text: c.props.text || undefined,
+                  presetId: c.props.presetId || undefined,
+                }));
+              return {
+                renderedOk: true,
+                text: '静帧已成功实际渲染（无代码或画面异常）；当前未单独配置视觉理解模型，已返回该帧可见图层结构摘要。',
+                sequence: seq.name,
+                dimensions: `${seq.width}x${seq.height}`,
+                frame,
+                visibleLayers: activeClips,
+              };
+            }
+            throw err;
+          } finally {
+            if (tempAssetId) run.assets.delete(tempAssetId);
           }
-          throw err;
         }
+        return { data: (await readFile(output)).toString('base64') };
+      } finally {
+        await rm(output, { force: true }).catch(() => {});
       }
-      return { data: (await readFile(output)).toString('base64') };
+    }
+    if (method === 'pull_vault_item') {
+      if (!this._globalVault) throw new Error('个人资产库未初始化');
+      if (!args.itemId || typeof args.itemId !== 'string') throw new Error('缺少 itemId');
+      const pulled = await this._globalVault.pullToProject(run.store, args.itemId);
+      this.changed(run.store, pulled.envelope);
+      return {
+        revision: pulled.envelope.project.revision,
+        item: pulled.item,
+        asset: pulled.asset ? { id: pulled.asset.id, name: pulled.asset.name, kind: pulled.asset.kind } : undefined,
+      };
+    }
+    if (method === 'preflight_sequence') {
+      const project = await run.store.project();
+      const targetSeqId = args.sequenceId || run.task.sequenceId || project.sequences[0]?.id;
+      const missing = project.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
+      const issues = preflightSequence(project, targetSeqId, missing);
+      return { sequenceId: targetSeqId, issueCount: issues.length, issues };
     }
     throw new Error('未知 Agent 工具');
   }

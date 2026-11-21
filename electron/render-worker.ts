@@ -1,6 +1,6 @@
 import { renderMedia, renderStill, selectComposition, makeCancelSignal } from '@remotion/renderer';
 import { existsSync } from 'node:fs';
-import { link, unlink } from 'node:fs/promises';
+import { link, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const port = (process as any).parentPort;
@@ -15,6 +15,7 @@ port.on('message', async ({ data }: any) => {
     return;
   }
   if (data.type !== 'render') return;
+  const temporary = data.output + '.rendering' + (data.still ? '.png' : '.mp4');
   try {
     const browserExecutable = [
       '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -36,7 +37,6 @@ port.on('message', async ({ data }: any) => {
     if (!serveUrl) throw new Error('合成引擎未就绪，请先运行 npm run build');
     const inputProps = data.props;
     const binariesDirectory = data.binariesDirectory;
-    const temporary = data.output + '.rendering' + (data.still ? '.png' : '.mp4');
     send({ type: 'progress', progress: 0.03, stage: '读取固定版本' });
     const composition = await selectComposition({
       serveUrl,
@@ -79,10 +79,21 @@ port.on('message', async ({ data }: any) => {
             stage: p.progress < 0.9 ? '渲染画面与声音' : '封装 MP4',
           }),
       });
-    await link(temporary, data.output);
-    await unlink(temporary);
+    try {
+      await link(temporary, data.output);
+      await unlink(temporary);
+    } catch (linkErr) {
+      const code = (linkErr as NodeJS.ErrnoException).code;
+      // External drives (exFAT/FAT32) reject hard links; fall back to atomic rename.
+      if (code === 'ENOTSUP' || code === 'EPERM' || code === 'EXDEV') {
+        await rename(temporary, data.output);
+      } else {
+        throw linkErr;
+      }
+    }
     send({ type: 'done', output: data.output });
   } catch (e) {
+    await unlink(temporary).catch(() => {});
     const raw = e instanceof Error ? e.message : String(e);
     let summary = raw;
     if (/Content Security Policy|CSP|ERR_BLOCKED/i.test(raw)) {

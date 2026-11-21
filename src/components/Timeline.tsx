@@ -709,7 +709,7 @@ export const Timeline = React.memo(function Timeline({
   );
 
   const stepSec = useMemo(
-    () => TICK_STEPS.find((s) => s * pxPerSec >= 64) || TICK_STEPS[TICK_STEPS.length - 1],
+    () => TICK_STEPS.find((s) => s * pxPerSec >= (pxPerSec >= 90 ? 104 : 88)) || TICK_STEPS[TICK_STEPS.length - 1],
     [pxPerSec],
   );
   const ticks = useMemo(() => {
@@ -720,7 +720,7 @@ export const Timeline = React.memo(function Timeline({
     return list;
   }, [totalSeconds, stepSec, sequence.fps]);
 
-  const showFramePrecision = stepSec < 2 || pxPerSec >= 90;
+  const showFramePrecision = stepSec < 2 && stepSec * pxPerSec >= 96;
 
   const startScrub = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {

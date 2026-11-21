@@ -1,6 +1,6 @@
 # CoCraft 决策记录
 
-更新日期：2026 年 11 月 18 日（v0.4 领域模型与产品体验深度重对齐）。
+更新日期：2026 年 11 月 22 日（深度全面审计后拍板「先止血再提质」三波次路线 C）。
 
 “已对齐”记录用户明确表达或拍板的方向；“当前建议”保留技术评估方案与待验证条件；“已替代”防止后续沿用旧前提。能力是否已经实现，以 [迭代计划](ROADMAP.md) 的验收记录为准。
 
@@ -26,6 +26,7 @@
 | 11 月 18 日 | **Figma × CapCut Pro 高密度属性栏 & 创造画布全品类资产演化** | 右侧 `Inspector` 升级为 `26px` `ScrubInput` 前缀拖值 + `AlignBar` 六向对齐 + `PropToggleSection` 按需启用描边/背景/阴影/副标题 + `[样式/动效]` 与 `[画面/调节/音频]` 二级属性；`CreateCanvas` 以 `computePrimaryTimelineShots` 保持主镜不因叠字碎片化，并将独立图片、视频与可试听音频/组件卡统一纳入画布资产区与血缘连线；`.toast` 上移至顶部标题栏下避让底部 Omnibar 输入框 |
 | 11 月 18 日 | **TapNow 原生画布交互 × 高频时钟时间线解耦 × 多选编组/素材包与剪辑资产沉淀（v0.5.2）** | ① 移除创造画布左悬浮条 `.cc-float-rail` 与拆解模态框，改为底部 `( + )` FAB + 右键菜单 + Drop-to-Create + 画布内联可编辑文本节点（`entityKind: 'text'`）+ 右下三合一胶囊 + 全向连线；② 新增统一取消选中（点空白/`Esc`）与多选框选/`Shift/⌘+Click`（支持 `@ 添加到对话`、`⌘G 成组`、`打成素材包` 个人库/离线 `cocraft-pack.json`、`建立关联`、`串入时间线`、`存为资产`）；③ 建立独立外部 `PlayheadClock` 驱动播放头 `translate3d` 与独立 `<PlayheadTimecode>`，`rAF` 节流预览 `seek` 并冻结搓擦期间的 `measureVisibleBoxes`，彻底消除时间线拖动/播放卡顿；④ 对齐 macOS `38px` 顶栏红绿灯（`y: 13`），移除双层焦点轮廓、`input[type="range"]` 粗滑条与底部 `.composer-note`，`Inspector` 全量收敛至 `24px` 精度（单行填充+不透明+混合）；⑤ 新增 `AudioWaveformPlayer` 单色可拖拽进度音频试听组件与 `compound` 精剪资产沉淀（`createCompoundVaultItemFromClips` / `instantiateCompoundVaultItemOperations`），支持将裁剪与调色转场后的时间线选区回存至资产库并跨项目封装 |
 | 11 月 18 日 | **阿里百炼 / 千问全模态可扩展接入 × 可视化 Skill 工作台 × 对话与画布交互深化（v0.5.3）** | ① 在 `ProviderConnection['protocol']` 中抽象原生+兼容双模路由协议 `'dashscope'`（及可复用 `providerModelSuites` 推荐模型套件注册表），一个连接与 API Key 同时打通千问对话/视觉（`/compatible-mode/v1`）、千问生图/万相生图（`dashscope-image`）、万相文生/图生视频异步任务及崩溃恢复（`dashscope-video`）、千问 TTS 语音合成（`dashscope-speech`）与本地音视频切片 Base64 直传 ASR 转录（`dashscope-transcription`），后续扩展新云厂商仅需注册套件与适配器；② 开放设置页 `Skills 与工具` 工作台（项目/全局/内置三层优先级加载、`cocraft-multimodal` 全流程 Skill、内置派生覆盖、自定义 `SKILL.md` 新建/导入/编辑/常驻开关）；③ 废弃原生系统 `<select>`，重构 Agent 自定义单色会话弹窗、紧凑无间距模型选择器、可调思考深度（`off/low/medium/high` 直通 Pi SDK）、剪贴板/拖放/选择多模态附件与圆形发送按钮，并以 `AgentThread` 折叠思考过程、顺序配对工具执行时间线及可点击时间码增强会话可读性；④ 重构画布全向自适应 4 向端口连线、全卡表面拖拽（节点层级置于线标签层之上防止斜线遮挡）、去除画布属性冗余 `成片视觉风格` 4 张模板卡并修复全局 `.switch` 滑块溢出 |
+| 11 月 22 日 | **暂停新功能扩张，按路线 C 执行三波次稳定化、专业 NLE 对齐与还债** | 暂缓 PBR `RoomEnvironment`、`roughjs`、关键帧曲线等新特性，先收口三波次：① **Wave A（止血与安全封口）** 封堵 P0 安全/沙箱/SSRF/MediaServer/预览通道与 DashScope/3D/UI 高危阻断；② **Wave B（创作者交付信任 + 专业 NLE 标准）** 清零 11/18 评审前 10 项并按专业剪辑软件标准改造转场（真 A/B 交叠）、统一创造/剪辑单一分镜模型、明确音频附着模式（`随镜` vs `固定时间线`）与三路音频独立静音，落地固定红蓝片端到端回归；③ **Wave C（前端架构与 CSS 减债）** 统一 `AssetExplorer` / `ResourceLibrary`、拆分 `App.tsx` 并收拢冗余样式与 `z-index` 层级体系 |
 
 ## 已替代的前提
 

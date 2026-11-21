@@ -816,6 +816,7 @@
   color: var(--dim);
 }
 .modal-backdrop {
+  z-index: 200;
   background: rgba(5, 8, 16, 0.36);
   backdrop-filter: blur(7px);
   padding: 30px;
@@ -863,6 +864,7 @@
   font-size: 11px;
 }
 .jobs-popover {
+  z-index: 120;
   border-radius: 13px;
   width: 370px;
   right: 18px;
@@ -6063,13 +6065,13 @@ input[type='checkbox']:not(.switch) {
 }
 .ins-fill-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px 72px;
+  grid-template-columns: minmax(0, 1fr) 76px 64px;
   gap: 5px;
   align-items: center;
 }
 .ins-canvas-bg-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 84px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   align-items: center;
 }
@@ -6172,9 +6174,10 @@ input[type='checkbox']:not(.switch) {
   height: 22px;
 }
 .ins-slider-label {
-  width: 40px;
+  width: 48px;
   font-size: 10.5px;
   color: var(--muted);
+  white-space: nowrap;
   flex-shrink: 0;
   cursor: default;
   user-select: none;
@@ -6199,9 +6202,10 @@ input[type='checkbox']:not(.switch) {
   height: 24px;
 }
 .ins-inline-row > span {
-  width: 40px;
+  width: 48px;
   font-size: 10.5px;
   color: var(--muted);
+  white-space: nowrap;
   flex-shrink: 0;
 }
 .ins-inline-row > select,
@@ -6445,8 +6449,10 @@ input[type='checkbox']:not(.switch) {
   position: absolute;
   left: 0;
   bottom: calc(100% + 7px);
-  min-width: 204px;
-  max-width: 260px;
+  min-width: 196px;
+  max-width: 248px;
+  max-height: 280px;
+  overflow-y: auto;
   z-index: 90;
   padding: 4px;
   border-radius: 10px;
@@ -6456,6 +6462,10 @@ input[type='checkbox']:not(.switch) {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+.composer-popover.align-right {
+  left: auto;
+  right: 0;
 }
 .composer-popover > button {
   width: 100%;

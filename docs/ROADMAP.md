@@ -1,6 +1,6 @@
 # CoCraft 迭代与重构计划（ROADMAP）
 
-更新日期：2026 年 11 月 18 日（完成单色 IDE 双模架构重构与打包版 `CoCraft.app` 阻断项清零复验）。
+更新日期：2026 年 11 月 22 日（完成深度全面审计与 Wave A 安全封口 / 模型路由 / 3D / P0 交互阻断清零，并完成打包版全量实机复验）。
 
 遵循小时级可运行、可演示、可验证增量交付约定。每次交付包含实际构建、可复现步骤、自动化与真机验证结果、已知边界和下一项最小目标。
 
@@ -59,6 +59,17 @@
   - **3. Agent 会话列表、Composer 与对话渲染全面升级**：废弃系统 `<select>`，落地自定义单色会话切换弹窗（`+ 新建对话`、分支、紧凑 Token 读数、内联重命名/删除）、紧凑型模型与思考深度弹窗（`off/low/medium/high` 直通 Pi SDK）、曲别针/粘贴/拖放多模态附件、`28×28` 圆形发送按钮；新增 `AgentThread` 折叠思考块、同回合顺序配对折叠工具组与带语言头/复制键/时间码跳转的 `Markdown` 渲染。
   - **4. 画布全向连线与组件细节打磨**：支持全部节点卡片任意位置直接拖移（提升 `.cc-node` `z-index` 解决斜线 pill 遮挡卡面拖拽问题）、自适应 4 向端口贝塞尔弧线消除 `S` 形回环、双向端口拖线及全 4 类连线点击徽章解绑；移除画布属性冗余 `成片视觉风格` 4 张卡片并修复 `.switch` 滑块溢出。
   - **打包版最终复验结果**：`npm run package`、`npm run test:unit`、`npm run smoke:models`（含 DashScope 5 类全模态及 I2V 无图拦截测试）、打包版 `npm run smoke:agent` 与打包版 `npm run test:v04`（含 `[6/6]` 与截图 `11`/`12`/`13` 视觉复审及 `822,946 bytes / 5.01s` MP4 `ffprobe` 校验）全部通过（退出码 0）。
+- **v0.5.4 Wave A 止血加固：安全沙箱封口、模型兼容路由、3D/预览稳定性与 P0 界面缺陷清零（已通过打包版全套验收 ✅，耗时约 44 分钟）**：
+  - **1. 安全与隔离封口**：
+    - `electron/agent-worker.ts` & `electron/agents.ts`：重写 `guard()` 递归解析符号链接堵住悬空软链逃逸，清理 `readRoots` 空字符串边界；将 macOS `sandbox-exec` 改为经实测验证的 `(deny default)` 最小白名单（阻断 `~/.ssh`、`/private/tmp`、`pbpaste`、`open`、Keychain、AppleEvents 与工作区外写入，开启联网时同时封锁本机回环）；封禁 Agent 与原始 `project.edit` 直接调用 `relinkAsset` / `addAsset`；强化 `putComponent` 的编译前置校验与跨序列 CoW 检查；将 `agentDir` 与项目 Skills 移出可写工作区；补齐进程终止 `SIGTERM -> 2s SIGKILL`、`stopAll()`、中段停止孤儿进程清理、补全 `steer` 图片/路径与尾段排空，以及 `pull_vault_item` / `preflight_sequence` 工具。
+    - `electron/generation.ts` & `electron/server.ts` & `electron/main.ts`：SSRF 校验增加 `dns.lookup(..., { all: true })`、IPv6 私有/链路本地段、IPv4 映射 IPv6（`::ffff:127.0.0.1`）、CGNAT 及阿里云元数据 `100.100.100.200` 拦截，并改用流式 `downloadToFile`（512MB 上限与失败清理）；`MediaServer` 对 `renderAssets` 引入引用计数释放、动态收紧 `PREVIEW_CSP` 到精确 `selfHost`、增加 `nosniff` 与 SVG `sandbox` 头；`main.ts` 对 `skills.import` 限制 `.md` 与 512KB、对导出文件名清洗路径字符、对粘贴附件限 20MB、新增单实例锁与退出清理；`preview.tsx` / `App.tsx` 将预览热键与播放通道升级为私有 `MessageChannel` / `MessagePort`，阻断不受信任 TSX 伪造 `window.postMessage` 热键。
+  - **2. 模型路由与持久化可靠性**：
+    - 保留 `SettingsStore.agent()` 的 `protocol`，修复 DashScope 主 Agent 误打 `/v1/chat/completions` 404 问题（现准确命中 `/compatible-mode/v1/chat/completions`）；为 Pi SDK 注入精确 `compat` 与 `modelSupportsReasoning()`，停止向普通兼容模型发送 `reasoning_effort` / `role: developer` / `max_completion_tokens`，为 Qwen3 思考模式映射原生 `thinkingFormat: 'qwen'`（`enable_thinking`）；修正 `wan2.6` 冲突参数与 I2V 大图压缩、ASR 分块重叠去重与按句切分、15 分钟轮询超时与瞬断重试、`vision` `max_tokens`。
+    - `store.ts` / `vault.ts` / `packs.ts` / `jobs.ts` / `render-worker.ts`：串行化 `envelope()` 并自动重建缺失/损坏的 `revisions-index.json`；`copyIntoLibrary` 改用流式 SHA-256 防大视频 OOM 并堵住 `stageLibraryFile` 路径穿越；支持 `packs.export` 携带 `vaultIds` 完整导出实体与复合资产；`render-worker.ts` 兼容 exFAT/FAT32 `link()` 降级 `rename()` 并清理 `.rendering.*` 临时文件，`before-quit` 仅终止本地导出子进程而不破坏云端作业崩溃续传语义。
+  - **3. 3D / 合成一致性与前端 P0/P1 修复**：
+    - `ThreeStage.tsx` / `Film.tsx` / `preview.tsx`：修复异步加载 GLB / 暂停改参后 3D 白屏，递归释放几何/材质/纹理并调用 `forceContextLoss()`，小尺寸卡片缩略图渲染一帧转静态 PNG 后立刻释放 WebGL 上下文；去除 `Film.tsx` 暂停选中时的表现偏差，增加 `componentCache` LRU(64) 与每片段 `<ClipErrorBoundary>`，修复 `Code` 变换顺序与 `preview.tsx` 崩溃恢复后 `<Player>` 监听重绑。
+    - `App.tsx` / `CreateCanvas.tsx` / `Inspector.tsx` / `Timeline.tsx` / `AssetExplorer.tsx` / `SettingsDialog.tsx`：修复初始帧硬编码 70 → `0`、默认思考深度 `off`、音频试听跨切残留、全量拖拽遮罩卸载清理、`textDrafts` 撤销重置与工具栏失焦竞态、Modal `z-index` 被顶栏遮挡与弹窗内全局快捷键误触、标尺标签重叠、属性栏音频页签切图片白屏、画布底色重复输入、文字填充 `透 100 %` 截断、思考深度弹窗右溢视口、素材栏跨分类隐藏筛选与设置页一键套件 React 18 批处理覆盖。
+  - **打包版全量验收结果**：`npm run test:unit`、`npm run smoke`、`npm run smoke:models`（含 `100.100.100.200` 与 `::ffff:127.0.0.1` SSRF 拦截）、打包版 `npm run smoke:agent`（含悬空软链逃逸、`relinkAsset` 拦截、deny-default 沙箱与 DashScope `enable_thinking` 路由）、打包版 `verify_wave_a.mjs`（9 项实机交互/安全/UI 断言 + 0 控制台/页面报错）与打包版 `npm run test:v04`（`[1/5]`–`[6/6]` + `823,745 bytes / 5.01s` H.264/AAC MP4 `ffprobe` 校验）全部 PASS（退出码 0）。
 
 ---
 
@@ -67,10 +78,11 @@
 - 11 月 18 日，用本机 0.4.0 打包应用手动选择 `wan2.6-i2v`，将内置电车参考图提交给阿里百炼。远端作业成功，CoCraft 下载并登记了 1280×720、30 fps、约 5 秒的 H.264/AAC 素材。通过后台作业面板添加到时间线后，实机播放并核对了 150 帧片段。此次实测覆盖图生视频。[回执摘要](../artifacts/alpha-intro/source/video-job.json) · [生成结果](../artifacts/alpha-intro/media/wan.mp4)
 - `城市清晨` 的同一脚本在创造画布拆为三镜后进入剪辑工作台；实录验证了字幕编辑、项目 Skill 的保存、试剪分支独立换序、跨项目个人库引入与 MP4 导出。[实录与片源](../artifacts/alpha-intro/README.md)
 
-## 下一阶段演进方向（v0.4 增量 2 最小目标）
+## 下一阶段演进方向（路线 C · Wave B & Wave C 最小目标）
 
-1. **PBR 摄影棚高光环境反射（`RoomEnvironment`）与三维零件引线标注**：补充真实金属/玻璃反光反射与 3D 零件交互引出说明。
-2. **`roughjs` 真矢量手绘笔触、多段平滑光标推拉与相邻双向交叉叠化**：升级手绘白板推演为真实矢量双描边手绘路径，支持录屏多焦点关键帧推拉与 A/B 双轨交叉叠化/J-L Cut 音频延展。
+1. **Wave B · 创作者交付信任与专业 NLE 标准对齐**：清零 11/18 评审前 10 项（基于内容指纹的锁保护重连、V1 原声/A1 音轨/监听三路独立静音、分镜拆解保留数字前缀、分句 SRT 时码编辑与防双写、复合镜头整栈沉淀与跨帧率缩放、按 `sourceIn` 真帧缩略图、AI 候选回挂目标镜头 `ClipTake`、完整 `preflightSequence` 与错误显性提示），并按专业剪辑软件标准升级真 A/B 交叉叠化转场、统一创造/剪辑单一分镜模型、明确音频附着模式（`随镜` / `固定时间线`），补齐固定红蓝片端到端自动化回归。
+2. **Wave C · 前端架构与 CSS 减债**：合并 `AssetExplorer` 与 `ResourceLibrary` 共享目录索引引擎、拆分 `src/App.tsx`、收敛 `styles.css` + `workbench.css` 重叠/死代码与统一 `--z-*` 层级令牌，优化 `1080×720` 笔记本视口密度。
+3. **待稳定化完成后再推进（暂缓）**：PBR `RoomEnvironment` 环境反射、`roughjs` 矢量手绘与关键帧曲线编辑器。
 
 ---
 

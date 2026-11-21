@@ -10,16 +10,16 @@ import {
   createBashToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
-import { readFile, writeFile, mkdir, realpath, access } from 'node:fs/promises';
-import { resolve, dirname, join, extname } from 'node:path';
-import { homedir } from 'node:os';
+import { readFile, writeFile, mkdir, realpath, access, lstat, readlink } from 'node:fs/promises';
+import { resolve, dirname, join, extname, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { AgentSession, ToolDefinition } from '@earendil-works/pi-coding-agent';
 const port = (process as any).parentPort;
 let session: AgentSession | undefined;
 let stopped = false;
-const earlySteers: string[] = [];
+let activeReadRoots: string[] = [];
+const earlySteers: { text: string; images?: any[]; extraReadPaths?: string[] }[] = [];
 const pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 const send = (data: unknown) => port.postMessage(data);
 function request(method: string, payload: unknown): Promise<any> {
@@ -52,16 +52,28 @@ function hostTool(
     execute: async (_id, args) => result(await request(name, args)),
   };
 }
-async function guard(file: string, roots: string[], write = false) {
-  let path = resolve(file),
-    probe = path;
+function isWithinRoots(resolved: string, roots: string[]): boolean {
+  const validRoots = roots.filter((r) => typeof r === 'string' && r.length > 0 && isAbsolute(r));
+  return validRoots.some((root) => resolved === root || resolved.startsWith(root + '/'));
+}
+async function guard(file: string, roots: string[], write = false, depth = 0): Promise<string> {
+  if (depth > 8) throw new Error('符号链接层级过深');
+  const path = resolve(file);
+  let probe = path;
   while (true) {
     try {
+      // Check lstat first so a dangling symlink inside cwd pointing outside roots is NEVER followed!
+      const st = await lstat(probe);
+      if (st.isSymbolicLink()) {
+        const linkTarget = await readlink(probe);
+        const resolvedTarget = resolve(dirname(probe), linkTarget);
+        const remainder = path.slice(probe.length);
+        return guard(resolvedTarget + remainder, roots, write, depth + 1);
+      }
       const real = await realpath(probe);
       const resolved = real + path.slice(probe.length);
-      if (!roots.some((root) => resolved === root || resolved.startsWith(root + '/')))
-        throw new Error('路径超出任务工作区');
-      return path;
+      if (!isWithinRoots(resolved, roots)) throw new Error('路径超出任务工作区');
+      return resolved;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT' || !write) throw e;
       const parent = dirname(probe);
@@ -70,8 +82,65 @@ async function guard(file: string, roots: string[], write = false) {
     }
   }
 }
+function modelSupportsReasoning(modelId: string, protocol: string, baseUrl: string): boolean {
+  const id = modelId.toLowerCase();
+  const url = baseUrl.toLowerCase();
+  if (/^(o1|o3|o4|gpt-5)/.test(id)) return true;
+  if (/claude-(3-7|sonnet-4|opus-4|haiku-4|4)/.test(id)) return true;
+  if (/gemini-(2\.5|3|.*thinking)/.test(id)) return true;
+  if (/deepseek-(r1|reasoner)/.test(id)) return true;
+  if (/(thinking|reasoner|-r1\b|qwq|qvq)/.test(id)) return true;
+  if ((protocol === 'dashscope' || url.includes('dashscope') || url.includes('qianwen')) && /^qwen3/.test(id))
+    return true;
+  return false;
+}
+function buildOpenAICompat(
+  protocol: string,
+  baseUrl: string,
+  supportsReasoning: boolean,
+): Record<string, unknown> | undefined {
+  const url = baseUrl.toLowerCase();
+  const isOfficialOpenAI = url.includes('api.openai.com');
+  if (isOfficialOpenAI) return undefined;
+  const isDashscope = protocol === 'dashscope' || url.includes('dashscope') || url.includes('qianwen');
+  if (isDashscope) {
+    return {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      maxTokensField: 'max_tokens',
+      thinkingFormat: 'qwen',
+    };
+  }
+  const isDeepSeek = url.includes('deepseek.com');
+  if (isDeepSeek) {
+    return {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: supportsReasoning,
+      maxTokensField: 'max_tokens',
+    };
+  }
+  return {
+    supportsStore: false,
+    supportsDeveloperRole: false,
+    supportsReasoningEffort: supportsReasoning,
+    maxTokensField: 'max_tokens',
+  };
+}
+async function resolveValidPaths(paths: unknown[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const raw of paths) {
+    if (typeof raw !== 'string' || !raw.trim() || !isAbsolute(raw)) continue;
+    try {
+      const rp = await realpath(raw);
+      if (rp && isAbsolute(rp)) out.push(rp);
+    } catch {}
+  }
+  return Array.from(new Set(out));
+}
 async function start(data: any) {
-  const { cwd, agentDir, skillsPath, settings, sessionPath, sessionDir, prompt, assetPaths } = data;
+  const { cwd, agentDir, skillsPath, projectSkillsPath, settings, sessionPath, sessionDir, prompt, assetPaths } = data;
   stopped = false;
   // One utility process serves one configured Agent connection, including the SDK's global-fetch transports.
   const origin = new URL(settings.baseUrl).origin;
@@ -91,14 +160,18 @@ async function start(data: any) {
   await mkdir(agentDir, { recursive: true });
   await mkdir(join(cwd, '.tmp'), { recursive: true });
   const userSkillsReal = data.userSkillsPath ? await realpath(data.userSkillsPath).catch(() => null) : null;
-  const writeRoots = [await realpath(cwd)],
-    readRoots = [
-      ...writeRoots,
-      await realpath(skillsPath),
-      ...(userSkillsReal ? [userSkillsReal] : []),
-      ...(await Promise.all((assetPaths || []).map((p: string) => realpath(p).catch(() => p)))),
-    ];
-  const read = async (p: string) => readFile(await guard(p, readRoots));
+  const projectSkillsReal = projectSkillsPath ? await realpath(projectSkillsPath).catch(() => null) : null;
+  const resolvedAssets = await resolveValidPaths(Array.isArray(assetPaths) ? assetPaths : []);
+  const writeRoots = [await realpath(cwd)];
+  const readRoots = [
+    ...writeRoots,
+    await realpath(skillsPath),
+    ...(projectSkillsReal ? [projectSkillsReal] : []),
+    ...(userSkillsReal ? [userSkillsReal] : []),
+    ...resolvedAssets,
+  ];
+  activeReadRoots = readRoots;
+  const read = async (p: string) => readFile(await guard(p, activeReadRoots));
   const write = async (p: string, content: string) => {
     if (stopped) throw new Error('运行已停止');
     await writeFile(await guard(p, writeRoots, true), content, 'utf8');
@@ -108,7 +181,7 @@ async function start(data: any) {
       operations: {
         readFile: read,
         access: async (p) => {
-          await access(await guard(p, readRoots));
+          await access(await guard(p, activeReadRoots));
         },
         detectImageMimeType: async (p) =>
           ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' })[
@@ -295,7 +368,24 @@ async function start(data: any) {
         };
       },
     },
+    hostTool(
+      'pull_vault_item',
+      '从个人库引入资产',
+      'Pull an asset, character entity, style, component, or compound clip from the personal cross-project library (discovered via search_assets scope="personal") into the current project.',
+      Type.Object({ itemId: Type.String() }),
+    ),
+    hostTool(
+      'preflight_sequence',
+      '交付预检检查',
+      'Run export preflight checks on a sequence to detect missing/offline media, visual black gaps, caption overflow, or audio clipping risks before finishing.',
+      Type.Object({ sequenceId: optionalText }),
+    ),
   ];
+  const skillsReal = await realpath(skillsPath);
+  const mediaToolsReal =
+    typeof data.mediaToolsPath === 'string' && isAbsolute(data.mediaToolsPath)
+      ? await realpath(data.mediaToolsPath).catch(() => null)
+      : null;
   if (settings.allowShell) {
     customTools.push(
       createBashToolDefinition(cwd, {
@@ -303,8 +393,48 @@ async function start(data: any) {
         operations: {
           exec: (command, _cwd, options) =>
             new Promise((resolvePromise, reject) => {
-              const quote = (s: string) => JSON.stringify(s);
-              const profile = `(version 1)(allow default)(deny file-write*)(deny file-read* (subpath ${quote(homedir())}) (subpath "/Users") (subpath "/Volumes") (subpath "/private/etc/ssh"))(allow file-read* ${[cwd, data.appRoot, skillsPath, data.mediaToolsPath, ...assetPaths].map((s: string) => `(subpath ${quote(s)})`).join(' ')})(allow file-write* (subpath ${quote(cwd)}) (literal "/dev/null"))${settings.allowNetwork ? '' : '(deny network*)'}`;
+              const q = (s: string) => JSON.stringify(s);
+              const readSubpaths = [
+                cwd,
+                skillsReal,
+                ...(projectSkillsReal ? [projectSkillsReal] : []),
+                ...(userSkillsReal ? [userSkillsReal] : []),
+                ...(mediaToolsReal ? [mediaToolsReal] : []),
+              ]
+                .filter((s) => Boolean(s) && isAbsolute(s))
+                .map((s) => `(subpath ${q(s)})`)
+                .join(' ');
+              const assetLiterals = activeReadRoots
+                .filter((s) => s !== cwd && s !== skillsReal && s !== projectSkillsReal && s !== userSkillsReal)
+                .map((s) => `(literal ${q(s)})`)
+                .join(' ');
+              const networkRules = settings.allowNetwork
+                ? [
+                    '(allow network-outbound (remote ip))',
+                    '(deny network-outbound (remote ip "localhost:*") (remote ip "127.0.0.1:*") (remote ip "::1:*"))',
+                    '(allow mach-lookup (global-name "com.apple.SystemConfiguration.configd") (global-name "com.apple.trustd.agent") (global-name "com.apple.dnssd.service") (global-name "com.apple.mDNSResponder"))',
+                  ].join('\n')
+                : '';
+              const profile = [
+                '(version 1)',
+                '(deny default)',
+                '(allow process-exec)',
+                '(allow process-fork)',
+                '(allow process-info* (target same-sandbox))',
+                '(allow signal (target same-sandbox))',
+                '(allow sysctl-read)',
+                '(allow pseudo-tty)',
+                '(allow file-ioctl (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
+                '(allow file-read-metadata)',
+                '(allow file-map-executable)',
+                `(allow file-read* (literal "/") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library/Frameworks") (subpath "/Library/Preferences") (subpath "/Library/Apple") (subpath "/Library/Developer/CommandLineTools") (subpath "/opt/homebrew") (subpath "/usr/local") (subpath "/private/etc") (subpath "/dev") (literal "/etc") (literal "/var") (literal "/tmp") (subpath "/private/var/db/timezone") (subpath "/private/var/select") ${readSubpaths} ${assetLiterals})`,
+                '(deny file-read* (subpath "/private/etc/ssh") (subpath "/private/etc/master.passwd"))',
+                `(allow file-write* (subpath ${q(cwd)}) (literal "/dev/null") (literal "/dev/dtracehelper"))`,
+                '(allow mach-lookup (global-name "com.apple.system.logger") (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.system.notification_center"))',
+                networkRules,
+              ]
+                .filter(Boolean)
+                .join('\n');
               const proc = spawn(
                 '/usr/bin/sandbox-exec',
                 [
@@ -314,13 +444,14 @@ async function start(data: any) {
                   '--noprofile',
                   '--norc',
                   '-c',
-                  `export DYLD_LIBRARY_PATH='${String(data.mediaToolsPath).replace(/'/g, "'\\''")}'\n${command}`,
+                  `${mediaToolsReal ? `export DYLD_LIBRARY_PATH='${mediaToolsReal.replace(/'/g, "'\\''")}'\n` : ''}${command}`,
                 ],
                 {
                   cwd,
                   env: {
                     PATH:
-                      data.mediaToolsPath + ':/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+                      (mediaToolsReal ? mediaToolsReal + ':' : '') +
+                      '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
                     LANG: 'en_US.UTF-8',
                     TMPDIR: join(cwd, '.tmp'),
                     npm_config_cache: join(cwd, '.npm-cache'),
@@ -331,16 +462,29 @@ async function start(data: any) {
               );
               proc.stdout.on('data', options.onData);
               proc.stderr.on('data', options.onData);
+              let killEscalation: ReturnType<typeof setTimeout> | undefined;
               const kill = () => {
                 try {
                   process.kill(-proc.pid!, 'SIGTERM');
                 } catch {}
+                if (!killEscalation) {
+                  killEscalation = setTimeout(() => {
+                    try {
+                      process.kill(-proc.pid!, 'SIGKILL');
+                    } catch {}
+                  }, 2000);
+                }
               };
               options.signal?.addEventListener('abort', kill, { once: true });
               const timeout = setTimeout(kill, Math.min(options.timeout || 60, 180) * 1000);
-              proc.on('error', reject);
+              proc.on('error', (err) => {
+                clearTimeout(timeout);
+                if (killEscalation) clearTimeout(killEscalation);
+                reject(err);
+              });
               proc.on('close', (code) => {
                 clearTimeout(timeout);
+                if (killEscalation) clearTimeout(killEscalation);
                 options.signal?.removeEventListener('abort', kill);
                 resolvePromise({ exitCode: code });
               });
@@ -357,30 +501,42 @@ async function start(data: any) {
   const provider =
     'cocraft-' +
     createHash('sha256')
-      .update(settings.provider + settings.baseUrl)
+      .update((settings.protocol || settings.provider) + settings.baseUrl)
       .digest('hex')
       .slice(0, 16);
-  const thinkingLevel = ['off', 'low', 'medium', 'high'].includes(data.thinkingLevel)
+  const requestedThinking = ['off', 'low', 'medium', 'high'].includes(data.thinkingLevel)
     ? data.thinkingLevel
-    : 'low';
+    : 'off';
+  const supportsReasoning = modelSupportsReasoning(
+    settings.model,
+    settings.protocol || settings.provider,
+    settings.baseUrl,
+  );
+  const effectiveThinking = supportsReasoning ? requestedThinking : 'off';
+  const apiKind =
+    settings.provider === 'anthropic'
+      ? 'anthropic-messages'
+      : settings.provider === 'google'
+        ? 'google-generative-ai'
+        : 'openai-completions';
+  const compat =
+    apiKind === 'openai-completions'
+      ? buildOpenAICompat(settings.protocol || settings.provider, settings.baseUrl, supportsReasoning)
+      : undefined;
   runtime.registerProvider(provider, {
     baseUrl: settings.baseUrl,
-    api:
-      settings.provider === 'anthropic'
-        ? 'anthropic-messages'
-        : settings.provider === 'google'
-          ? 'google-generative-ai'
-          : 'openai-completions',
+    api: apiKind,
     models: [
       {
         id: settings.model,
         name: settings.model,
-        reasoning: thinkingLevel !== 'off',
+        reasoning: supportsReasoning && effectiveThinking !== 'off',
         input: settings.modelInput,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: settings.contextWindow,
         maxTokens: settings.maxTokens,
-      },
+        ...(compat ? { compat } : {}),
+      } as any,
     ],
   });
   await runtime.setRuntimeApiKey(provider, settings.apiKey);
@@ -399,16 +555,16 @@ async function start(data: any) {
     agentDir,
     settingsManager,
     additionalSkillPaths: [
-      join(cwd, 'skills'),
+      ...(projectSkillsReal ? [projectSkillsReal] : []),
       ...(userSkillsReal ? [userSkillsReal] : []),
-      skillsPath,
+      skillsReal,
     ],
     noExtensions: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
     appendSystemPrompt: [
-      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
+      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Call pull_vault_item to adopt assets from the personal library, and preflight_sequence to verify export readiness. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
     ],
   });
   await loader.reload();
@@ -425,7 +581,7 @@ async function start(data: any) {
     sessionManager: manager,
     customTools,
     tools: customTools.map((t) => t.name),
-    thinkingLevel: thinkingLevel as any,
+    thinkingLevel: effectiveThinking as any,
   });
   session = created.session;
   send({ type: 'session', path: manager.getSessionFile() });
@@ -457,10 +613,26 @@ async function start(data: any) {
     prompt,
     Array.isArray(data.images) && data.images.length ? { images: data.images } : undefined,
   );
-  for (const message of earlySteers.splice(0)) await session.steer(message);
+  for (const item of earlySteers.splice(0)) {
+    if (item.extraReadPaths?.length) {
+      const extra = await resolveValidPaths(item.extraReadPaths);
+      activeReadRoots = Array.from(new Set([...activeReadRoots, ...extra]));
+    }
+    await session.steer(item.text, item.images?.length ? item.images : undefined);
+  }
   await response;
+  // Drain any steer messages that arrived right as the previous turn ended (prevents silent drops).
+  while (earlySteers.length > 0 && !stopped) {
+    const next = earlySteers.shift()!;
+    if (next.extraReadPaths?.length) {
+      const extra = await resolveValidPaths(next.extraReadPaths);
+      activeReadRoots = Array.from(new Set([...activeReadRoots, ...extra]));
+    }
+    await session.prompt(next.text, next.images?.length ? { images: next.images } : undefined);
+  }
   send({ type: 'done' });
   session.dispose();
+  session = undefined;
 }
 port.on('message', async ({ data }: any) => {
   if (data.type === 'response') {
@@ -477,13 +649,19 @@ port.on('message', async ({ data }: any) => {
     pending.clear();
     await session?.abort();
     session?.dispose();
+    session = undefined;
     send({ type: 'done' });
     return;
   }
   if (data.type === 'steer') {
     if (!stopped) {
-      if (session) await session.steer(data.text);
-      else earlySteers.push(data.text);
+      if (Array.isArray(data.extraReadPaths) && data.extraReadPaths.length) {
+        const extra = await resolveValidPaths(data.extraReadPaths);
+        activeReadRoots = Array.from(new Set([...activeReadRoots, ...extra]));
+      }
+      const imgs = Array.isArray(data.images) && data.images.length ? data.images : undefined;
+      if (session?.isStreaming) await session.steer(data.text, imgs);
+      else earlySteers.push({ text: data.text, images: imgs, extraReadPaths: data.extraReadPaths });
     }
     return;
   }

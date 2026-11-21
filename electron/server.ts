@@ -26,16 +26,19 @@ const mime: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-const PREVIEW_CSP =
-  "default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' http://127.0.0.1:* http://localhost:* data: blob:; media-src 'self' http://127.0.0.1:* http://localhost:* blob: data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob: data:; font-src 'self' data:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'";
+const buildPreviewCsp = (selfHost: string) =>
+  `default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' ${selfHost} data: blob:; media-src 'self' ${selfHost} blob: data:; connect-src 'self' ${selfHost} blob: data:; font-src 'self' data:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'`;
 
+// Headless Remotion render compositor uses an ephemeral localhost frame-extraction proxy.
 const RENDER_CSP =
   "default-src 'none'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' http://127.0.0.1:* http://localhost:* data: blob:; media-src 'self' http://127.0.0.1:* http://localhost:* blob: data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob: data:; font-src 'self' data:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'";
 
 export class MediaServer {
   private studioAssets = new Map<string, Asset>();
   private projectAssets = new Map<string, Asset>();
-  private renderAssets = new Map<string, Asset>();
+  private renderAssets = new Map<string, { asset: Asset; refs: number }>();
+  private server: ReturnType<typeof createServer> | null = null;
+  private selfHost = '';
   private token = randomBytes(24).toString('hex');
   origin = '';
 
@@ -55,17 +58,28 @@ export class MediaServer {
     for (const a of assets) this.projectAssets.set(a.id, a);
   }
 
-  /** Registers assets needed by in-flight background render jobs or temporary component checks. */
-  register(assets: Asset[]) {
-    for (const a of assets) this.renderAssets.set(a.id, a);
+  /** Ref-counted registration for in-flight background render jobs or silent component checks. */
+  register(assets: Asset[]): string[] {
+    const ids: string[] = [];
+    for (const a of assets) {
+      const existing = this.renderAssets.get(a.id);
+      this.renderAssets.set(a.id, { asset: a, refs: (existing?.refs || 0) + 1 });
+      ids.push(a.id);
+    }
+    return ids;
   }
 
   unregisterRenderAssets(ids: string[]) {
-    for (const id of ids) this.renderAssets.delete(id);
+    for (const id of ids) {
+      const existing = this.renderAssets.get(id);
+      if (!existing) continue;
+      if (existing.refs <= 1) this.renderAssets.delete(id);
+      else existing.refs -= 1;
+    }
   }
 
   private lookupAsset(id: string): Asset | undefined {
-    return this.projectAssets.get(id) || this.studioAssets.get(id) || this.renderAssets.get(id);
+    return this.projectAssets.get(id) || this.studioAssets.get(id) || this.renderAssets.get(id)?.asset;
   }
 
   async start() {
@@ -76,10 +90,17 @@ export class MediaServer {
           res.end();
         }),
     );
+    this.server = server;
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const addr = server.address() as { port: number };
-    this.origin = `http://127.0.0.1:${addr.port}/${this.token}`;
+    this.selfHost = `http://127.0.0.1:${addr.port}`;
+    this.origin = `${this.selfHost}/${this.token}`;
     return this.origin;
+  }
+
+  close() {
+    this.server?.close();
+    this.server = null;
   }
 
   private async serve(req: IncomingMessage, res: ServerResponse) {
@@ -115,15 +136,24 @@ export class MediaServer {
       res.end();
       return;
     }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const ext = extname(file).toLowerCase();
     if (route === 'ui/preview.html') {
-      res.setHeader('Content-Security-Policy', PREVIEW_CSP);
+      res.setHeader('Content-Security-Policy', buildPreviewCsp(this.selfHost));
     } else if (route === 'render/index.html') {
       // Enforce CSP on headless render composition too so untrusted TSX cannot exfiltrate over network.
       res.setHeader('Content-Security-Policy', RENDER_CSP);
+    } else if (route.startsWith('media/') && ext === '.svg') {
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     }
-    res.setHeader('Content-Type', mime[extname(file).toLowerCase()] || 'application/octet-stream');
+    res.setHeader('Content-Type', mime[ext] || 'application/octet-stream');
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', route.startsWith('media/') ? 'private, max-age=3600' : 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache');
+    if (info.size === 0) {
+      res.writeHead(200, { 'Content-Length': 0 });
+      res.end();
+      return;
+    }
     const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
     let start = 0,
       end = info.size - 1;

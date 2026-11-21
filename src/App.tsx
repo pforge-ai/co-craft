@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { pointerDrag } from './lib/pointerDrag';
 import { PlayheadClock } from './lib/playheadClock';
+import { stopAllAudioPreviews } from './components/AudioWaveformPlayer';
 import { ResourceLibrary } from './components/ResourceLibrary';
 import { GenerationDialog, type GenerationDraft } from './components/GenerationDialog';
 import { BrandMark } from './components/BrandMark';
@@ -167,7 +168,7 @@ export function App() {
     [connectingTask, setConnectingTask] = useState(''),
     [selected, setSelected] = useState<string | null>(null),
     [selectedIds, setSelectedIds] = useState<string[]>([]),
-    [frame, setFrame] = useState(70),
+    [frame, setFrame] = useState(0),
     [isScrubbing, setIsScrubbing] = useState(false),
     [playing, setPlaying] = useState(false),
     [muted, setMuted] = useState(false),
@@ -211,7 +212,7 @@ export function App() {
     [thinkingStream, setThinkingStream] = useState<Record<string, string>>({}),
     [toolState, setToolState] = useState<Record<string, string>>({}),
     [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelChoice>(
-      () => (localStorage.getItem('cc-thinking-level') as ThinkingLevelChoice) || 'medium',
+      () => (localStorage.getItem('cc-thinking-level') as ThinkingLevelChoice) || 'off',
     ),
     [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]),
     [activeComposerSkills, setActiveComposerSkills] = useState<string[]>([]),
@@ -236,13 +237,21 @@ export function App() {
   const appRef = useRef<HTMLDivElement>(null);
   const dragCleanup = useRef<(() => void) | null>(null);
   const playheadClockRef = useRef<PlayheadClock | null>(null);
-  if (!playheadClockRef.current) playheadClockRef.current = new PlayheadClock(70);
+  if (!playheadClockRef.current) playheadClockRef.current = new PlayheadClock(0);
+  const previewPortRef = useRef<MessagePort | null>(null);
   const scrubRafRef = useRef<number>(0);
-  const scrubLatestRef = useRef<number>(70);
+  const scrubLatestRef = useRef<number>(0);
   useEffect(
     () => () => {
       dragCleanup.current?.();
+      clearTimeout(notifyTimer.current);
       if (scrubRafRef.current) cancelAnimationFrame(scrubRafRef.current);
+      if (previewPortRef.current) {
+        previewPortRef.current.onmessage = null;
+        previewPortRef.current.close();
+        previewPortRef.current = null;
+      }
+      stopAllAudioPreviews();
     },
     [],
   );
@@ -258,7 +267,7 @@ export function App() {
     envRef = useRef<ProjectEnvelope | null>(null),
     queue = useRef(Promise.resolve()),
     playRef = useRef(false),
-    frameRef = useRef(70),
+    frameRef = useRef(0),
     promptRef = useRef<HTMLTextAreaElement>(null),
     messagesEnd = useRef<HTMLDivElement>(null),
     notifyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -291,8 +300,14 @@ export function App() {
 
   const targetOrigin = boot?.previewOrigin ? new URL(boot.previewOrigin).origin : '*';
   const post = useCallback(
-    (type: string, more: Record<string, unknown> = {}) =>
-      iframe.current?.contentWindow?.postMessage({ source: 'cocraft-workbench', type, ...more }, targetOrigin),
+    (type: string, more: Record<string, unknown> = {}) => {
+      const msg = { source: 'cocraft-workbench', type, ...more };
+      if (previewPortRef.current) {
+        previewPortRef.current.postMessage(msg);
+      } else {
+        iframe.current?.contentWindow?.postMessage(msg, targetOrigin);
+      }
+    },
     [targetOrigin],
   );
 
@@ -302,6 +317,11 @@ export function App() {
       if (!e) return;
       const s = e.project.sequences.find((s) => s.id === sequenceId) || e.project.sequences[0];
       const f = Math.max(0, Math.min(durationOf(s) - 1, Math.round(n)));
+      if (options?.scrubbing && playRef.current) {
+        post('pause');
+        playRef.current = false;
+        setPlaying(false);
+      }
       frameRef.current = f;
       playheadClockRef.current?.set(f);
       if (options?.scrubbing) {
@@ -332,14 +352,18 @@ export function App() {
         cancelAnimationFrame(scrubRafRef.current);
         scrubRafRef.current = 0;
       }
-      const f = finalFrame !== undefined ? Math.max(0, Math.round(finalFrame)) : frameRef.current;
+      const e = envRef.current;
+      const s = e ? e.project.sequences.find((seq) => seq.id === sequenceId) || e.project.sequences[0] : null;
+      const maxF = s ? Math.max(0, durationOf(s) - 1) : Infinity;
+      const raw = finalFrame !== undefined ? Math.round(finalFrame) : frameRef.current;
+      const f = Math.max(0, Math.min(maxF, raw));
       frameRef.current = f;
       playheadClockRef.current?.set(f);
       setIsScrubbing(false);
       setFrame(f);
       post('scrub-end', { frame: f });
     },
-    [post],
+    [sequenceId, post],
   );
 
   const pause = useCallback(() => {
@@ -357,6 +381,7 @@ export function App() {
   const play = useCallback(() => {
     if (playRef.current) pause();
     else {
+      stopAllAudioPreviews();
       setPinMode(false);
       post('play');
       playRef.current = true;
@@ -388,9 +413,14 @@ export function App() {
 
   const switchProject = async (next: ProjectEnvelope) => {
     pause();
+    stopAllAudioPreviews();
     accept(next);
     setSequenceId(next.project.sequences[0].id);
     setTaskId(next.tasks[0]?.id || '');
+    setConnectingTask('');
+    setStream({});
+    setThinkingStream({});
+    setToolState({});
     setFrame(0);
     frameRef.current = 0;
     playheadClockRef.current?.set(0);
@@ -533,7 +563,10 @@ export function App() {
       }
     };
     const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenComposerMenu(null);
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpenComposerMenu(null);
+      }
     };
     window.addEventListener('mousedown', onDown);
     window.addEventListener('keydown', onEsc);
@@ -799,6 +832,7 @@ export function App() {
     name: string;
     assetIds: string[];
     componentIds: string[];
+    vaultIds?: string[];
   }) => {
     await work('导出素材包', async () => {
       const res = await api<{ manifest?: { name?: string }; directory?: string } | null>(
@@ -1241,13 +1275,16 @@ export function App() {
       openSettings();
       return;
     }
+    if (dialog) return;
     if (mod && e.key === '1') {
       e.preventDefault?.();
+      stopAllAudioPreviews();
       switchMode('create');
       return;
     }
     if (mod && e.key === '2') {
       e.preventDefault?.();
+      stopAllAudioPreviews();
       switchMode('edit');
       return;
     }
@@ -1261,7 +1298,6 @@ export function App() {
       setShowBottom((v) => !v);
       return;
     }
-    if (dialog) return;
     if (mod && lower === 'z') {
       e.preventDefault?.();
       if (e.shiftKey) void redo();
@@ -1269,6 +1305,7 @@ export function App() {
       return;
     }
     if (mod && lower === 'c' && clip) {
+      if (window.getSelection()?.toString()) return;
       e.preventDefault?.();
       clipboardClip.current = clone(clip);
       notify(`已复制「${clip.name}」`);
@@ -1366,37 +1403,36 @@ export function App() {
   };
 
   useEffect(() => {
-    const receive = (e: MessageEvent) => {
-      if (e.source !== iframe.current?.contentWindow || e.data?.source !== 'cocraft-preview') return;
-      const expectedOrigin = previewState.current.mediaOrigin
-        ? new URL(previewState.current.mediaOrigin).origin
-        : '';
-      if (expectedOrigin && e.origin !== expectedOrigin) return;
-      const d = e.data;
+    const handlePreviewEvent = (d: any) => {
+      if (!d || d.source !== 'cocraft-preview') return;
       if (d.event === 'ready') {
         setPreviewReady(true);
         const current = previewState.current;
         const p = current.project || envRef.current?.project;
-        if (p && current.mediaOrigin)
-          iframe.current?.contentWindow?.postMessage(
-            {
-              source: 'cocraft-workbench',
-              type: 'load',
-              props: {
-                project: p,
-                sequenceId: p.sequences.some((s) => s.id === current.sequenceId)
-                  ? current.sequenceId
-                  : p.sequences[0].id,
-                mediaOrigin: current.mediaOrigin,
-              },
-              frame: frameRef.current,
+        if (p && current.mediaOrigin) {
+          const loadMsg = {
+            source: 'cocraft-workbench',
+            type: 'load',
+            props: {
+              project: p,
+              sequenceId: p.sequences.some((s) => s.id === current.sequenceId)
+                ? current.sequenceId
+                : p.sequences[0].id,
+              mediaOrigin: current.mediaOrigin,
             },
-            new URL(current.mediaOrigin).origin,
-          );
+            frame: frameRef.current,
+          };
+          if (previewPortRef.current) previewPortRef.current.postMessage(loadMsg);
+          else iframe.current?.contentWindow?.postMessage(loadMsg, new URL(current.mediaOrigin).origin);
+        }
       }
       if (d.event === 'frame') {
         frameRef.current = d.frame;
         playheadClockRef.current?.set(d.frame);
+        // Keep paused React state in sync (e.g. after clamp or initial load) so StageOverlay never desyncs.
+        if (!d.playing && !playRef.current) {
+          setFrame(d.frame);
+        }
       }
       if (d.event === 'boxes' && d.boxes) {
         setStageBoxes(d.boxes as Record<string, StageDomBox>);
@@ -1414,6 +1450,30 @@ export function App() {
         handleShortcutRef.current(d);
       }
       if (d.event === 'error') notify('预览：' + d.message, true);
+    };
+    const receive = (e: MessageEvent) => {
+      if (e.source !== iframe.current?.contentWindow || e.data?.source !== 'cocraft-preview') return;
+      const expectedOrigin = previewState.current.mediaOrigin
+        ? new URL(previewState.current.mediaOrigin).origin
+        : '';
+      if (expectedOrigin && e.origin !== expectedOrigin) return;
+      // Only accept initial handshake over window.message; bind a private MessagePort so untrusted TSX
+      // inside Film.tsx cannot spoof hotkey/state events via parent.postMessage.
+      if (e.data.event === 'ready') {
+        if (previewPortRef.current) {
+          previewPortRef.current.onmessage = null;
+          previewPortRef.current.close();
+        }
+        const channel = new MessageChannel();
+        previewPortRef.current = channel.port1;
+        channel.port1.onmessage = (pe) => handlePreviewEvent(pe.data);
+        channel.port1.start();
+        iframe.current?.contentWindow?.postMessage(
+          { source: 'cocraft-workbench', type: 'init-channel' },
+          expectedOrigin || '*',
+          [channel.port2],
+        );
+      }
     };
     window.addEventListener('message', receive);
     return () => window.removeEventListener('message', receive);
@@ -2035,10 +2095,12 @@ export function App() {
             {/* Mode 1: Infinite Creation Canvas (Nodes + Bezier Wires + Storyboard Sequence) */}
             {appMode === 'create' && (
               <CreateCanvas
+                key={project.id}
                 project={project}
                 sequence={sequence}
                 selectedClipId={selected}
                 previewOrigin={boot.previewOrigin}
+                modalOpen={Boolean(dialog)}
                 leftOpen={showNav}
                 rightOpen={showRight}
                 rightAgentOpen={showRight && right === 'agent'}
@@ -3170,12 +3232,12 @@ export function App() {
                         >
                           <Brain size={12} />
                           <span className="composer-pill-label">
-                            {THINKING_OPTIONS.find((o) => o.id === thinkingLevel)?.label || '中'}
+                            {THINKING_OPTIONS.find((o) => o.id === thinkingLevel)?.label || '关闭'}
                           </span>
                           <ChevronDown size={11} />
                         </button>
                         {openComposerMenu === 'thinking' && (
-                          <div className="composer-popover" role="menu" aria-label="选择思考深度">
+                          <div className="composer-popover align-right" role="menu" aria-label="选择思考深度">
                             {THINKING_OPTIONS.map((opt) => {
                               const active = thinkingLevel === opt.id;
                               return (

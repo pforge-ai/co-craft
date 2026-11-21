@@ -4,6 +4,7 @@ import { pointerDrag } from '../lib/pointerDrag';
 
 interface SingletonAudioState {
   id: string | null;
+  url: string | null;
   audio: HTMLAudioElement | null;
   progress: number;
   duration: number;
@@ -13,6 +14,7 @@ interface SingletonAudioState {
 
 const audioBus: SingletonAudioState = {
   id: null,
+  url: null,
   audio: null,
   progress: 0,
   duration: 0,
@@ -45,35 +47,37 @@ function tickAudio() {
 }
 
 function ensureAudio(id: string, url: string, fallbackDuration: number) {
-  if (audioBus.id === id && audioBus.audio) return audioBus.audio;
+  if (audioBus.id === id && audioBus.url === url && audioBus.audio) return audioBus.audio;
   stopTicker();
   if (audioBus.audio) {
     audioBus.audio.pause();
+    audioBus.audio.onloadedmetadata = null;
     audioBus.audio.onended = null;
     audioBus.audio.onerror = null;
   }
   const el = new Audio(url);
   el.preload = 'metadata';
   audioBus.id = id;
+  audioBus.url = url;
   audioBus.audio = el;
   audioBus.playing = false;
   audioBus.progress = 0;
   audioBus.duration = Math.max(0.1, fallbackDuration);
   el.onloadedmetadata = () => {
-    if (audioBus.id === id && Number.isFinite(el.duration) && el.duration > 0) {
+    if (audioBus.id === id && audioBus.url === url && Number.isFinite(el.duration) && el.duration > 0) {
       audioBus.duration = el.duration;
       emitBus();
     }
   };
   el.onended = () => {
-    if (audioBus.id !== id) return;
+    if (audioBus.id !== id || audioBus.url !== url) return;
     stopTicker();
     audioBus.playing = false;
     audioBus.progress = 0;
     emitBus();
   };
   el.onerror = () => {
-    if (audioBus.id !== id) return;
+    if (audioBus.id !== id || audioBus.url !== url) return;
     stopTicker();
     audioBus.playing = false;
     emitBus();
@@ -86,9 +90,13 @@ export function stopAllAudioPreviews() {
   stopTicker();
   if (audioBus.audio) {
     audioBus.audio.pause();
+    audioBus.audio.onloadedmetadata = null;
+    audioBus.audio.onended = null;
+    audioBus.audio.onerror = null;
     audioBus.audio = null;
   }
   audioBus.id = null;
+  audioBus.url = null;
   audioBus.playing = false;
   audioBus.progress = 0;
   emitBus();

@@ -233,18 +233,29 @@ function CompactSliderRow({
   );
 }
 
+function normalizeHex6(raw: string): string {
+  const s = raw.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toLowerCase();
+  if (/^#[0-9a-fA-F]{8}$/.test(s)) return s.slice(0, 7).toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(s))
+    return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`.toLowerCase();
+  return '#ffffff';
+}
+
 function ColorHexInput({
   label,
   value,
   disabled,
+  editableHex = false,
   onChange,
 }: {
   label: string;
   value: string;
   disabled?: boolean;
+  editableHex?: boolean;
   onChange: (hex: string) => void;
 }) {
-  const safeHex = value.startsWith('#') && value.length === 7 ? value : '#ffffff';
+  const safeHex = normalizeHex6(value);
   return (
     <div className="ins-color-pill">
       <input
@@ -254,7 +265,41 @@ function ColorHexInput({
         value={safeHex}
         onChange={(e) => onChange(e.target.value)}
       />
-      <span>{safeHex.toUpperCase()}</span>
+      {editableHex ? (
+        <input
+          type="text"
+          aria-label={`${label} Hex`}
+          disabled={disabled}
+          maxLength={7}
+          defaultValue={safeHex.toUpperCase()}
+          key={safeHex}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            border: 0,
+            background: 'transparent',
+            fontFamily: 'var(--mono)',
+            fontSize: 10.5,
+            color: 'var(--text)',
+            padding: 0,
+            height: '100%',
+            minHeight: 0,
+          }}
+          onBlur={(e) => {
+            const v = e.currentTarget.value.trim();
+            if (/^#[0-9a-fA-F]{6}$/.test(v) && v.toLowerCase() !== safeHex) {
+              onChange(v.toLowerCase());
+            } else {
+              e.currentTarget.value = safeHex.toUpperCase();
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+          }}
+        />
+      ) : (
+        <span>{safeHex.toUpperCase()}</span>
+      )}
     </div>
   );
 }
@@ -321,6 +366,12 @@ export const Inspector = React.memo(function Inspector({
   const [mediaTab, setMediaTab] = useState<'frame' | 'adjust' | 'audio'>('frame');
   const [presetTab, setPresetTab] = useState<'params' | 'transform'>('params');
 
+  useEffect(() => {
+    if (clip?.kind === 'image' && mediaTab === 'audio') {
+      setMediaTab('frame');
+    }
+  }, [clip?.id, clip?.kind, mediaTab]);
+
   if (!clip) {
     const hasLocked = sequence.clips.some((c) => c.locked);
     return (
@@ -374,8 +425,9 @@ export const Inspector = React.memo(function Inspector({
           <div className="ins-canvas-bg-row">
             <ColorHexInput
               label="画布底色"
+              editableHex
               disabled={hasLocked}
-              value={sequence.background?.length === 7 ? sequence.background : '#10161c'}
+              value={sequence.background || '#10161c'}
               onChange={(hex) =>
                 onEdit('更新画布底色', [
                   {
@@ -385,31 +437,6 @@ export const Inspector = React.memo(function Inspector({
                   },
                 ])
               }
-            />
-            <input
-              type="text"
-              aria-label="画布底色 Hex"
-              disabled={hasLocked}
-              maxLength={7}
-              defaultValue={(sequence.background?.length === 7 ? sequence.background : '#10161c').toUpperCase()}
-              key={sequence.background || '#10161c'}
-              onBlur={(e) => {
-                const v = e.currentTarget.value.trim();
-                if (/^#[0-9a-fA-F]{6}$/.test(v) && v.toLowerCase() !== (sequence.background || '').toLowerCase()) {
-                  onEdit('更新画布底色', [
-                    {
-                      type: 'updateSequence',
-                      sequenceId: sequence.id,
-                      changes: { background: v.toLowerCase() },
-                    },
-                  ]);
-                } else {
-                  e.currentTarget.value = (sequence.background?.length === 7 ? sequence.background : '#10161c').toUpperCase();
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') e.currentTarget.blur();
-              }}
             />
           </div>
         </section>
@@ -581,7 +608,7 @@ export const Inspector = React.memo(function Inspector({
     <section className="ins-sec">
       <h4>混合与不透明度</h4>
       <CompactSliderRow
-        label="不透明"
+        label="不透明度"
         value={curOpacity}
         min={0}
         max={100}
@@ -1205,7 +1232,7 @@ export const Inspector = React.memo(function Inspector({
                 onChange={(hex) => prop('color', hex)}
               />
               <ScrubInput
-                prefix="%"
+                prefix="透"
                 label="不透明度"
                 value={curOpacity}
                 min={0}

@@ -1,5 +1,5 @@
 import { mkdir, readFile, cp } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, createReadStream } from 'node:fs';
 import { basename, extname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicJSON, ProjectStore } from './store';
@@ -149,16 +149,26 @@ const LEGACY_FAKE_IDS = new Set([
 export class GlobalVault {
   private indexFile: string;
   private filesDir: string;
+  private initialized = false;
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private libraryRoot: string) {
     this.indexFile = join(libraryRoot, 'vault.json');
     this.filesDir = join(libraryRoot, 'files');
   }
 
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(fn);
+    this.queue = next.catch(() => {});
+    return next;
+  }
+
   async init() {
+    if (this.initialized && existsSync(this.indexFile)) return;
     await mkdir(this.filesDir, { recursive: true });
     if (!existsSync(this.indexFile)) {
       await atomicJSON(this.indexFile, builtInStyles());
+      this.initialized = true;
       return;
     }
     // Cleanly upgrade any v0.3 starter fake items while preserving all real user-created global assets!
@@ -175,6 +185,7 @@ export class GlobalVault {
     } catch {
       await atomicJSON(this.indexFile, builtInStyles());
     }
+    this.initialized = true;
   }
 
   async list(): Promise<VaultItem[]> {
@@ -194,8 +205,9 @@ export class GlobalVault {
 
   private async copyIntoLibrary(sourcePath: string): Promise<string> {
     await this.init();
-    const buf = await readFile(sourcePath);
-    const hash = createHash('sha256').update(buf).digest('hex').slice(0, 12);
+    const hashObj = createHash('sha256');
+    for await (const chunk of createReadStream(sourcePath)) hashObj.update(chunk);
+    const hash = hashObj.digest('hex').slice(0, 12);
     const ext = extname(sourcePath).toLowerCase();
     const base = basename(sourcePath, ext)
       .replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]/g, '_')
@@ -207,18 +219,22 @@ export class GlobalVault {
   }
 
   async upsertGlobal(item: VaultItem): Promise<VaultItem[]> {
-    const all = await this.list();
-    const idx = all.findIndex((x) => x.id === item.id);
-    if (idx < 0) all.unshift(item);
-    else all[idx] = item;
-    await this.saveAll(all);
-    return all;
+    return this.serial(async () => {
+      const all = await this.list();
+      const idx = all.findIndex((x) => x.id === item.id);
+      if (idx < 0) all.unshift(item);
+      else all[idx] = item;
+      await this.saveAll(all);
+      return all;
+    });
   }
 
   async removeGlobal(id: string): Promise<VaultItem[]> {
-    const all = (await this.list()).filter((x) => x.id !== id);
-    await this.saveAll(all);
-    return all;
+    return this.serial(async () => {
+      const all = (await this.list()).filter((x) => x.id !== id);
+      await this.saveAll(all);
+      return all;
+    });
   }
 
   async promoteFromProject(
@@ -434,7 +450,13 @@ export class GlobalVault {
     let importedAsset: Asset | undefined;
     let compiledComp: CodeComponent | undefined;
 
+    const stagedByLibFile = new Map<string, Asset>();
     const stageLibraryFile = async (libFile: string): Promise<Asset> => {
+      if (!libFile || basename(libFile) !== libFile || libFile.includes('..') || libFile.includes('/')) {
+        throw new Error('全局资产库文件名无效');
+      }
+      const cached = stagedByLibFile.get(libFile);
+      if (cached) return cached;
       const srcPath = join(this.filesDir, libFile);
       if (!existsSync(srcPath)) throw new Error('全局资产库源文件缺失');
       const assetsDir = join(store.path, 'assets');
@@ -447,6 +469,7 @@ export class GlobalVault {
       a.category = gItem.category;
       a.subkind = gItem.subkind;
       ops.push({ type: 'addAsset', asset: a });
+      stagedByLibFile.set(libFile, a);
       return a;
     };
 
@@ -496,6 +519,25 @@ export class GlobalVault {
             }
             for (const clip of memberCompound.clips) {
               if (clip.assetId && idMap.has(clip.assetId)) clip.assetId = idMap.get(clip.assetId);
+            }
+            delete memberCompound.assetFiles;
+          }
+          if (memberCompound?.componentSources) {
+            const compIdMap = new Map<string, string>();
+            for (const [oldCid, srcInfo] of Object.entries(memberCompound.componentSources)) {
+              const compiled = await compileComponent(
+                srcInfo.source,
+                uid('component'),
+                srcInfo.name,
+                store.path,
+                srcInfo.props,
+              );
+              ops.push({ type: 'putComponent', component: compiled });
+              compIdMap.set(oldCid, compiled.id);
+            }
+            for (const clip of memberCompound.clips) {
+              if (clip.componentId && compIdMap.has(clip.componentId))
+                clip.componentId = compIdMap.get(clip.componentId);
             }
           }
           ops.push({

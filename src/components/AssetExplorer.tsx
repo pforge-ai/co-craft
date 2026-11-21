@@ -321,9 +321,10 @@ export const AssetExplorer = React.memo(function AssetExplorer({
     setSubjRefId('');
   };
 
-  const showProject = libScope === 'all' || libScope === 'project';
-  const showPersonal = libScope === 'all' || libScope === 'personal';
-  const showOfficial = libScope === 'all' || libScope === 'official';
+  const hasScopeTabs = category === 'media' || category === 'audio' || category === 'component';
+  const showProject = !hasScopeTabs || libScope === 'all' || libScope === 'project';
+  const showPersonal = !hasScopeTabs || libScope === 'all' || libScope === 'personal';
+  const showOfficial = !hasScopeTabs || libScope === 'all' || libScope === 'official';
 
   // Filtered collections per CapCut category
   const visualAssets = project.assets.filter(

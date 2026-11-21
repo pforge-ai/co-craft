@@ -340,6 +340,7 @@ export async function exportMaterialPack(
     name?: string;
     assetIds?: string[];
     componentIds?: string[];
+    vaultIds?: string[];
     author?: string;
     license?: string;
   },
@@ -352,10 +353,26 @@ export async function exportMaterialPack(
 
   const selectedAssetSet = new Set(options.assetIds || []);
   const selectedCompSet = new Set(options.componentIds || []);
-  const chosenAssets =
-    selectedAssetSet.size > 0
-      ? project.assets.filter((a) => selectedAssetSet.has(a.id) && a.path && existsSync(a.path))
-      : project.assets.filter((a) => a.path && existsSync(a.path));
+  for (const vid of options.vaultIds || []) {
+    const v = (project.vault || []).find((x) => x.id === vid);
+    if (!v) continue;
+    if (v.assetId) selectedAssetSet.add(v.assetId);
+    for (const vr of v.variants || []) {
+      if (vr.assetId) selectedAssetSet.add(vr.assetId);
+    }
+    if (v.rig?.componentId) selectedCompSet.add(v.rig.componentId);
+    for (const clip of v.compound?.clips || []) {
+      if (clip.assetId) selectedAssetSet.add(clip.assetId);
+      if (clip.componentId) selectedCompSet.add(clip.componentId);
+    }
+  }
+  const hasExplicitSelection =
+    (options.assetIds?.length || 0) > 0 ||
+    (options.componentIds?.length || 0) > 0 ||
+    (options.vaultIds?.length || 0) > 0;
+  const chosenAssets = hasExplicitSelection
+    ? project.assets.filter((a) => selectedAssetSet.has(a.id) && a.path && existsSync(a.path))
+    : project.assets.filter((a) => a.path && existsSync(a.path));
   const chosenComps =
     selectedCompSet.size > 0
       ? project.components.filter((c) => selectedCompSet.has(c.id))

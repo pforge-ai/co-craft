@@ -1,9 +1,11 @@
 import { nativeImage } from 'electron';
 import { createHash } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import { createReadStream, createWriteStream, constants } from 'node:fs';
 import { mkdir, readFile, writeFile, copyFile, rename, rm, open, link } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { join, extname } from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { binary, importMedia, run } from './media';
@@ -230,37 +232,124 @@ export async function collectGeneratedFile(file: string, store: ProjectStore) {
     await rm(snapshot, { force: true });
   }
 }
-function isPrivateOrLoopbackHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (h === 'localhost' || h === '::1' || h === '0.0.0.0' || h.endsWith('.local')) return true;
-  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)) return true;
-  const m172 = h.match(/^172\.(\d+)\./);
-  if (m172 && Number(m172[1]) >= 16 && Number(m172[1]) <= 31) return true;
+const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
+const POLL_TIMEOUT_MS = 15 * 60 * 1000;
+
+function isPrivateOrLoopbackIp(rawIp: string): boolean {
+  let ip = rawIp.toLowerCase().replace(/^\[|\]$/g, '');
+  const zoneIdx = ip.indexOf('%');
+  if (zoneIdx >= 0) ip = ip.slice(0, zoneIdx);
+  // Decode IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
+  if (ip.startsWith('::ffff:')) {
+    const tail = ip.slice(7);
+    if (tail.includes('.')) return isPrivateOrLoopbackIp(tail);
+    const hexParts = tail.split(':');
+    if (hexParts.length === 2) {
+      const hi = parseInt(hexParts[0], 16);
+      const lo = parseInt(hexParts[1], 16);
+      if (Number.isFinite(hi) && Number.isFinite(lo)) {
+        return isPrivateOrLoopbackIp(`${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`);
+      }
+    }
+    return true;
+  }
+  const kind = isIP(ip);
+  if (kind === 4) {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+    const [a, b] = parts;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT + Alibaba metadata 100.100.100.200
+    if (a === 169 && b === 254) return true; // AWS/GCP/Azure metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a >= 224) return true; // multicast & reserved
+    return false;
+  }
+  if (kind === 6) {
+    if (ip === '::' || ip === '::1') return true;
+    const firstHex = parseInt(ip.split(':')[0] || '0', 16);
+    if ((firstHex & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+    if ((firstHex & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+    if ((firstHex & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+    return false;
+  }
   return false;
 }
 
-async function download(url: string, file: string, signal: AbortSignal, providerBaseUrl?: string) {
-  const target = new URL(url);
+export function isPrivateOrLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (isIP(h)) return isPrivateOrLoopbackIp(h);
+  return false;
+}
+
+export async function assertSafeRemoteUrl(target: URL, providerBaseUrl?: string): Promise<void> {
   if (!['https:', 'http:'].includes(target.protocol) || target.username || target.password)
     throw new Error('素材下载地址无效');
-  if (target.hostname === '169.254.169.254') throw new Error('已拦截不安全的云元数据地址');
-  if (isPrivateOrLoopbackHost(target.hostname)) {
-    const providerHost = providerBaseUrl ? new URL(providerBaseUrl).hostname : '';
-    // Remote cloud providers must never redirect/point downloads to localhost or LAN endpoints (SSRF guard).
-    if (!providerHost || !isPrivateOrLoopbackHost(providerHost) || target.hostname !== providerHost) {
-      throw new Error('已拦截来自远端服务指向本机或内网的素材下载地址');
+  const host = target.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  if (host === '169.254.169.254' || host === '100.100.100.200')
+    throw new Error('已拦截不安全的云元数据地址');
+  const providerHost = providerBaseUrl
+    ? new URL(providerBaseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
+    : '';
+  const allowLocalProvider =
+    Boolean(providerHost) && isPrivateOrLoopbackHost(providerHost) && host === providerHost;
+  if (isPrivateOrLoopbackHost(host)) {
+    if (!allowLocalProvider) throw new Error('已拦截来自远端服务指向本机或内网的素材下载地址');
+    return;
+  }
+  if (!allowLocalProvider && !isIP(host)) {
+    // Resolve DNS to block rebinding/wildcard domains pointing at loopback, LAN, or cloud metadata IPs.
+    const records = await lookup(host, { all: true }).catch(() => []);
+    for (const rec of records) {
+      if (isPrivateOrLoopbackIp(rec.address)) {
+        throw new Error('已拦截解析到本机或内网地址的素材下载域名');
+      }
     }
   }
+}
+
+export async function downloadToFile(
+  url: string,
+  file: string,
+  signal: AbortSignal,
+  providerBaseUrl?: string,
+  maxBytes = MAX_DOWNLOAD_BYTES,
+) {
+  const target = new URL(url);
+  await assertSafeRemoteUrl(target, providerBaseUrl);
   const response = await fetch(target, {
     signal: AbortSignal.any([signal, AbortSignal.timeout(300000)]),
     credentials: 'omit',
     redirect: 'error',
   });
   if (!response.ok || !response.body) throw new Error(`下载生成素材失败 (${response.status})`);
-  await pipeline(Readable.fromWeb(response.body as any), createWriteStream(file, { flags: 'wx' }), {
-    signal,
+  const declaredLen = Number(response.headers.get('content-length') || 0);
+  if (Number.isFinite(declaredLen) && declaredLen > maxBytes) {
+    throw new Error(`远端文件体积过大（超过 ${Math.round(maxBytes / 1024 / 1024)} MB 限制）`);
+  }
+  let received = 0;
+  const limiter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      received += chunk.length;
+      if (received > maxBytes) {
+        cb(new Error(`远端文件体积超过 ${Math.round(maxBytes / 1024 / 1024)} MB 限制`));
+        return;
+      }
+      cb(null, chunk);
+    },
   });
+  try {
+    await pipeline(Readable.fromWeb(response.body as any), limiter, createWriteStream(file, { flags: 'wx' }), {
+      signal,
+    });
+  } catch (err) {
+    await rm(file, { force: true }).catch(() => {});
+    throw err;
+  }
 }
+const download = downloadToFile;
 
 /** Provider adapters use official request contracts; no model credentials are serialized in a job. */
 export class GenerationService {
@@ -497,10 +586,9 @@ export class GenerationService {
         signal.throwIfAborted();
         const file = await collectGeneratedFile(output, store);
         await rm(output, { force: true });
-        const asset = await importMedia(file, store.path);
+        const asset = await importMedia(file, store.path, 'asset_' + job.id);
         if (asset.kind === 'image' && (!asset.width || !asset.height))
           throw new Error('服务返回的图片无法解码');
-        asset.id = 'asset_' + job.id;
         asset.name = `${label(req.use)} · ${(req.prompt || model.name).replace(/\s+/g, ' ').slice(0, 28)}`;
         const source = {
           provider: provider.name,
@@ -589,11 +677,31 @@ export class GenerationService {
       CANCELED: 'canceled',
       UNKNOWN: 'expired',
     };
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let transientErrors = 0;
     for (;;) {
       signal.throwIfAborted();
-      const data: any = await (
-        await request(provider, `tasks/${encodeURIComponent(taskId)}`, {}, signal, true)
-      ).json();
+      if (Date.now() > deadline) {
+        throw new Error('云端生成任务等待超时（超过 15 分钟），可在后台作业面板稍后继续查询');
+      }
+      let data: any;
+      try {
+        data = await (
+          await request(provider, `tasks/${encodeURIComponent(taskId)}`, {}, signal, true)
+        ).json();
+        transientErrors = 0;
+      } catch (err) {
+        if (signal.aborted) throw err;
+        const isTransient =
+          (err instanceof ProviderError && err.status >= 500) ||
+          !(err instanceof ProviderError);
+        if (isTransient && transientErrors < 3) {
+          transientErrors++;
+          await delay(2000 * transientErrors, undefined, { signal });
+          continue;
+        }
+        throw err;
+      }
       const rawStatus = String(data.output?.task_status || '').toUpperCase();
       const status = statusMap[rawStatus];
       signal.throwIfAborted();
@@ -947,6 +1055,22 @@ export class GenerationService {
       if (dashscope) {
         const sizeInput = req.size || p.size;
         const sizeIsPreset = typeof sizeInput === 'string' && /^(480|720|1080)p$/i.test(sizeInput.trim());
+        const baseParams = parameters(p, ['resolution', 'seed', 'watermark', 'prompt_extend', 'audio']);
+        if (sizeInput && !sizeIsPreset) {
+          delete baseParams.resolution;
+        }
+        // Encode large I2V reference images as JPEG to stay safely under DashScope's 10MB payload limit.
+        let dashRefUrl: string | undefined;
+        if (reference) {
+          let buf = reference;
+          let mime = 'image/png';
+          if (buf.length > 3 * 1024 * 1024 && req.referenceAssetId) {
+            const refAsset = await this.sourceAsset(store, job, req.referenceAssetId);
+            buf = await imageData(refAsset, dir, signal, 'jpeg');
+            mime = 'image/jpeg';
+          }
+          dashRefUrl = `data:${mime};base64,${buf.toString('base64')}`;
+        }
         data = await jsonRequest(
           provider,
           route,
@@ -955,10 +1079,10 @@ export class GenerationService {
             input: {
               prompt: req.prompt,
               ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
-              ...(reference ? { img_url: `data:image/png;base64,${reference.toString('base64')}` } : {}),
+              ...(dashRefUrl ? { img_url: dashRefUrl } : {}),
             },
             parameters: {
-              ...parameters(p, ['resolution', 'seed', 'watermark', 'prompt_extend', 'audio']),
+              ...baseParams,
               ...(req.seconds || p.duration ? { duration: Number(req.seconds || p.duration) } : {}),
               ...(sizeIsPreset
                 ? { resolution: String(sizeInput).trim().toUpperCase() }
@@ -1035,9 +1159,27 @@ export class GenerationService {
     }
     const routeWithId = `${route}/${encodeURIComponent(job.remote!.id)}`;
     let final: any;
+    const pollDeadline = Date.now() + POLL_TIMEOUT_MS;
+    let pollRetries = 0;
     for (;;) {
       signal.throwIfAborted();
-      const data: any = await (await request(provider, routeWithId, {}, signal)).json();
+      if (Date.now() > pollDeadline) {
+        throw new Error('云端生成任务等待超时（超过 15 分钟），可在后台作业面板稍后继续查询');
+      }
+      let data: any;
+      try {
+        data = await (await request(provider, routeWithId, {}, signal)).json();
+        pollRetries = 0;
+      } catch (err) {
+        if (signal.aborted) throw err;
+        const isTransient = (err instanceof ProviderError && err.status >= 500) || !(err instanceof ProviderError);
+        if (isTransient && pollRetries < 3) {
+          pollRetries++;
+          await delay(2000 * pollRetries, undefined, { signal });
+          continue;
+        }
+        throw err;
+      }
       const status = data.status;
       signal.throwIfAborted();
       if (
@@ -1193,12 +1335,44 @@ export class GenerationService {
               : ''
         ).trim();
         if (text) {
-          texts.push(text);
-          const chunkStart = start > 0 ? Math.max(start, coveredEnd) : start;
-          const chunkEnd = Math.min(asset.duration, start + chunkSeconds);
-          if (chunkEnd > chunkStart) {
-            segments.push({ start: chunkStart, end: chunkEnd, text });
-            coveredEnd = Math.max(coveredEnd, chunkEnd);
+          // Deduplicate overlapping text at chunk boundaries for multi-chunk DashScope ASR.
+          let deduped = text;
+          const prevText = texts.at(-1);
+          if (start > 0 && prevText) {
+            const maxOv = Math.min(24, prevText.length, deduped.length);
+            for (let ov = maxOv; ov >= 4; ov--) {
+              if (prevText.endsWith(deduped.slice(0, ov))) {
+                deduped = deduped.slice(ov).trim();
+                break;
+              }
+            }
+          }
+          if (deduped) {
+            texts.push(deduped);
+            const chunkStart = start > 0 ? Math.max(start, coveredEnd) : start;
+            const chunkEnd = Math.min(asset.duration, start + chunkSeconds);
+            if (chunkEnd > chunkStart) {
+              // Split multi-sentence chunks proportionally so subtitles stay readable instead of 120s blocks.
+              const sentences = deduped
+                .split(/(?<=[。！？.!?])\s+|\n+/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+              if (sentences.length <= 1) {
+                segments.push({ start: chunkStart, end: chunkEnd, text: deduped });
+              } else {
+                const totalChars = Math.max(1, sentences.reduce((sum, s) => sum + s.length, 0));
+                let cur = chunkStart;
+                sentences.forEach((sent, idx) => {
+                  const endT =
+                    idx === sentences.length - 1
+                      ? chunkEnd
+                      : cur + ((chunkEnd - chunkStart) * sent.length) / totalChars;
+                  segments.push({ start: Number(cur.toFixed(2)), end: Number(endT.toFixed(2)), text: sent });
+                  cur = endT;
+                });
+              }
+              coveredEnd = Math.max(coveredEnd, chunkEnd);
+            }
           }
         }
       } else {
@@ -1369,7 +1543,7 @@ export class GenerationService {
         {
           model: modelId,
           ...temperature,
-          ...(p.maxTokens ? { max_completion_tokens: p.maxTokens } : {}),
+          ...(p.maxTokens ? { max_tokens: p.maxTokens } : {}),
           messages: [{ role: 'user', content: parts }],
         },
         signal,

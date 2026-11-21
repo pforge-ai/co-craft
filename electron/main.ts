@@ -9,7 +9,7 @@ import { MediaServer } from './server';
 import { JobService } from './jobs';
 import { AgentHost } from './agents';
 import { studioCatalog, addStudioAsset } from './studio-media';
-import { GenerationService } from './generation';
+import { GenerationService, downloadToFile } from './generation';
 import { importMaterialPack, exportMaterialPack } from './packs';
 import { createDemo } from './demo';
 import { importMedia } from './media';
@@ -29,7 +29,18 @@ import type {
 } from '../src/core/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
-if (process.env.COCRAFT_DATA_DIR) app.setPath('userData', resolve(process.env.COCRAFT_DATA_DIR));
+if (process.env.COCRAFT_DATA_DIR) {
+  app.setPath('userData', resolve(process.env.COCRAFT_DATA_DIR));
+} else if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
 app.setName('CoCraft');
 
 let win: BrowserWindow,
@@ -41,6 +52,13 @@ let win: BrowserWindow,
   generation: GenerationService,
   agents: AgentHost,
   globalVault: GlobalVault;
+
+const sanitizeFileName = (raw: string, fallback = 'export') =>
+  String(raw || fallback)
+    .replace(/[\/\\:*?"<>|\x00-\x1f]/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .trim()
+    .slice(0, 64) || fallback;
 
 const resources = app.isPackaged ? join(process.resourcesPath, 'resources') : join(here, '../resources');
 const renderDir = app.isPackaged ? join(process.resourcesPath, 'render-bundle') : join(here, 'render-bundle');
@@ -144,6 +162,11 @@ async function handle(method: string, arg: any = {}) {
     case 'project.edit': {
       const target = store;
       if (arg.projectId && (await target.project()).id !== arg.projectId) throw new Error('工程已经切换');
+      for (const op of (arg.operations || []) as EditOperation[]) {
+        if (op.type === 'addAsset' || op.type === 'relinkAsset') {
+          throw new Error('请使用专用素材导入或重连接口登记本地文件');
+        }
+      }
       if (arg.operations.some((op: EditOperation) => op.type === 'putComponent'))
         await jobs.validateComponents(
           applyOperations(await target.project(), arg.operations, 'you'),
@@ -320,7 +343,8 @@ async function handle(method: string, arg: any = {}) {
     }
     case 'captions.export': {
       const p = await store.project(),
-        s = p.sequences.find((s) => s.id === arg.sequenceId)!;
+        s = p.sequences.find((s) => s.id === arg.sequenceId);
+      if (!s) throw new Error('成片不存在');
       const stamp = (f: number) => {
         const ms = Math.round((f / s.fps) * 1000);
         return `${String(Math.floor(ms / 3600000)).padStart(2, '0')}:${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`;
@@ -333,7 +357,7 @@ async function handle(method: string, arg: any = {}) {
         )
         .join('\n');
       const d = await dialog.showSaveDialog(win, {
-        defaultPath: join(store.path, 'exports', s.name + '.srt'),
+        defaultPath: join(store.path, 'exports', sanitizeFileName(s.name, 'captions') + '.srt'),
         filters: [{ name: '字幕', extensions: ['srt'] }],
       });
       if (d.canceled || !d.filePath) return null;
@@ -463,6 +487,8 @@ async function handle(method: string, arg: any = {}) {
       const target = store;
       const b64 = String(arg.dataBase64 || '').replace(/^data:[^,]+,/, '');
       if (!b64) throw new Error('粘贴内容为空');
+      const buf = Buffer.from(b64, 'base64');
+      if (buf.length > 20 * 1024 * 1024) throw new Error('粘贴附件超过 20MB 上限');
       const rawExt = String(arg.ext || 'png')
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '');
@@ -471,7 +497,7 @@ async function handle(method: string, arg: any = {}) {
       await mkdir(dir, { recursive: true });
       const fileName = `${uid('paste')}.${safeExt}`;
       const filePath = join(dir, fileName);
-      await writeFile(filePath, Buffer.from(b64, 'base64'));
+      await writeFile(filePath, buf);
       return await buildComposerAttachment(filePath, String(arg.name || `粘贴图片.${safeExt}`));
     }
     case 'agent.start': {
@@ -521,7 +547,7 @@ async function handle(method: string, arg: any = {}) {
       const issues = preflightSequence(p, seq.id, missing);
       const blocker = issues.find((i) => i.severity === 'blocker');
       if (blocker) throw new Error(`${blocker.title}：${blocker.detail}`);
-      const name = `${seq.name}-v${p.revision}-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`;
+      const name = `${sanitizeFileName(seq.name, 'film')}-v${p.revision}-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`;
       let output = join(target.path, 'exports', name);
       if (arg.choose) {
         const d = await dialog.showSaveDialog(win, {
@@ -606,6 +632,13 @@ async function handle(method: string, arg: any = {}) {
         if (picked.canceled || !picked.filePaths[0]) return null;
         sourcePath = picked.filePaths[0];
       }
+      if (extname(sourcePath).toLowerCase() !== '.md') {
+        throw new Error('仅支持导入 .md 格式的 Skill 文档');
+      }
+      const info = await stat(sourcePath);
+      if (!info.isFile() || info.size > 512 * 1024) {
+        throw new Error('Skill 文档无效或体积超过 512KB 上限');
+      }
       const raw = await readFile(sourcePath, 'utf8');
       const parsed = parseSkillMarkdown(raw, basename(dirname(sourcePath)));
       const scope = arg.scope === 'user' ? 'user' : 'project';
@@ -662,10 +695,9 @@ async function handle(method: string, arg: any = {}) {
       const target = store;
       const item = knownStock.get(arg.id);
       if (!item?.download) throw new Error('请先重新搜索这条素材');
-      const response = await fetch(item.download, { credentials: 'omit' });
-      if (!response.ok) throw new Error('素材下载失败');
-      const file = join(target.path, 'assets', `pexels-${item.id}.mp4`);
-      await writeFile(file, Buffer.from(await response.arrayBuffer()));
+      const file = join(target.path, 'assets', `pexels-${item.id}-${Date.now()}.mp4`);
+      await mkdir(dirname(file), { recursive: true });
+      await downloadToFile(item.download, file, new AbortController().signal);
       const asset = await importMedia(file, target.path);
       asset.source = { provider: 'Pexels', url: item.url, author: item.author, license: 'Pexels License' };
       const p = await target.project();
@@ -715,6 +747,7 @@ async function handle(method: string, arg: any = {}) {
         name: arg.name,
         assetIds: arg.assetIds,
         componentIds: arg.componentIds,
+        vaultIds: arg.vaultIds,
       });
     }
     case 'stage.captureReference': {
@@ -901,7 +934,10 @@ async function createWindow() {
     },
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https:')) void shell.openExternal(url);
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:') void shell.openExternal(parsed.toString());
+    } catch {}
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -1037,5 +1073,21 @@ app
     dialog.showErrorBox('CoCraft 启动失败', String(e));
     app.quit();
   });
+
+let quitting = false;
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  quitting = true;
+  event.preventDefault();
+  void Promise.allSettled([
+    agents?.stopAll(),
+    jobs?.shutdownWorkers(),
+  ])
+    .catch(() => {})
+    .finally(() => {
+      media?.close();
+      app.exit(0);
+    });
+});
 
 app.on('window-all-closed', () => app.quit());

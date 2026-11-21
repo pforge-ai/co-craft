@@ -187,11 +187,17 @@ export class JobService {
     output: string,
     options: { scale?: number; still?: boolean; frame?: number; silent?: boolean } = {},
   ): Promise<Job> {
-    this.media.register(project.assets);
     await mkdir(join(output, '..'), { recursive: true });
     if (existsSync(output)) throw new Error('导出文件已存在，请使用新文件名');
     const seq = project.sequences.find((s) => s.id === sequenceId);
     if (!seq) throw new Error('成片不存在');
+    const registeredAssetIds = this.media.register(project.assets);
+    let assetsReleased = false;
+    const releaseAssets = () => {
+      if (assetsReleased) return;
+      assetsReleased = true;
+      this.media.unregisterRenderAssets(registeredAssetIds);
+    };
     const silent = !!options.silent;
     const job: Job = {
       id: uid('job'),
@@ -235,12 +241,14 @@ export class JobService {
         job.stage = data.type === 'done' ? '导出完成' : '导出失败';
         job.error = data.error;
         this.processes.delete(job.id);
+        releaseAssets();
         worker.kill();
         if (!silent) await this.persist();
       }
     });
     worker.on('exit', async (code) => {
       this.processes.delete(job.id);
+      releaseAssets();
       if (job.status === 'running') {
         job.status = 'failed';
         job.error = stderr || `渲染进程退出 (${code})`;
@@ -264,6 +272,21 @@ export class JobService {
     return job;
   }
 
+  async shutdownWorkers() {
+    for (const [id, worker] of this.processes.entries()) {
+      const job = this.lookup(id);
+      try {
+        worker.postMessage({ type: 'cancel' });
+        worker.kill();
+      } catch {}
+      if (job?.output) {
+        await rm(job.output + '.rendering.mp4', { force: true }).catch(() => {});
+        await rm(job.output + '.rendering.png', { force: true }).catch(() => {});
+      }
+    }
+    this.processes.clear();
+  }
+
   async cancel(id: string) {
     const job = this.lookup(id);
     if (!job || job.status !== 'running') return;
@@ -275,6 +298,10 @@ export class JobService {
     worker?.postMessage({ type: 'cancel' });
     setTimeout(() => worker?.kill(), 1500);
     this.processes.delete(id);
+    if (job.output) {
+      await rm(job.output + '.rendering.mp4', { force: true }).catch(() => {});
+      await rm(job.output + '.rendering.png', { force: true }).catch(() => {});
+    }
     if (!isInternal) await this.persist();
   }
 }

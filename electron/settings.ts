@@ -183,6 +183,7 @@ export class SettingsStore {
           : provider.protocol === 'google'
             ? 'google'
             : 'custom',
+      protocol: provider.protocol,
       model: model.modelId,
       baseUrl: provider.baseUrl,
       modelParameters: model.parameters,

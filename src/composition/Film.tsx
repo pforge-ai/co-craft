@@ -111,31 +111,30 @@ function Title({
   const animFrames = Math.max(4, Math.min(clip.duration, Math.round(Number(p.animDuration ?? 0.45) * fps)));
   const rawIn = animIn === 'none' ? 1 : bounded(frame / animFrames);
   const rawOut = animOut === 'none' ? 1 : bounded((clip.duration - frame) / animFrames);
-  const previewGuard = paused && isSelected;
   const enter = animIn === 'none' ? 1 : spring({ frame, fps, config: { damping: 200 }, durationInFrames: animFrames });
-  const fadeOpacity = previewGuard ? Math.max(0.92, rawIn * rawOut) : rawIn * rawOut;
+  const fadeOpacity = rawIn * rawOut;
   const isCaption = clip.kind === 'caption';
   const size = Number(p.fontSize || (isCaption ? 46 : 80));
   const text = String(p.text || '');
   const visible =
-    animIn === 'type' && !previewGuard
+    animIn === 'type'
       ? text.slice(0, Math.max(1, Math.floor((frame * text.length) / Math.max(1, animFrames))))
       : text;
   const pos = p.position || (isCaption ? 'bottom' : 'center');
   const align = (p.align as 'left' | 'center' | 'right') || 'center';
   const editorial = p.template === 'editorial';
-  const scaleVal = Number(p.scale ?? 1);
+  const scaleVal = p.scale !== undefined ? Number(p.scale) : 1;
   const rotation = Number(p.rotation ?? 0);
   const translateYAnim =
-    previewGuard || animIn === 'none'
+    animIn === 'none'
       ? 0
       : animIn === 'rise'
         ? (1 - enter) * 28
         : animOut === 'sink' && frame > clip.duration - animFrames
           ? (1 - rawOut) * 20
           : 0;
-  const popScale = previewGuard || animIn !== 'pop' ? 1 : 0.78 + 0.22 * enter;
-  const blurAnim = previewGuard || animIn !== 'blur-in' ? 0 : (1 - rawIn) * 10;
+  const popScale = animIn !== 'pop' ? 1 : 0.78 + 0.22 * enter;
+  const blurAnim = animIn !== 'blur-in' ? 0 : (1 - rawIn) * 10;
 
   const hasLegacyBg = Boolean(p.background && p.background !== 'transparent');
   const bgOn = p.bgEnabled !== undefined ? Boolean(p.bgEnabled) : isCaption || hasLegacyBg;
@@ -272,10 +271,16 @@ function Background({ clip, project }: { clip: Clip; project?: Project }) {
   );
 }
 
+const MAX_COMPONENT_CACHE = 64;
 const componentCache = new Map<string, React.ComponentType<any>>();
 function loadComponent(c: CodeComponent) {
   let component = componentCache.get(c.hash);
-  if (component) return component;
+  if (component) {
+    // Refresh LRU order
+    componentCache.delete(c.hash);
+    componentCache.set(c.hash, component);
+    return component;
+  }
   const module = { exports: {} as any };
   const require = (name: string) => {
     if (name === 'react') return React;
@@ -293,8 +298,54 @@ function loadComponent(c: CodeComponent) {
   new Function('require', 'module', 'exports', c.compiled)(require, module, module.exports);
   component = module.exports.default || module.exports.Component;
   if (typeof component !== 'function') throw new Error('代码组件必须导出 default React 组件');
+  if (componentCache.size >= MAX_COMPONENT_CACHE) {
+    const oldestKey = componentCache.keys().next().value;
+    if (oldestKey) componentCache.delete(oldestKey);
+  }
   componentCache.set(c.hash, component!);
   return component!;
+}
+
+class ClipErrorBoundary extends React.Component<
+  { resetKey: string; clipName: string; children: React.ReactNode },
+  { error: string }
+> {
+  state = { error: '' };
+  static getDerivedStateFromError(e: Error) {
+    return { error: e?.message || String(e) };
+  }
+  componentDidUpdate(prevProps: { resetKey: string }) {
+    if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: '' });
+    }
+  }
+  render() {
+    if (this.state.error) {
+      if (getRemotionEnvironment().isRendering) {
+        throw new Error(`代码组件「${this.props.clipName}」运行错误：${this.state.error}`);
+      }
+      return (
+        <AbsoluteFill
+          style={{
+            justifyContent: 'center',
+            alignItems: 'center',
+            background: 'rgba(24, 16, 18, 0.88)',
+            color: '#f5b4ac',
+            fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+            fontSize: 24,
+            padding: 32,
+            textAlign: 'center',
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>组件运行异常：{this.props.clipName}</div>
+            <div style={{ fontSize: 16, opacity: 0.85 }}>{this.state.error}</div>
+          </div>
+        </AbsoluteFill>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function Code({
@@ -302,18 +353,22 @@ function Code({
   clip,
   project,
   mediaOrigin,
+  rotation = 0,
+  filterCss,
 }: {
   component: CodeComponent;
   clip: Clip;
   project: Project;
   mediaOrigin: string;
+  rotation?: number;
+  filterCss?: string;
 }) {
   const Component = useMemo(() => loadComponent(component), [component.hash]);
   const x = Number(clip.props.x || 0);
   const y = Number(clip.props.y || 0);
-  const scale = Number(clip.props.scale || 1);
+  const scale = clip.props.scale !== undefined ? Number(clip.props.scale) : 1;
   const opacity = Number(clip.props.opacity ?? 1);
-  const hasTransform = x !== 0 || y !== 0 || scale !== 1 || opacity !== 1;
+  const hasTransform = x !== 0 || y !== 0 || scale !== 1 || opacity !== 1 || rotation !== 0 || Boolean(filterCss);
   const node = (
     <Component
       {...component.props}
@@ -329,7 +384,14 @@ function Code({
   );
   if (!hasTransform) return node;
   return (
-    <AbsoluteFill style={{ transform: `translate(${x}px, ${y}px) scale(${scale})`, opacity }}>
+    <AbsoluteFill
+      style={{
+        transformOrigin: 'center center',
+        transform: `translate(${x}px, ${y}px) rotate(${rotation}deg) scale(${scale})`,
+        opacity,
+        filter: filterCss,
+      }}
+    >
       {node}
     </AbsoluteFill>
   );
@@ -398,16 +460,17 @@ function Content({
   if (clip.kind === 'code') {
     const c = project.components.find((c) => c.id === clip.componentId);
     if (!c) return null;
-    if (!rotation && !filterCss) return <Code component={c} clip={clip} project={project} mediaOrigin={mediaOrigin} />;
     return (
-      <AbsoluteFill
-        style={{
-          transform: rotation ? `rotate(${rotation}deg)` : undefined,
-          filter: filterCss,
-        }}
-      >
-        <Code component={c} clip={clip} project={project} mediaOrigin={mediaOrigin} />
-      </AbsoluteFill>
+      <ClipErrorBoundary resetKey={`${c.hash}:${clip.id}`} clipName={clip.name || c.name}>
+        <Code
+          component={c}
+          clip={clip}
+          project={project}
+          mediaOrigin={mediaOrigin}
+          rotation={rotation}
+          filterCss={filterCss}
+        />
+      </ClipErrorBoundary>
     );
   }
   const src = mediaUrl(mediaOrigin, clip.assetId!);
@@ -476,8 +539,7 @@ function TransitionEnvelope({
   const dur = Math.min(clip.duration, Math.max(1, tr.durationFrames || 1));
   if (f >= dur) return <>{children}</>;
   const raw = Math.max(0, Math.min(1, f / dur));
-  const eased = 1 - Math.pow(1 - raw, 3);
-  const p = paused && isSelected && f === 0 ? Math.max(0.88, eased) : eased;
+  const p = 1 - Math.pow(1 - raw, 3);
   let style: React.CSSProperties = {};
   if (tr.type === 'dissolve') {
     style = { opacity: p };

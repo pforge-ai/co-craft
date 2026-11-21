@@ -28,7 +28,11 @@ export async function readJSON<T>(path: string, fallback?: T): Promise<T> {
   try {
     return JSON.parse(await readFile(path, 'utf8'));
   } catch (e) {
-    if (fallback !== undefined && (e as NodeJS.ErrnoException).code === 'ENOENT') return fallback;
+    if (
+      fallback !== undefined &&
+      ((e as NodeJS.ErrnoException).code === 'ENOENT' || e instanceof SyntaxError)
+    )
+      return fallback;
     throw e;
   }
 }
@@ -92,29 +96,32 @@ export class ProjectStore {
     return (await readJSON<{ project: Project }>(this.snapshotPath(h.current))).project;
   }
 
-  private async loadRevisionsIndex(maxExclusive: number): Promise<Revision[]> {
+  private async loadRevisionsIndex(maxExclusive: number, mustIncludeRevision?: number): Promise<Revision[]> {
     let indexed = await readJSON<Revision[] | null>(this.revisionsIndexPath, null);
-    if (!indexed) {
-      // One-time migration for 0.1/0.2 projects without revisions-index.json
-      const files = await readdir(join(this.meta, 'revisions'));
-      indexed = (
-        await Promise.all(
-          files
-            .filter((x) => x.endsWith('.json'))
-            .map(
-              async (f) => (await readJSON<{ revision: Revision }>(join(this.meta, 'revisions', f))).revision,
-            ),
-        )
-      ).sort((a, b) => b.revision - a.revision);
+    const needsRebuild =
+      !Array.isArray(indexed) ||
+      (mustIncludeRevision !== undefined && !indexed.some((r) => r.revision === mustIncludeRevision));
+    if (needsRebuild) {
+      // Rebuild index on 0.1/0.2 migration or after a crash between head.json and revisions-index.json
+      const files = await readdir(join(this.meta, 'revisions')).catch(() => [] as string[]);
+      const loaded: Revision[] = [];
+      for (const f of files) {
+        if (!f.endsWith('.json')) continue;
+        try {
+          const snap = await readJSON<{ revision: Revision }>(join(this.meta, 'revisions', f));
+          if (snap?.revision) loaded.push(snap.revision);
+        } catch {}
+      }
+      indexed = loaded.sort((a, b) => b.revision - a.revision);
       await atomicJSON(this.revisionsIndexPath, indexed).catch(() => {});
     }
-    return indexed.filter((r) => r.revision < maxExclusive).sort((a, b) => b.revision - a.revision);
+    return indexed!.filter((r) => r.revision < maxExclusive).sort((a, b) => b.revision - a.revision);
   }
 
-  async envelope(): Promise<ProjectEnvelope> {
+  private async readEnvelope(): Promise<ProjectEnvelope> {
     const head = await readJSON<Head>(this.headPath);
-    const p = await this.project();
-    const revisions = await this.loadRevisionsIndex(head.next);
+    const p = (await readJSON<{ project: Project }>(this.snapshotPath(head.current))).project;
+    const revisions = await this.loadRevisionsIndex(head.next, head.current);
     const offlineAssetIds = p.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
     await Promise.all(
       p.assets.map(async (a) => {
@@ -137,6 +144,10 @@ export class ProjectStore {
       canRedo: head.redo.length > 0,
       offlineAssetIds,
     };
+  }
+
+  async envelope(): Promise<ProjectEnvelope> {
+    return this.serial(() => this.readEnvelope());
   }
 
   async tasks(): Promise<Task[]> {
@@ -234,14 +245,16 @@ export class ProjectStore {
     await atomicJSON(this.headPath, head, isActive);
     await atomicJSON(this.revisionsIndexPath, [revision, ...prevIndex.filter((r) => r.revision !== p.revision)]);
     await atomicJSON(join(this.path, 'project.json'), p);
-    await writeFile(join(this.path, 'brief.md'), p.brief, 'utf8');
-    return this.envelope();
+    const briefTmp = join(this.path, `.brief.${process.pid}.${crypto.randomUUID()}.tmp`);
+    await writeFile(briefTmp, p.brief, 'utf8');
+    await rename(briefTmp, join(this.path, 'brief.md'));
+    return this.readEnvelope();
   }
 
   async undo() {
     return this.serial(async () => {
       const h = await readJSON<Head>(this.headPath);
-      if (!h.undo.length) return this.envelope();
+      if (!h.undo.length) return this.readEnvelope();
       const before = await this.project();
       return this.publish(before, clone(await this.snapshot(h.undo.at(-1)!)), '撤销上次修改', 'you', 'undo');
     });
@@ -250,7 +263,7 @@ export class ProjectStore {
   async redo() {
     return this.serial(async () => {
       const h = await readJSON<Head>(this.headPath);
-      if (!h.redo.length) return this.envelope();
+      if (!h.redo.length) return this.readEnvelope();
       const before = await this.project();
       return this.publish(before, clone(await this.snapshot(h.redo.at(-1)!)), '重做修改', 'you', 'redo');
     });
@@ -301,7 +314,7 @@ export class Library {
       baseDir || join(this.root, 'Projects'),
       `${name.replace(/[\/:*?"<>|]/g, '-')}-${p.id.slice(-6)}.cocraft`,
     );
-    const store = new ProjectStore(path);
+    const store = new ProjectStore(resolve(path));
     await store.init(p);
     this.stores.set(store.path, store);
     await this.remember(store);

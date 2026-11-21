@@ -81,6 +81,7 @@ interface CreateCanvasProps {
   sequence: Sequence;
   selectedClipId: string | null;
   previewOrigin: string;
+  modalOpen?: boolean;
   leftOpen: boolean;
   rightOpen: boolean;
   rightAgentOpen?: boolean;
@@ -104,7 +105,12 @@ interface CreateCanvasProps {
     componentId?: string;
     pack?: { name: string; assetIds?: string[]; componentIds?: string[]; vaultIds?: string[] };
   }) => Promise<void>;
-  onExportMaterialPack?: (payload: { name: string; assetIds: string[]; componentIds: string[] }) => Promise<void>;
+  onExportMaterialPack?: (payload: {
+    name: string;
+    assetIds: string[];
+    componentIds: string[];
+    vaultIds?: string[];
+  }) => Promise<void>;
   onSaveClipsAsAsset?: (clips: Clip[], customName?: string) => Promise<void>;
   onAddRefsToChat?: (refs: ChatContextRef[], openDrawer?: boolean) => void;
   chatRefs?: ChatContextRef[];
@@ -182,6 +188,7 @@ export function CreateCanvas({
   sequence,
   selectedClipId,
   previewOrigin,
+  modalOpen = false,
   rightAgentOpen = false,
   floatingPrompt,
   onFloatingPromptChange,
@@ -230,6 +237,25 @@ export function CreateCanvas({
 
   const [activeVarByEnt, setActiveVarByEnt] = useState<Record<string, string>>({});
   const [textDrafts, setTextDrafts] = useState<Record<string, string>>({});
+  const activeDragCleanupRef = useRef<(() => void) | null>(null);
+
+  const startManagedDrag = useCallback((cleanup: () => void) => {
+    activeDragCleanupRef.current?.();
+    activeDragCleanupRef.current = cleanup;
+  }, []);
+
+  useEffect(
+    () => () => {
+      activeDragCleanupRef.current?.();
+      activeDragCleanupRef.current = null;
+    },
+    [],
+  );
+
+  // Clear local textDrafts whenever project revision changes externally (Undo/Redo/Agent edit)
+  useEffect(() => {
+    setTextDrafts({});
+  }, [project.revision]);
 
   // TapNow Popovers, Add Menu, Context Menu, Drop-to-Create Menu, Marquee Box
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -530,7 +556,7 @@ export function CreateCanvas({
 
       const packName = `${project.name}-素材包 (${keys.length}项)`;
       if (exportOffline && onExportMaterialPack) {
-        await onExportMaterialPack({ name: packName, assetIds, componentIds });
+        await onExportMaterialPack({ name: packName, assetIds, componentIds, vaultIds });
         return;
       }
       await onPublishToLibrary({
@@ -554,7 +580,10 @@ export function CreateCanvas({
         if (key.startsWith('asset:')) {
           const a = standaloneAssets.find((x) => `asset:${x.id}` === key);
           if (!a) continue;
-          const dur = Math.max(15, Math.floor((a.kind === 'image' ? 5 : a.duration) * sequence.fps));
+          const dur =
+            a.kind === 'image' || a.kind === 'model-3d'
+              ? Math.max(15, Math.round(5 * sequence.fps))
+              : Math.max(1, Math.floor(a.duration * sequence.fps));
           const isAudio = a.kind === 'audio';
           const c: Clip = {
             ...newClip(a.kind === 'model-3d' ? 'shape' : a.kind, isAudio ? aCursor : vCursor, a.id),
@@ -586,7 +615,10 @@ export function CreateCanvas({
             vCursor += Math.max(1, ent.compound.durationFrames);
           } else if (ent.assetId) {
             const a = project.assets.find((x) => x.id === ent.assetId);
-            const dur = Math.max(15, Math.floor(((a && a.kind !== 'image' ? a.duration : 5) || 5) * sequence.fps));
+            const dur =
+              !a || a.kind === 'image' || a.kind === 'model-3d'
+                ? Math.max(15, Math.round(5 * sequence.fps))
+                : Math.max(1, Math.floor(a.duration * sequence.fps));
             const c: Clip = {
               ...newClip(a?.kind === 'video' ? 'video' : 'image', vCursor, ent.assetId),
               name: ent.name,
@@ -639,7 +671,7 @@ export function CreateCanvas({
                   clip: {
                     ...newClip('audio', sh.start, a.id),
                     name: a.name,
-                    duration: Math.max(15, Math.min(sh.duration, Math.floor(a.duration * sequence.fps))),
+                    duration: Math.max(1, Math.min(sh.duration, Math.floor(a.duration * sequence.fps))),
                   },
                 });
               }
@@ -667,14 +699,20 @@ export function CreateCanvas({
     [shots, upstreamEntities, standaloneAssets, sequence.id, sequence.fps, onEdit],
   );
 
-  // Keyboard shortcuts while Canvas active (Escape deselect, T new text node, Cmd+A select all, Cmd+G group, Space pan)
+  // Keyboard shortcuts while Canvas active (Escape deselect, T new text node, S new subject, Cmd+A select all, Cmd+G group, Space pan)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (modalOpen || subjectModal) return;
+      if (e.isComposing) return;
       if (e.code === 'Space' && !(e.target as HTMLElement)?.closest('input, textarea, select')) {
         setSpaceHeld(true);
       }
       const inField = Boolean((e.target as HTMLElement)?.closest('input, textarea, select, [contenteditable]'));
       if (e.key === 'Escape') {
+        if (inField) {
+          (e.target as HTMLElement).blur();
+          return;
+        }
         clearSelection();
         return;
       }
@@ -695,19 +733,27 @@ export function CreateCanvas({
         void createTextNode('');
         return;
       }
+      if (!mod && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        setSubjectModal({ mode: 'new' });
+        return;
+      }
       if (!mod && e.key.toLowerCase() === 'v') setCanvasTool('select');
       if (!mod && e.key.toLowerCase() === 'h') setCanvasTool('pan');
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') setSpaceHeld(false);
     };
+    const onBlur = () => setSpaceHeld(false);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
     };
-  }, [clearSelection, selectAllNodes, createGroupFromNodeKeys, createTextNode]);
+  }, [modalOpen, subjectModal, clearSelection, selectAllNodes, createGroupFromNodeKeys, createTextNode]);
 
   async function addQuickCanvasRigNode(presetId: string, role: VaultItem['role'], label: string) {
     setAddMenuOpen(false);
@@ -1154,37 +1200,39 @@ export function CreateCanvas({
     const initX2 = startWorld ? startWorld.x : x1 + (side === 'left' ? -24 : 24);
     const initY2 = startWorld ? startWorld.y : y1;
     setWireDrag({ fromNodeId, side, x1, y1, x2: initX2, y2: initY2 });
-    pointerDrag(
-      e,
-      (mx, my) => {
-        const wPt = screenToWorld(mx, my);
-        if (wPt) {
-          setWireDrag({ fromNodeId, side, x1, y1, x2: wPt.x, y2: wPt.y });
-        }
-        setWireHoverKey(findHitNodeKey(mx, my, fromNodeId));
-      },
-      (upX, upY) => {
-        const hitKey = findHitNodeKey(upX, upY, fromNodeId);
-        setWireHoverKey(null);
-        setWireDrag(null);
-        if (hitKey) {
-          void completeWireToNode(fromNodeId, hitKey);
-        } else {
-          const vpRect = viewportRef.current?.getBoundingClientRect();
-          if (vpRect) {
-            const worldX = Math.round((upX - vpRect.left - panRef.current.x) / zoomRef.current);
-            const worldY = Math.round((upY - vpRect.top - panRef.current.y) / zoomRef.current);
-            setDropMenu({
-              sourceKey: fromNodeId,
-              worldX,
-              worldY,
-              screenX: Math.min(vpRect.width - 200, Math.max(16, upX - vpRect.left)),
-              screenY: Math.min(vpRect.height - 180, Math.max(16, upY - vpRect.top)),
-            });
+    startManagedDrag(
+      pointerDrag(
+        e,
+        (mx, my) => {
+          const wPt = screenToWorld(mx, my);
+          if (wPt) {
+            setWireDrag({ fromNodeId, side, x1, y1, x2: wPt.x, y2: wPt.y });
           }
-        }
-      },
-      'crosshair',
+          setWireHoverKey(findHitNodeKey(mx, my, fromNodeId));
+        },
+        (upX, upY) => {
+          const hitKey = findHitNodeKey(upX, upY, fromNodeId);
+          setWireHoverKey(null);
+          setWireDrag(null);
+          if (hitKey) {
+            void completeWireToNode(fromNodeId, hitKey);
+          } else {
+            const vpRect = viewportRef.current?.getBoundingClientRect();
+            if (vpRect) {
+              const worldX = Math.round((upX - vpRect.left - panRef.current.x) / zoomRef.current);
+              const worldY = Math.round((upY - vpRect.top - panRef.current.y) / zoomRef.current);
+              setDropMenu({
+                sourceKey: fromNodeId,
+                worldX,
+                worldY,
+                screenX: Math.min(vpRect.width - 200, Math.max(16, upX - vpRect.left)),
+                screenY: Math.min(vpRect.height - 180, Math.max(16, upY - vpRect.top)),
+              });
+            }
+          }
+        },
+        'crosshair',
+      ),
     );
   };
 
@@ -1211,35 +1259,37 @@ export function CreateCanvas({
     const sx = e.clientX;
     const sy = e.clientY;
     let dragged = false;
-    pointerDrag(
-      e,
-      (mx, my) => {
-        if (!dragged && Math.hypot(mx - sx, my - sy) <= 4) return;
-        if (!dragged) {
-          dragged = true;
-          suppressNextClickRef.current = true;
-          if (!selectedIdsRef.current.includes(nodeKey)) setSelectedNodeIds([nodeKey]);
-        }
-        const dx = Math.round((mx - sx) / zoomRef.current);
-        const dy = Math.round((my - sy) / zoomRef.current);
-        const next = { ...nodePositionsRef.current };
-        for (const [k, op] of origMap) {
-          next[k] = { x: op.x + dx, y: op.y + dy };
-        }
-        nodePositionsRef.current = next;
-        setNodePositions(next);
-      },
-      () => {
-        if (dragged) {
-          requestAnimationFrame(() => {
-            suppressNextClickRef.current = false;
-          });
-          void onEdit('更新画布节点布局', [
-            { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
-          ]);
-        }
-      },
-      'grabbing',
+    startManagedDrag(
+      pointerDrag(
+        e,
+        (mx, my) => {
+          if (!dragged && Math.hypot(mx - sx, my - sy) <= 4) return;
+          if (!dragged) {
+            dragged = true;
+            suppressNextClickRef.current = true;
+            if (!selectedIdsRef.current.includes(nodeKey)) setSelectedNodeIds([nodeKey]);
+          }
+          const dx = Math.round((mx - sx) / zoomRef.current);
+          const dy = Math.round((my - sy) / zoomRef.current);
+          const next = { ...nodePositionsRef.current };
+          for (const [k, op] of origMap) {
+            next[k] = { x: op.x + dx, y: op.y + dy };
+          }
+          nodePositionsRef.current = next;
+          setNodePositions(next);
+        },
+        () => {
+          if (dragged) {
+            requestAnimationFrame(() => {
+              suppressNextClickRef.current = false;
+            });
+            void onEdit('更新画布节点布局', [
+              { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
+            ]);
+          }
+        },
+        'grabbing',
+      ),
     );
   };
 
@@ -1528,11 +1578,13 @@ export function CreateCanvas({
         if (shouldPan) {
           const startX = e.clientX - panRef.current.x;
           const startY = e.clientY - panRef.current.y;
-          pointerDrag(
-            e,
-            (mx, my) => setPan({ x: mx - startX, y: my - startY }),
-            undefined,
-            'grabbing',
+          startManagedDrag(
+            pointerDrag(
+              e,
+              (mx, my) => setPan({ x: mx - startX, y: my - startY }),
+              undefined,
+              'grabbing',
+            ),
           );
           return;
         }
@@ -1542,38 +1594,40 @@ export function CreateCanvas({
         const additive = e.shiftKey || e.metaKey || e.ctrlKey;
         const baseIds = additive ? selectedIdsRef.current : [];
 
-        pointerDrag(
-          e,
-          (mx, my) => {
-            if (!vp) return;
-            if (Math.hypot(mx - startClientX, my - startClientY) < 4) return;
-            const x1 = Math.min(startClientX, mx) - vp.left;
-            const y1 = Math.min(startClientY, my) - vp.top;
-            const x2 = Math.max(startClientX, mx) - vp.left;
-            const y2 = Math.max(startClientY, my) - vp.top;
-            setMarquee({ x1, y1, x2, y2 });
+        startManagedDrag(
+          pointerDrag(
+            e,
+            (mx, my) => {
+              if (!vp) return;
+              if (Math.hypot(mx - startClientX, my - startClientY) < 4) return;
+              const x1 = Math.min(startClientX, mx) - vp.left;
+              const y1 = Math.min(startClientY, my) - vp.top;
+              const x2 = Math.max(startClientX, mx) - vp.left;
+              const y2 = Math.max(startClientY, my) - vp.top;
+              setMarquee({ x1, y1, x2, y2 });
 
-            const wx1 = (x1 - panRef.current.x) / zoomRef.current;
-            const wy1 = (y1 - panRef.current.y) / zoomRef.current;
-            const wx2 = (x2 - panRef.current.x) / zoomRef.current;
-            const wy2 = (y2 - panRef.current.y) / zoomRef.current;
+              const wx1 = (x1 - panRef.current.x) / zoomRef.current;
+              const wy1 = (y1 - panRef.current.y) / zoomRef.current;
+              const wx2 = (x2 - panRef.current.x) / zoomRef.current;
+              const wy2 = (y2 - panRef.current.y) / zoomRef.current;
 
-            const hits: string[] = [...baseIds];
-            for (const [k, pos] of Object.entries(layoutRef.current)) {
-              const sz = nodeSizeFor(k);
-              const intersects =
-                pos.x <= wx2 && pos.x + sz.w >= wx1 && pos.y <= wy2 && pos.y + sz.h >= wy1;
-              if (intersects && !hits.includes(k)) hits.push(k);
-            }
-            setSelectedNodeIds(hits);
-          },
-          (mx, my) => {
-            setMarquee(null);
-            if (Math.hypot(mx - startClientX, my - startClientY) < 4 && !additive) {
-              clearSelection();
-            }
-          },
-          'crosshair',
+              const hits: string[] = [...baseIds];
+              for (const [k, pos] of Object.entries(layoutRef.current)) {
+                const sz = nodeSizeFor(k);
+                const intersects =
+                  pos.x <= wx2 && pos.x + sz.w >= wx1 && pos.y <= wy2 && pos.y + sz.h >= wy1;
+                if (intersects && !hits.includes(k)) hits.push(k);
+              }
+              setSelectedNodeIds(hits);
+            },
+            (mx, my) => {
+              setMarquee(null);
+              if (Math.hypot(mx - startClientX, my - startClientY) < 4 && !additive) {
+                clearSelection();
+              }
+            },
+            'crosshair',
+          ),
         );
       }}
       onDragOver={(e) => {
@@ -1686,8 +1740,9 @@ export function CreateCanvas({
                 onClick={async () => {
                   const srcEnt = upstreamEntities.find((e) => `ent:${e.id}` === dropMenu.sourceKey);
                   setDropMenu(null);
-                  if (!srcEnt?.textContent?.trim()) return;
-                  const ops = scriptOutlineToShotOperations(sequence, srcEnt.textContent, {
+                  const rawText = srcEnt ? (textDrafts[srcEnt.id] ?? srcEnt.textContent ?? '') : '';
+                  if (!srcEnt || !rawText.trim()) return;
+                  const ops = scriptOutlineToShotOperations(sequence, rawText, {
                     entityId: srcEnt.id,
                     version: srcEnt.version,
                   });
@@ -2066,24 +2121,26 @@ export function CreateCanvas({
                 }
                 const sx = e.clientX;
                 const sy = e.clientY;
-                pointerDrag(
-                  e,
-                  (mx, my) => {
-                    const dx = Math.round((mx - sx) / zoomRef.current);
-                    const dy = Math.round((my - sy) / zoomRef.current);
-                    const next = { ...nodePositionsRef.current };
-                    for (const [k, op] of origMap) next[k] = { x: op.x + dx, y: op.y + dy };
-                    nodePositionsRef.current = next;
-                    setNodePositions(next);
-                  },
-                  (mx, my) => {
-                    if (mx !== sx || my !== sy) {
-                      void onEdit('移动画布分组', [
-                        { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
-                      ]);
-                    }
-                  },
-                  'grabbing',
+                startManagedDrag(
+                  pointerDrag(
+                    e,
+                    (mx, my) => {
+                      const dx = Math.round((mx - sx) / zoomRef.current);
+                      const dy = Math.round((my - sy) / zoomRef.current);
+                      const next = { ...nodePositionsRef.current };
+                      for (const [k, op] of origMap) next[k] = { x: op.x + dx, y: op.y + dy };
+                      nodePositionsRef.current = next;
+                      setNodePositions(next);
+                    },
+                    (mx, my) => {
+                      if (mx !== sx || my !== sy) {
+                        void onEdit('移动画布分组', [
+                          { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
+                        ]);
+                      }
+                    },
+                    'grabbing',
+                  ),
                 );
               }}
             >
@@ -2206,7 +2263,11 @@ export function CreateCanvas({
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
             >
               {isPrimarySelected && (
-                <div className="cc-node-toolbar" onClick={(e) => e.stopPropagation()}>
+                <div
+                  className="cc-node-toolbar"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => e.stopPropagation()}
+                >
                   {isTextNote ? (
                     <>
                       <button
@@ -2387,19 +2448,33 @@ export function CreateCanvas({
                     }}
                     onBlur={(e) => {
                       const val = e.currentTarget.value;
-                      if (val !== (ent.textContent || '')) {
-                        void onEdit(`更新文本「${ent.name}」`, [
-                          {
-                            type: 'putVaultItem',
-                            item: {
-                              ...clone(ent),
-                              textContent: val,
-                              version: ent.version + 1,
-                              updatedAt: new Date().toISOString(),
-                            },
-                          },
-                        ]);
+                      if (val === (ent.textContent || '')) {
+                        setTextDrafts((prev) => {
+                          if (!(ent.id in prev)) return prev;
+                          const next = { ...prev };
+                          delete next[ent.id];
+                          return next;
+                        });
+                        return;
                       }
+                      void onEdit(`更新文本「${ent.name}」`, [
+                        {
+                          type: 'putVaultItem',
+                          item: {
+                            ...clone(ent),
+                            textContent: val,
+                            version: ent.version + 1,
+                            updatedAt: new Date().toISOString(),
+                          },
+                        },
+                      ]).finally(() => {
+                        setTextDrafts((prev) => {
+                          if (prev[ent.id] !== val) return prev;
+                          const next = { ...prev };
+                          delete next[ent.id];
+                          return next;
+                        });
+                      });
                     }}
                   />
                 ) : (
@@ -2572,7 +2647,11 @@ export function CreateCanvas({
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
             >
               {isPrimarySelected && (
-                <div className="cc-node-toolbar" onClick={(e) => e.stopPropagation()}>
+                <div
+                  className="cc-node-toolbar"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => e.stopPropagation()}
+                >
                   {isAudio ? (
                     <>
                       <button
@@ -2755,7 +2834,11 @@ export function CreateCanvas({
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
             >
               {isPrimarySelected && (
-                <div className="cc-node-toolbar" onClick={(e) => e.stopPropagation()}>
+                <div
+                  className="cc-node-toolbar"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <button
                     type="button"
                     onClick={() => {
@@ -2856,7 +2939,11 @@ export function CreateCanvas({
               }}
             >
               {isPrimarySelected && (
-                <div className="cc-node-toolbar" onClick={(e) => e.stopPropagation()}>
+                <div
+                  className="cc-node-toolbar"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <button
                     type="button"
                     aria-label="前移镜头"

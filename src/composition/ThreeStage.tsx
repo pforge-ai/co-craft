@@ -24,6 +24,32 @@ export interface ThreeCanvasProps {
   setup?: (scene: THREE.Scene, camera: THREE.PerspectiveCamera) => (() => void) | void;
 }
 
+function disposeMaterial(mat: THREE.Material) {
+  const rec = mat as unknown as Record<string, unknown>;
+  for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap', 'alphaMap', 'envMap']) {
+    const tex = rec[key];
+    if (tex && typeof (tex as THREE.Texture).dispose === 'function') {
+      (tex as THREE.Texture).dispose();
+    }
+  }
+  mat.dispose();
+}
+
+function disposeObject3D(root: THREE.Object3D) {
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.geometry && typeof mesh.geometry.dispose === 'function') {
+      mesh.geometry.dispose();
+    }
+    const mat = mesh.material;
+    if (Array.isArray(mat)) {
+      for (const m of mat) if (m) disposeMaterial(m);
+    } else if (mat) {
+      disposeMaterial(mat);
+    }
+  });
+}
+
 function StandaloneThreeCanvas({
   width,
   height,
@@ -35,6 +61,8 @@ function StandaloneThreeCanvas({
   onFrame,
 }: Required<Pick<ThreeCanvasProps, 'width' | 'height' | 'frame' | 'fps'>> & ThreeCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [staticThumbUrl, setStaticThumbUrl] = useState<string | null>(null);
+  const isSmallStaticThumb = width <= 420 && height <= 300;
   const ctxRef = useRef<{
     renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;
@@ -42,7 +70,53 @@ function StandaloneThreeCanvas({
     cleanup?: () => void;
   } | null>(null);
 
+  // For small card thumbnails, render one deterministic snapshot and immediately release the WebGL context
+  // so 3D asset/shot grids never exhaust Chromium's 8-16 WebGL context limit.
   useLayoutEffect(() => {
+    if (!isSmallStaticThumb) {
+      setStaticThumbUrl(null);
+      return;
+    }
+    const offscreen = document.createElement('canvas');
+    offscreen.width = width;
+    offscreen.height = height;
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        canvas: offscreen,
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: true,
+      });
+    } catch {
+      return;
+    }
+    renderer.setPixelRatio(1);
+    renderer.setSize(width, height, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(camCfg?.fov || 40, width / height, 0.1, 100);
+    const pos = camCfg?.position || [4.2, 3.0, 5.2];
+    camera.position.set(pos[0], pos[1], pos[2]);
+    camera.lookAt(0, 0, 0);
+
+    const cleanup = setup ? setup(scene, camera) || undefined : undefined;
+    onFrame?.({ scene, camera, renderer, frame, fps, time: frame / fps });
+    renderer.render(scene, camera);
+    try {
+      setStaticThumbUrl(offscreen.toDataURL('image/png'));
+    } catch {}
+    cleanup?.();
+    disposeObject3D(scene);
+    renderer.dispose();
+    renderer.forceContextLoss();
+  }, [isSmallStaticThumb, width, height, frame, fps, setup, onFrame]);
+
+  useLayoutEffect(() => {
+    if (isSmallStaticThumb) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     let renderer: THREE.WebGLRenderer;
@@ -73,12 +147,15 @@ function StandaloneThreeCanvas({
 
     return () => {
       cleanup?.();
+      disposeObject3D(scene);
       renderer.dispose();
+      renderer.forceContextLoss();
       ctxRef.current = null;
     };
-  }, [width, height, setup]);
+  }, [isSmallStaticThumb, width, height, setup]);
 
   useLayoutEffect(() => {
+    if (isSmallStaticThumb) return;
     const ctx = ctxRef.current;
     if (!ctx) return;
     ctx.camera.aspect = width / height;
@@ -92,8 +169,15 @@ function StandaloneThreeCanvas({
       time: frame / fps,
     });
     ctx.renderer.render(ctx.scene, ctx.camera);
-  }, [frame, fps, width, height, onFrame]);
+  }, [isSmallStaticThumb, frame, fps, width, height, onFrame, setup]);
 
+  if (isSmallStaticThumb) {
+    return staticThumbUrl ? (
+      <img src={staticThumbUrl} alt="" style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover', ...style }} />
+    ) : (
+      <div style={{ width: '100%', height: '100%', ...style }} />
+    );
+  }
   return <canvas ref={canvasRef} width={width} height={height} style={{ width: '100%', height: '100%', ...style }} />;
 }
 
@@ -325,21 +409,22 @@ function applyCameraPreset(
   cameraPitch = 0,
 ) {
   const distScale = isPortrait ? 1.38 : 1.0;
+  const spd = Math.max(0, Number.isFinite(speed) ? speed : 1);
   if (preset === 'isometric') {
-    const sway = Math.sin(t * 0.45 * Math.max(0.2, speed)) * 0.35;
+    const sway = Math.sin(t * 0.45 * spd) * 0.35;
     camera.position.set((4.6 + sway) * distScale, 3.6 * distScale, (4.6 - sway) * distScale);
   } else if (preset === 'dolly-in') {
-    const z = Math.max(3.1, 6.2 - t * 0.55 * Math.max(0.3, speed));
+    const z = Math.max(3.1, 6.2 - t * 0.55 * spd);
     camera.position.set(2.2 * distScale, 1.7 * distScale, z * distScale);
   } else if (preset === 'top-down') {
-    const angle = t * 0.3 * Math.max(0.2, speed);
+    const angle = t * 0.3 * spd;
     camera.position.set(Math.sin(angle) * 1.8 * distScale, 6.4 * distScale, Math.cos(angle) * 1.8 * distScale);
   } else if (preset === 'hero-low') {
-    const angle = -0.45 + t * 0.25 * Math.max(0.2, speed);
+    const angle = -0.45 + t * 0.25 * spd;
     camera.position.set(Math.sin(angle) * 5.2 * distScale, 0.85 * distScale, Math.cos(angle) * 5.2 * distScale);
   } else {
     // 'orbit'
-    const angle = 0.55 + t * 0.48 * Math.max(0.2, speed);
+    const angle = 0.55 + t * 0.48 * spd;
     camera.position.set(Math.cos(angle) * 5.4 * distScale, 2.35 * distScale, Math.sin(angle) * 5.4 * distScale);
   }
   if (cameraYaw || cameraPitch) {
@@ -412,11 +497,16 @@ function TeardownStageBody({
     const handle = delayRender(`Loading 3D model: ${modelUrl}`);
     let cancelled = false;
     const loader = new GLTFLoader();
+    let loadedRef: THREE.Group | null = null;
     loader.load(
       modelUrl,
       (gltf) => {
-        if (cancelled) return;
+        if (cancelled) {
+          disposeObject3D(gltf.scene);
+          return;
+        }
         const root = gltf.scene.clone(true);
+        disposeObject3D(gltf.scene);
         const box = new THREE.Box3().setFromObject(root);
         const size = box.getSize(new THREE.Vector3());
         const center = box.getCenter(new THREE.Vector3());
@@ -426,6 +516,7 @@ function TeardownStageBody({
         const wrapper = new THREE.Group();
         wrapper.scale.setScalar(normScale);
         wrapper.add(root);
+        loadedRef = wrapper;
         setLoadedGltf(wrapper);
         continueRender(handle);
       },
@@ -439,6 +530,7 @@ function TeardownStageBody({
     );
     return () => {
       cancelled = true;
+      if (loadedRef) disposeObject3D(loadedRef);
       continueRender(handle);
     };
   }, [modelUrl]);
@@ -473,9 +565,11 @@ function TeardownStageBody({
       if (loadedGltf) {
         const cloneRoot = loadedGltf.clone(true);
         scene.add(cloneRoot);
+        cloneRoot.updateWorldMatrix(true, true);
         const glbParts: ExplodablePart[] = [];
         const overallBox = new THREE.Box3().setFromObject(cloneRoot);
         const center = overallBox.getCenter(new THREE.Vector3());
+        const invNormScale = 1 / Math.max(0.0001, cloneRoot.scale.x);
         cloneRoot.traverse((child) => {
           if ((child as THREE.Mesh).isMesh) {
             const worldPos = new THREE.Vector3();
@@ -483,6 +577,8 @@ function TeardownStageBody({
             const dir = worldPos.sub(center);
             if (dir.lengthSq() < 0.001) dir.set(0, 0.5, 0);
             else dir.normalize().multiplyScalar(1.4);
+            // Convert world-space explosion offset into child's local scale space so any GLB unit scale explodes cleanly.
+            dir.multiplyScalar(invNormScale);
             glbParts.push({ obj: child, basePos: child.position.clone(), explodeDir: dir });
           }
         });

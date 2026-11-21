@@ -4,11 +4,21 @@ import { Player, PlayerRef } from '@remotion/player';
 import { Film, FilmProps } from './composition/Film';
 import { durationOf } from './core/project';
 
-const notify = (event: string, data: Record<string, unknown> = {}) =>
-  parent.postMessage({ source: 'cocraft-preview', event, ...data }, '*');
+// Private closure-scoped MessagePort transferred from the workbench.
+// Untrusted TSX code inside Film.tsx cannot access this variable or spoof workbench hotkeys.
+let privatePort: MessagePort | null = null;
+
+const notify = (event: string, data: Record<string, unknown> = {}) => {
+  const payload = { source: 'cocraft-preview', event, ...data };
+  if (privatePort) {
+    privatePort.postMessage(payload);
+  } else {
+    parent.postMessage(payload, '*');
+  }
+};
 
 class ErrorBoundary extends React.Component<
-  { revision: number; sequenceId: string; children: React.ReactNode },
+  { revision: number; sequenceId: string; onRecover?: () => void; children: React.ReactNode },
   { error: string }
 > {
   state = { error: '' };
@@ -20,7 +30,7 @@ class ErrorBoundary extends React.Component<
       this.state.error &&
       (prevProps.revision !== this.props.revision || prevProps.sequenceId !== this.props.sequenceId)
     ) {
-      this.setState({ error: '' });
+      this.setState({ error: '' }, () => this.props.onRecover?.());
     }
   }
   componentDidCatch(e: Error) {
@@ -106,6 +116,7 @@ function measureVisibleBoxes(container: HTMLElement | null): Record<string, Meas
 function Preview() {
   const [props, setProps] = useState<FilmProps | null>(null);
   const [paused, setPaused] = useState(true);
+  const [recoveryEpoch, setRecoveryEpoch] = useState(0);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [liveOverride, setLiveOverride] = useState<{ clipId: string; props: Record<string, unknown> } | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -114,6 +125,7 @@ function Preview() {
   const lastSequenceId = useRef('');
   const lastBoxesJson = useRef('');
   const pausedRef = useRef(true);
+  const mutedRef = useRef(false);
   const scrubbingRef = useRef(false);
   const measureRafRef = useRef<number>(0);
   pausedRef.current = paused;
@@ -134,48 +146,71 @@ function Preview() {
   }, []);
 
   useEffect(() => {
-    const receive = (e: MessageEvent) => {
-      if (e.source !== parent || e.data?.source !== 'cocraft-workbench') return;
-      if (e.data.type === 'load') {
-        if (typeof e.data.frame === 'number') pending.current = e.data.frame;
+    const handleCommand = (msg: any) => {
+      if (!msg || msg.source !== 'cocraft-workbench') return;
+      if (msg.type === 'load') {
+        if (typeof msg.frame === 'number') pending.current = msg.frame;
         scrubbingRef.current = false;
         setLiveOverride(null);
-        setProps(e.data.props);
+        setProps(msg.props);
         scheduleMeasure();
       }
-      if (e.data.type === 'play') {
+      if (msg.type === 'play') {
         scrubbingRef.current = false;
         setPaused(false);
         setLiveOverride(null);
         ref.current?.play();
       }
-      if (e.data.type === 'pause') {
+      if (msg.type === 'pause') {
         scrubbingRef.current = false;
         setPaused(true);
         ref.current?.pause();
         scheduleMeasure();
       }
-      if (e.data.type === 'seek') {
-        scrubbingRef.current = Boolean(e.data.scrubbing);
-        ref.current?.seekTo(e.data.frame);
+      if (msg.type === 'seek') {
+        scrubbingRef.current = Boolean(msg.scrubbing);
+        if (ref.current) {
+          ref.current.seekTo(msg.frame);
+        } else if (typeof msg.frame === 'number') {
+          pending.current = msg.frame;
+        }
         if (pausedRef.current && !scrubbingRef.current) scheduleMeasure();
       }
-      if (e.data.type === 'scrub-end') {
+      if (msg.type === 'scrub-end') {
         scrubbingRef.current = false;
-        if (typeof e.data.frame === 'number') ref.current?.seekTo(e.data.frame);
+        if (typeof msg.frame === 'number') {
+          if (ref.current) ref.current.seekTo(msg.frame);
+          else pending.current = msg.frame;
+        }
         if (pausedRef.current) scheduleMeasure();
       }
-      if (e.data.type === 'selection') {
-        setSelectedClipId(e.data.selectedClipId ?? null);
+      if (msg.type === 'selection') {
+        setSelectedClipId(msg.selectedClipId ?? null);
         if (pausedRef.current && !scrubbingRef.current) scheduleMeasure();
       }
-      if (e.data.type === 'live-transform') {
-        setLiveOverride(e.data.override ?? null);
+      if (msg.type === 'live-transform') {
+        setLiveOverride(msg.override ?? null);
         scheduleMeasure();
       }
-      if (e.data.type === 'mute') {
-        e.data.muted ? ref.current?.mute() : ref.current?.unmute();
+      if (msg.type === 'mute') {
+        mutedRef.current = Boolean(msg.muted);
+        mutedRef.current ? ref.current?.mute() : ref.current?.unmute();
       }
+    };
+    const receive = (e: MessageEvent) => {
+      if (e.source !== parent || e.data?.source !== 'cocraft-workbench') return;
+      if (e.data.type === 'init-channel' && e.ports?.[0]) {
+        if (privatePort) {
+          privatePort.onmessage = null;
+          privatePort.close();
+        }
+        privatePort = e.ports[0];
+        privatePort.onmessage = (pe) => handleCommand(pe.data);
+        privatePort.start();
+        notify('ready');
+        return;
+      }
+      if (!privatePort) handleCommand(e.data);
     };
     const forwardKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -198,12 +233,18 @@ function Preview() {
     if (ro && hostRef.current) ro.observe(hostRef.current);
     window.addEventListener('message', receive);
     window.addEventListener('keydown', forwardKey);
-    notify('ready');
+    // Announce readiness on window so parent can transfer the private MessagePort.
+    parent.postMessage({ source: 'cocraft-preview', event: 'ready' }, '*');
     return () => {
       if (measureRafRef.current) cancelAnimationFrame(measureRafRef.current);
       ro?.disconnect();
       window.removeEventListener('message', receive);
       window.removeEventListener('keydown', forwardKey);
+      if (privatePort) {
+        privatePort.onmessage = null;
+        privatePort.close();
+        privatePort = null;
+      }
     };
   }, [scheduleMeasure]);
 
@@ -247,11 +288,12 @@ function Preview() {
       player.removeEventListener('pause', pause);
       player.removeEventListener('ended', end);
     };
-  }, [s?.id, scheduleMeasure]);
+  }, [s?.id, recoveryEpoch, scheduleMeasure]);
 
   useEffect(() => {
     const player = ref.current;
     if (!player || !props || !s) return;
+    mutedRef.current ? player.mute() : player.unmute();
     const maxFrame = durationOf(s) - 1;
     const current = player.getCurrentFrame();
     if (lastSequenceId.current !== s.id || (pending.current !== null && !player.isPlaying())) {
@@ -261,12 +303,17 @@ function Preview() {
       }
       lastSequenceId.current = s.id;
       pending.current = null;
-    } else if (current > maxFrame) {
-      player.seekTo(maxFrame);
+      notify('frame', { frame: target, playing: player.isPlaying() });
+    } else {
+      pending.current = null;
+      if (current > maxFrame) {
+        player.seekTo(maxFrame);
+        notify('frame', { frame: maxFrame, playing: player.isPlaying() });
+      }
     }
     notify('loaded', { revision: props.project.revision });
     scheduleMeasure();
-  }, [props, s, scheduleMeasure]);
+  }, [props, s, recoveryEpoch, scheduleMeasure]);
 
   useEffect(() => {
     if (paused && !scrubbingRef.current) scheduleMeasure();
@@ -280,7 +327,12 @@ function Preview() {
   if (!props || !s || !inputProps) return <div ref={hostRef} style={{ width: '100%', height: '100vh' }} />;
   return (
     <div ref={hostRef} style={{ width: '100%', height: '100vh' }}>
-      <ErrorBoundary key={s.id} revision={props.project.revision} sequenceId={s.id}>
+      <ErrorBoundary
+        key={s.id}
+        revision={props.project.revision}
+        sequenceId={s.id}
+        onRecover={() => setRecoveryEpoch((n) => n + 1)}
+      >
         <Player
           ref={ref}
           component={Film}
