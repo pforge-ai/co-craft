@@ -36,7 +36,15 @@ export async function compileComponent(
     platform: 'browser',
     target: 'es2022',
     jsx: 'transform',
-    external: ['react', 'remotion', 'react/jsx-runtime'],
+    external: [
+      'react',
+      'remotion',
+      'react/jsx-runtime',
+      'three',
+      'three/examples/jsm/loaders/GLTFLoader.js',
+      'three/addons/loaders/GLTFLoader.js',
+      '@remotion/three',
+    ],
     logLevel: 'silent',
     plugins: [
       {

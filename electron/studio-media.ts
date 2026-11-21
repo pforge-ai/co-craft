@@ -2,22 +2,25 @@ import { basename, join } from 'node:path';
 import { constants } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { nativeImage } from 'electron';
-import type { Asset, EditOperation } from '../src/core/types';
+import type { Asset, AssetRole, EditOperation } from '../src/core/types';
 import { newClip } from '../src/core/project';
 import type { ProjectStore } from './store';
 
-const inventory = [
-  ['phase-turntable.jpg', '唱针 · 黑胶纹理'],
-  ['tram.jpg', '雨后的电车'],
-  ['ridge.jpg', '山脊晨光'],
-  ['glass-ident.wav', '玻璃音标'],
-  ['soft-impact.wav', '柔和落点'],
-  ['slipstream.wav', '滑过转场'],
-  ['pulse-bed.wav', '脉冲底乐'],
-] as const;
+const inventory: readonly [string, string, AssetRole, string[]][] = [
+  ['ui-click.wav', '清脆鼠标点击', 'sfx', ['点击', '界面演示', '卡点']],
+  ['card-pop.wav', '卡片轻巧弹出', 'sfx', ['弹出', '图形入场', '卡点']],
+  ['slipstream.wav', '柔和空气转场', 'sfx', ['转场', '推拉', '风声']],
+  ['data-tick.wav', '数字滚动滴答', 'sfx', ['数据', '计数', '科技']],
+  ['soft-impact.wav', '章节低频落定', 'sfx', ['章节', '重音', '片头']],
+  ['glass-ident.wav', '清透玻璃音标', 'sfx', ['片头', '品牌音标']],
+  ['pulse-bed.wav', '科技轻脉冲底乐', 'bgm', ['底乐', '科技', '预留人声']],
+  ['warm-ambient.wav', '温暖极简环境底乐', 'bgm', ['底乐', '叙事', '预留人声']],
+  ['phase-turntable.jpg', '精密金属暗调纹理', 'backdrop', ['背景底板', '暗调', '工业']],
+  ['tram.jpg', '城市街景浅景深', 'backdrop', ['环境参考', '街景']],
+  ['ridge.jpg', '山脊柔光晨雾', 'backdrop', ['背景底板', '自然']],
+];
 const released = '2026-11-18T00:00:00Z';
 
-// Bundled audio is written by create-studio-audio as stereo PCM with a canonical 44-byte WAV header.
 function audioMetadata(buffer: Buffer) {
   const frames = (buffer.length - 44) / 4,
     rate = buffer.readUInt32LE(24);
@@ -29,9 +32,10 @@ function audioMetadata(buffer: Buffer) {
   });
   return { duration: frames / rate, waveform };
 }
+
 export async function studioCatalog(resources: string): Promise<Asset[]> {
   return Promise.all(
-    inventory.map(async ([file, name]) => {
+    inventory.map(async ([file, name, role, tags]) => {
       const path = join(resources, 'public', 'studio', file),
         image = file.endsWith('.jpg');
       const meta = image
@@ -41,18 +45,22 @@ export async function studioCatalog(resources: string): Promise<Asset[]> {
         id: 'studio-v1-' + file.split('.')[0],
         name,
         kind: image ? 'image' : 'audio',
+        role,
+        tags: [...tags],
         path,
+        hasAudio: !image,
         createdAt: released,
         ...meta,
         source: {
-          provider: 'CoCraft Studio',
-          author: image ? 'CoCraft · ImageGen' : 'CoCraft',
-          license: '可用于个人与商业成片，无需署名',
+          provider: 'CoCraft 内置积木',
+          author: 'CoCraft',
+          license: '离线内置，可用于个人与商业成片',
         },
       } satisfies Asset;
     }),
   );
 }
+
 export async function stageStudioAsset(projectPath: string, source: Asset): Promise<Asset> {
   const folder = join(projectPath, 'assets', 'cocraft-studio-v1');
   await mkdir(folder, { recursive: true });
@@ -64,6 +72,7 @@ export async function stageStudioAsset(projectPath: string, source: Asset): Prom
   }
   return { ...source, id: 'asset-' + source.id, path, thumbnail: source.kind === 'image' ? path : undefined };
 }
+
 export async function addStudioAsset(
   store: ProjectStore,
   catalog: Asset[],
@@ -76,7 +85,7 @@ export async function addStudioAsset(
   const seq = p.sequences.find((s) => s.id === sequenceId);
   if (!seq || p.id !== projectId) throw new Error('工程或成片已经切换');
   const source = catalog.find((a) => a.id === id);
-  if (!source) throw new Error('随附素材不存在');
+  if (!source) throw new Error('内置资产不存在');
   const existing = p.assets.find((a) => a.id === 'asset-' + source.id);
   const asset = existing || (await stageStudioAsset(store.path, source));
   const operations: EditOperation[] = existing ? [] : [{ type: 'addAsset', asset }];

@@ -694,7 +694,7 @@ export function ResourceLibrary({
                 className="button subtle"
                 onClick={() =>
                   onGenerate(
-                    `为当前工程创作${query || '一段可编辑的画面包装'}。先阅读 cocraft-motion Skill，按照工程的叙事和画幅选择方案，完成后查看实际预览帧。`,
+                    `为当前工程创作${query || '一段可编辑的画面包装'}。按照片头与字幕包装规范，结合工程的叙事与画幅选择方案，完成后查看实际预览帧。`,
                   )
                 }
               >
@@ -857,7 +857,7 @@ export function ResourceLibrary({
                 className="button subtle"
                 onClick={() =>
                   onGenerate(
-                    `以「${itemName}」（${isComponent ? 'componentId' : 'presetId'}: ${itemId}）为起点，为当前项目创作贴合内容的版本。先阅读 cocraft-motion Skill，保留可编辑文案和参数，完成后查看实际预览帧。`,
+                    `以「${itemName}」（${isComponent ? 'componentId' : 'presetId'}: ${itemId}）为起点，为当前项目创作贴合内容的版本。按照片头与字幕包装规范，保留可编辑文案和参数，完成后查看实际预览帧。`,
                   )
                 }
               >

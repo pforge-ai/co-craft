@@ -1,55 +1,174 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
   <defs>
-    <linearGradient id="case" x1="152" y1="112" x2="862" y2="944" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#343a48"/>
-      <stop offset=".38" stop-color="#20242e"/>
-      <stop offset="1" stop-color="#111319"/>
+    <!-- Native macOS Sequoia 824x824 continuous superellipse (x:100..924, y:100..924) -->
+    <path id="squircle" d="
+      M 310 100
+      H 714
+      C 792 100, 836 100, 868 122
+      C 902 145, 924 189, 924 267
+      V 757
+      C 924 835, 902 879, 868 902
+      C 836 924, 792 924, 714 924
+      H 310
+      C 232 924, 188 924, 156 902
+      C 122 879, 100 835, 100 757
+      V 267
+      C 100 189, 122 145, 156 122
+      C 188 100, 232 100, 310 100
+      Z
+    "/>
+
+    <clipPath id="squircle-clip">
+      <use href="#squircle"/>
+    </clipPath>
+
+    <!-- Pure luminous porcelain base -->
+    <linearGradient id="tile-bg" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.68" stop-color="#FAFBFD"/>
+      <stop offset="1" stop-color="#EEF2F9"/>
     </linearGradient>
-    <radialGradient id="light" cx="0" cy="0" r="1" gradientTransform="translate(270 110) rotate(61) scale(920 890)" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#dce7ff" stop-opacity=".17"/>
-      <stop offset=".52" stop-color="#8ba8ef" stop-opacity=".035"/>
-      <stop offset="1" stop-color="#8ba8ef" stop-opacity="0"/>
+
+    <radialGradient id="tile-glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 512) scale(380)">
+      <stop offset="0" stop-color="#60A5FA" stop-opacity="0.10"/>
+      <stop offset="0.55" stop-color="#F472B6" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="rim" x1="220" y1="96" x2="808" y2="936" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#fff" stop-opacity=".5"/>
-      <stop offset=".36" stop-color="#b8c8e8" stop-opacity=".14"/>
-      <stop offset=".66" stop-color="#10141c" stop-opacity=".2"/>
-      <stop offset="1" stop-color="#92a8d0" stop-opacity=".13"/>
+
+    <linearGradient id="tile-rim" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="0.5" stop-color="#CBD5E1" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#94A3B8" stop-opacity="0.5"/>
     </linearGradient>
-    <linearGradient id="pearl" x1="12" y1="4" x2="18" y2="28" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#fff"/>
-      <stop offset=".36" stop-color="#eaf0fc"/>
-      <stop offset=".58" stop-color="#cfdaec"/>
-      <stop offset="1" stop-color="#a6b5d0"/>
+
+    <!--
+      Original CoCraft Twin-Aperture Mark ("Co" = Dual Interlocking Prism Arcs):
+      Two clean, architectural, thick rounded C-frames offset in 3D space and rotated slightly in opposite harmony,
+      creating an unmistakable double-C / Cinema Lens Aperture with pure Apple-grade optical glass intersection.
+      Zero bumpy joints, zero blurry airbrush tubes — pure geometric clarity at 16px and 1024px!
+    -->
+    <!-- Back C-Arc ("Creation" — Warm Amber -> Peach Coral -> Rose Magenta), shifted upper-left -->
+    <path id="arc-warm" fill-rule="evenodd" clip-rule="evenodd" d="
+      M 454 228
+      H 626
+      C 666 228, 698 260, 698 300
+      C 698 340, 666 372, 626 372
+      H 458
+      C 402 372, 368 406, 368 462
+      V 494
+      C 368 550, 402 584, 458 584
+      H 576
+      C 616 584, 648 616, 648 656
+      C 648 696, 616 728, 576 728
+      H 454
+      C 314 728, 224 638, 224 498
+      V 458
+      C 224 318, 314 228, 454 228
+      Z
+    " transform="rotate(-8 461 478)"/>
+
+    <!-- Front C-Arc ("Craft & Stage" — Sunlit Mint -> Electric Sky -> Cobalt -> Periwinkle), shifted lower-right -->
+    <path id="arc-cool" fill-rule="evenodd" clip-rule="evenodd" d="
+      M 570 296
+      H 728
+      C 768 296, 800 328, 800 368
+      C 800 408, 768 440, 728 440
+      H 574
+      C 518 440, 484 474, 484 530
+      V 562
+      C 484 618, 518 652, 574 652
+      H 728
+      C 768 652, 800 684, 800 724
+      C 800 764, 768 796, 728 796
+      H 570
+      C 430 796, 340 706, 340 566
+      V 526
+      C 340 386, 430 296, 570 296
+      Z
+    " transform="rotate(6 570 546)"/>
+
+    <clipPath id="cool-clip">
+      <use href="#arc-cool"/>
+    </clipPath>
+    <clipPath id="warm-clip">
+      <use href="#arc-warm"/>
+    </clipPath>
+
+    <!-- Warm Arc Gradient: Sunlit Citrine-Gold -> Warm Coral -> Soft Rose Orchid -->
+    <linearGradient id="grad-warm" x1="250" y1="220" x2="640" y2="730" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFE066"/>
+      <stop offset="0.42" stop-color="#FF928B"/>
+      <stop offset="0.82" stop-color="#FF6FB5"/>
+      <stop offset="1" stop-color="#E879F9"/>
     </linearGradient>
-    <linearGradient id="cut" x1="3" y1="15" x2="13" y2="17" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#859cff"/>
-      <stop offset="1" stop-color="#c8d6ff"/>
+
+    <linearGradient id="rim-warm" x1="250" y1="220" x2="650" y2="730" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.85"/>
+      <stop offset="0.5" stop-color="#FFD6E7" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#F472B6" stop-opacity="0.3"/>
     </linearGradient>
-    <filter id="case-shadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse">
-      <feDropShadow dx="0" dy="23" stdDeviation="19" flood-color="#080a12" flood-opacity=".27"/>
-      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000" flood-opacity=".22"/>
+
+    <!-- Cool Arc Gradient: Mint-Aqua -> Electric Cyan-Azure -> Deep Cobalt -> Soft Lavender -->
+    <linearGradient id="grad-cool" x1="760" y1="295" x2="360" y2="795" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EE7B7"/>
+      <stop offset="0.28" stop-color="#22D3EE"/>
+      <stop offset="0.65" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+
+    <linearGradient id="rim-cool" x1="360" y1="295" x2="780" y2="795" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="0.5" stop-color="#BAE6FD" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#C4B5FD" stop-opacity="0.55"/>
+    </linearGradient>
+
+    <!-- Optical Glass Intersection (Deep Sapphire -> Electric Violet refraction where the twin C-arcs weave) -->
+    <linearGradient id="grad-intersect" x1="340" y1="340" x2="640" y2="710" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1D4ED8"/>
+      <stop offset="0.52" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#9333EA"/>
+    </linearGradient>
+
+    <!-- Clean Apple HIG drop shadows -->
+    <filter id="tile-shadow" x="48" y="56" width="928" height="944" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0F172A" flood-opacity="0.16"/>
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.08"/>
     </filter>
-    <filter id="mark-shadow" x="-20%" y="-15%" width="150%" height="150%">
-      <feDropShadow dx="0" dy=".35" stdDeviation=".32" flood-color="#080b13" flood-opacity=".55"/>
+
+    <filter id="warm-elevation" x="150" y="160" width="620" height="660" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#F43F5E" flood-opacity="0.18"/>
     </filter>
-    <path id="brand-top" d="M25 4H13C7.3 4 3.5 7.8 3.5 13.5V15H9.8V13.5C9.8 11.3 11 10.3 13.5 10.3H21.3L25 4Z"/>
-    <path id="brand-bottom" d="M3.5 17V18.5C3.5 24.2 7.3 28 13 28H21.3L25 21.7H13.5C11 21.7 9.8 20.7 9.8 18.5V17H3.5Z"/>
+
+    <filter id="cool-elevation" x="260" y="230" width="620" height="660" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#2563EB" flood-opacity="0.22"/>
+    </filter>
   </defs>
-  <g filter="url(#case-shadow)">
-    <rect x="96" y="96" width="832" height="832" rx="188" fill="url(#case)"/>
-    <rect x="96" y="96" width="832" height="832" rx="188" fill="url(#light)"/>
-    <rect x="97.5" y="97.5" width="829" height="829" rx="186.5" stroke="url(#rim)" stroke-width="3"/>
-    <rect x="103" y="103" width="818" height="818" rx="181" stroke="#fff" stroke-opacity=".025" stroke-width="2"/>
-  </g>
-  <g transform="translate(170 128) scale(24)">
-    <g filter="url(#mark-shadow)" fill="url(#pearl)">
-      <use href="#brand-top"/>
-      <use href="#brand-bottom"/>
+
+  <!-- Outer Porcelain Squircle (macOS native IconServices provides outer drop shadow & Liquid Glass rim) -->
+  <use href="#squircle" fill="url(#tile-bg)"/>
+
+  <g clip-path="url(#squircle-clip)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#tile-glow)"/>
+
+    <!-- 1. Back C-Arc: Warm Sunlit Amber -> Coral -> Rose -->
+    <g filter="url(#warm-elevation)">
+      <use href="#arc-warm" fill="url(#grad-warm)" opacity="0.93"/>
+      <use href="#arc-warm" stroke="url(#rim-warm)" stroke-width="3"/>
     </g>
-    <path d="M3.5 14.82H9.8" stroke="#fff" stroke-opacity=".68" stroke-width=".18"/>
-    <path d="M3.5 17.12H9.8" stroke="url(#cut)" stroke-width=".24"/>
-    <path d="M13.5 10.3H21.3L25 4" stroke="#fff" stroke-opacity=".3" stroke-width=".12"/>
-    <path d="M13.5 21.7H25" stroke="#f2f6ff" stroke-opacity=".85" stroke-width=".14"/>
+
+    <!-- 2. Front C-Arc: Mint -> Electric Cyan -> Cobalt -> Violet (Translucent Glass) -->
+    <g filter="url(#cool-elevation)">
+      <use href="#arc-cool" fill="url(#grad-cool)" opacity="0.84"/>
+
+      <!-- Crisp Optical Refraction Zone where Front Cool C overlaps Back Warm C -->
+      <g clip-path="url(#cool-clip)">
+        <use href="#arc-warm" fill="url(#grad-intersect)" opacity="0.72"/>
+        <use href="#arc-warm" stroke="#FFFFFF" stroke-opacity="0.42" stroke-width="2.5"/>
+      </g>
+
+      <use href="#arc-cool" stroke="url(#rim-cool)" stroke-width="3.5"/>
+    </g>
   </g>
+
+  <use href="#squircle" stroke="url(#tile-rim)" stroke-width="2.5"/>
 </svg>

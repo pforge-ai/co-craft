@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
-import { mkdir, stat, readFile } from 'node:fs/promises';
+import { mkdir, stat, readFile, rm } from 'node:fs/promises';
 import { basename, extname, join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { nativeImage } from 'electron';
 import { dir as compositorDir } from '@remotion/compositor-darwin-arm64';
 import { uid } from '../src/core/project';
 import type { Asset } from '../src/core/types';
+
 export const binary = (name: string) => {
   const paths = [
     join(process.resourcesPath || '', 'media-tools', name),
@@ -17,6 +18,7 @@ export const binary = (name: string) => {
   ];
   return paths.find(existsSync) || name;
 };
+
 export function run(
   command: string,
   args: string[],
@@ -42,6 +44,18 @@ export function run(
     );
   });
 }
+
+function parseFrameRate(raw?: string): number | undefined {
+  if (!raw || typeof raw !== 'string') return undefined;
+  const [num, den] = raw.split('/').map(Number);
+  if (Number.isFinite(num) && Number.isFinite(den) && den > 0) {
+    const fps = num / den;
+    return fps > 0 && fps <= 240 ? Math.round(fps * 100) / 100 : undefined;
+  }
+  const direct = Number(raw);
+  return Number.isFinite(direct) && direct > 0 && direct <= 240 ? direct : undefined;
+}
+
 export async function waveformFor(
   file: string,
   projectPath: string,
@@ -94,26 +108,35 @@ export async function waveformFor(
     return peaks.map((n) => Math.round(Math.sqrt(n / max) * 1000) / 1000);
   } catch {
     return undefined;
+  } finally {
+    await rm(output, { force: true }).catch(() => {});
   }
 }
-export async function importMedia(file: string, projectPath: string): Promise<Asset> {
+
+export async function importMedia(file: string, projectPath: string, existingId?: string): Promise<Asset> {
   const info = await stat(file);
   if (!info.isFile()) throw new Error('请选择媒体文件');
   const ext = extname(file).toLowerCase();
-  const kind = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.avif'].includes(ext)
+  const kind: Asset['kind'] = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.avif'].includes(ext)
     ? 'image'
     : ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'].includes(ext)
       ? 'audio'
-      : 'video';
-  const id = uid('asset');
-  let duration = 5,
+      : ['.glb', '.gltf'].includes(ext)
+        ? 'model-3d'
+        : 'video';
+  const id = existingId || uid('asset');
+  let duration = kind === 'model-3d' ? 6 : 5,
     width: number | undefined,
     height: number | undefined,
+    fps: number | undefined,
+    hasAudio = kind === 'audio',
     thumbnail: string | undefined;
   if (kind === 'image') {
     const size = nativeImage.createFromPath(file).getSize();
     width = size.width || undefined;
     height = size.height || undefined;
+  } else if (kind === 'model-3d') {
+    hasAudio = false;
   } else {
     const meta = JSON.parse(
       await run(binary('ffprobe'), [
@@ -127,10 +150,13 @@ export async function importMedia(file: string, projectPath: string): Promise<As
       ]),
     );
     const v = meta.streams?.find((s: any) => s.codec_type === 'video');
+    const a = meta.streams?.find((s: any) => s.codec_type === 'audio');
     if (kind === 'video' && !v) throw new Error('这个文件不包含可读取的视频');
-    duration = Number(meta.format?.duration || v?.duration || 0);
+    hasAudio = kind === 'audio' ? true : !!a;
+    duration = Number(meta.format?.duration || v?.duration || a?.duration || 0);
     width = v?.width;
     height = v?.height;
+    fps = parseFrameRate(v?.avg_frame_rate) || parseFrameRate(v?.r_frame_rate);
     if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取媒体时长');
   }
   if (kind === 'video') {
@@ -153,13 +179,18 @@ export async function importMedia(file: string, projectPath: string): Promise<As
       thumbnail,
     ]);
   } else if (kind === 'image') thumbnail = file;
-  const waveform = kind === 'audio' ? await waveformFor(file, projectPath, id) : undefined;
+  // Extract real audio waveform for both audio files AND videos containing an audio stream.
+  const waveform = kind === 'audio' || (kind === 'video' && hasAudio) ? await waveformFor(file, projectPath, id) : undefined;
   return {
     id,
     name: basename(file),
     kind,
+    category: kind === 'model-3d' ? 'rig' : 'media',
+    subkind: kind === 'model-3d' ? 'model-3d' : 'media',
     path: file,
     duration,
+    hasAudio,
+    fps,
     width,
     height,
     thumbnail,

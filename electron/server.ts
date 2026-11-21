@@ -1,9 +1,10 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { join, resolve, extname } from 'node:path';
+import { resolve, extname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { Asset } from '../src/core/types';
+
 const mime: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -19,21 +20,54 @@ const mime: Record<string, string> = {
   '.wav': 'audio/wav',
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
   '.json': 'application/json',
   '.woff2': 'font/woff2',
 };
+
+const PREVIEW_CSP =
+  "default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' http://127.0.0.1:* http://localhost:* data: blob:; media-src 'self' http://127.0.0.1:* http://localhost:* blob: data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob: data:; font-src 'self' data:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'";
+
+const RENDER_CSP =
+  "default-src 'none'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' http://127.0.0.1:* http://localhost:* data: blob:; media-src 'self' http://127.0.0.1:* http://localhost:* blob: data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* blob: data:; font-src 'self' data:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'";
+
 export class MediaServer {
-  assets = new Map<string, Asset>();
+  private studioAssets = new Map<string, Asset>();
+  private projectAssets = new Map<string, Asset>();
+  private renderAssets = new Map<string, Asset>();
   private token = randomBytes(24).toString('hex');
   origin = '';
+
   constructor(
     private rendererDir: string,
     private renderDir: string,
     private devUrl?: string,
   ) {}
-  register(assets: Asset[]) {
-    for (const a of assets) this.assets.set(a.id, a);
+
+  registerStudio(assets: Asset[]) {
+    for (const a of assets) this.studioAssets.set(a.id, a);
   }
+
+  /** Replaces active project asset scope so switched-away projects cannot be enumerated. */
+  setProjectAssets(assets: Asset[]) {
+    this.projectAssets.clear();
+    for (const a of assets) this.projectAssets.set(a.id, a);
+  }
+
+  /** Registers assets needed by in-flight background render jobs or temporary component checks. */
+  register(assets: Asset[]) {
+    for (const a of assets) this.renderAssets.set(a.id, a);
+  }
+
+  unregisterRenderAssets(ids: string[]) {
+    for (const id of ids) this.renderAssets.delete(id);
+  }
+
+  private lookupAsset(id: string): Asset | undefined {
+    return this.projectAssets.get(id) || this.studioAssets.get(id) || this.renderAssets.get(id);
+  }
+
   async start() {
     const server = createServer(
       (req, res) =>
@@ -47,6 +81,7 @@ export class MediaServer {
     this.origin = `http://127.0.0.1:${addr.port}/${this.token}`;
     return this.origin;
   }
+
   private async serve(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url || '/', this.origin);
     const prefix = `/${this.token}/`;
@@ -60,7 +95,7 @@ export class MediaServer {
     const route = decodeURIComponent(url.pathname.slice(prefix.length));
     let file: string | undefined;
     if (route.startsWith('media/')) {
-      const asset = this.assets.get(route.slice(6));
+      const asset = this.lookupAsset(route.slice(6));
       file = url.searchParams.has('thumbnail') ? asset?.thumbnail : asset?.path;
     } else if (route.startsWith('render/')) {
       const candidate = resolve(this.renderDir, route.slice(7));
@@ -80,11 +115,12 @@ export class MediaServer {
       res.end();
       return;
     }
-    if (route === 'ui/preview.html')
-      res.setHeader(
-        'Content-Security-Policy',
-        "default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data:; connect-src 'self'; font-src 'self' data:; worker-src blob:; frame-src 'none'; object-src 'none'",
-      );
+    if (route === 'ui/preview.html') {
+      res.setHeader('Content-Security-Policy', PREVIEW_CSP);
+    } else if (route === 'render/index.html') {
+      // Enforce CSP on headless render composition too so untrusted TSX cannot exfiltrate over network.
+      res.setHeader('Content-Security-Policy', RENDER_CSP);
+    }
     res.setHeader('Content-Type', mime[extname(file).toLowerCase()] || 'application/octet-stream');
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', route.startsWith('media/') ? 'private, max-age=3600' : 'no-cache');

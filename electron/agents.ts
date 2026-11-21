@@ -1,18 +1,30 @@
-import { utilityProcess } from 'electron';
-import { mkdir, readFile, writeFile, cp, realpath, lstat } from 'node:fs/promises';
+import { nativeImage, utilityProcess } from 'electron';
+import { mkdir, readFile, writeFile, cp, realpath, lstat, rm } from 'node:fs/promises';
 import { join, resolve, dirname, basename, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ProjectStore, atomicJSON } from './store';
 import { compileComponent } from './code';
 import { binary, importMedia } from './media';
 import { uid, applyOperations } from '../src/core/project';
-import type { Task, Settings, AgentEvent, ProjectEnvelope, Asset, CodeComponent } from '../src/core/types';
+import type {
+  Task,
+  Settings,
+  AgentEvent,
+  ProjectEnvelope,
+  Asset,
+  CodeComponent,
+  EditScope,
+  ComposerAttachment,
+  ThinkingLevelChoice,
+} from '../src/core/types';
 import type { JobService } from './jobs';
 import type { GenerationService, GenerationRequest } from './generation';
 import { chatEndpoint, collectGeneratedFile } from './generation';
 import { importMaterialPack } from './packs';
 import { stageStudioAsset } from './studio-media';
-import { presetCatalog, createPresetClip } from '../src/core/presets';
+import type { GlobalVault } from './vault';
+import { BUILT_IN_STYLES, presetCatalog, createPresetClip } from '../src/core/presets';
+import { inferAssetEntityKind, inferAssetRole } from '../src/core/taxonomy';
 interface Run {
   id: string;
   task: Task;
@@ -21,6 +33,7 @@ interface Run {
   active: boolean;
   workspace: string;
   text: string;
+  thinking: string;
   finished: boolean;
   assets: Map<string, Asset>;
   jobs: Set<string>;
@@ -29,10 +42,16 @@ interface Run {
   packEntries: Map<string, CodeComponent>;
   components: Map<string, CodeComponent>;
   componentAssets: Map<string, Asset[]>;
+  scope?: EditScope;
   closing?: Promise<void>;
 }
 type AgentSettings = Settings & { modelInput?: string[]; modelParameters?: Record<string, unknown> };
 type SettingsSource = AgentSettings | (() => Promise<AgentSettings>);
+type AgentStartOptions = {
+  thinkingLevel?: ThinkingLevelChoice;
+  attachments?: ComposerAttachment[];
+  skillIds?: string[];
+};
 export class AgentHost {
   private runs = new Map<string, Run>();
   private launching = new Map<string, { abort: AbortController; ready: Promise<{ runId: string }> }>();
@@ -45,6 +64,8 @@ export class AgentHost {
     private changed: (store: ProjectStore, envelope: ProjectEnvelope) => void,
     private generation?: GenerationService,
     private studioMedia: Asset[] = [],
+    private _globalVault?: GlobalVault,
+    private userSkillsPath?: string,
   ) {}
   async start(
     store: ProjectStore,
@@ -52,26 +73,57 @@ export class AgentHost {
     prompt: string,
     settings: SettingsSource,
     context: string,
+    scope?: EditScope,
+    options?: AgentStartOptions,
   ): Promise<{ queued: true } | { runId: string }> {
     const existing = this.runs.get(taskId);
     if (existing?.active) {
-      existing.process.postMessage({ type: 'steer', text: prompt });
+      // Flush any streamed assistant text before appending the user's mid-run steer so history stays strictly chronological.
+      if (existing.text.trim() || existing.thinking.trim()) {
+        existing.task.messages.push({
+          id: uid('msg'),
+          role: 'assistant',
+          text: existing.text,
+          ...(existing.thinking ? { thinking: existing.thinking } : {}),
+          createdAt: new Date().toISOString(),
+        });
+        existing.text = '';
+        existing.thinking = '';
+        this.emit({ taskId, runId: existing.id, type: 'text-commit' });
+      }
+      if (scope) existing.scope = scope;
+      const steerAttNote = options?.attachments?.length
+        ? `\n[附带文件: ${options.attachments.map((a) => `${a.name} (${a.path})`).join(', ')}]`
+        : '';
+      existing.process.postMessage({ type: 'steer', text: prompt + steerAttNote });
       existing.task.messages.push({
         id: uid('msg'),
         role: 'user',
         text: prompt,
+        ...(options?.attachments?.length
+          ? {
+              attachments: options.attachments.map(({ id, name, kind, previewDataUrl }) => ({
+                id,
+                name,
+                kind,
+                previewDataUrl,
+              })),
+            }
+          : {}),
+        ...(options?.skillIds?.length ? { skillIds: options.skillIds } : {}),
         createdAt: new Date().toISOString(),
       });
       await store.saveTask(existing.task);
+      this.changed(store, await store.envelope());
       return { queued: true };
     }
     const pending = this.launching.get(taskId);
     if (pending) {
       await pending.ready;
-      return this.start(store, taskId, prompt, settings, context);
+      return this.start(store, taskId, prompt, settings, context, scope, options);
     }
     const abort = new AbortController();
-    const ready = this.launch(store, taskId, prompt, settings, context, abort);
+    const ready = this.launch(store, taskId, prompt, settings, context, abort, scope, options);
     this.launching.set(taskId, { abort, ready });
     try {
       return await ready;
@@ -86,6 +138,8 @@ export class AgentHost {
     source: SettingsSource,
     context: string,
     abort: AbortController,
+    scope?: EditScope,
+    options?: AgentStartOptions,
   ) {
     const previous = this.runs.get(taskId);
     if (previous) await this.finish(previous);
@@ -163,6 +217,7 @@ export class AgentHost {
       active: true,
       workspace,
       text: '',
+      thinking: '',
       finished: false,
       assets: new Map(),
       jobs: new Set(),
@@ -170,11 +225,64 @@ export class AgentHost {
       packEntries,
       components: new Map(),
       componentAssets: new Map(),
+      scope,
       supportsImages: settings.modelInput?.includes('image') ?? false,
     };
+    const attachments = options?.attachments || [];
+    const activeSkills = Array.from(new Set([...(project.activeSkillIds || []), ...(options?.skillIds || [])]));
+    const images: { type: 'image'; data: string; mimeType: string }[] = [];
+    if (run.supportsImages) {
+      for (const att of attachments) {
+        if (att.kind !== 'image') continue;
+        try {
+          const img = nativeImage.createFromPath(att.path);
+          if (!img.isEmpty()) {
+            const sz = img.getSize();
+            const scaled =
+              Math.max(sz.width, sz.height) > 1568
+                ? img.resize(sz.width >= sz.height ? { width: 1568 } : { height: 1568 })
+                : img;
+            images.push({
+              type: 'image',
+              data: scaled.toJPEG(85).toString('base64'),
+              mimeType: 'image/jpeg',
+            });
+          }
+        } catch {}
+      }
+    }
+    let enrichedContext = context;
+    if (attachments.length || activeSkills.length) {
+      try {
+        const parsed = context ? JSON.parse(context) : {};
+        if (attachments.length) {
+          parsed.attachments = attachments.map((a) => ({ name: a.name, kind: a.kind, path: a.path }));
+        }
+        if (activeSkills.length) parsed.activeSkills = activeSkills;
+        enrichedContext = JSON.stringify(parsed);
+      } catch {
+        enrichedContext = `${context}\n${attachments.length ? `Attachments: ${attachments.map((a) => `${a.name} (${a.path})`).join(', ')}` : ''}`;
+      }
+    }
     this.runs.set(taskId, run);
     task.status = 'running';
-    task.messages.push({ id: uid('msg'), role: 'user', text: prompt, createdAt: new Date().toISOString() });
+    task.messages.push({
+      id: uid('msg'),
+      role: 'user',
+      text: prompt,
+      ...(attachments.length
+        ? {
+            attachments: attachments.map(({ id: attId, name, kind, previewDataUrl }) => ({
+              id: attId,
+              name,
+              kind,
+              previewDataUrl,
+            })),
+          }
+        : {}),
+      ...(options?.skillIds?.length ? { skillIds: options.skillIds } : {}),
+      createdAt: new Date().toISOString(),
+    });
     await store.saveTask(task);
     abort.signal.throwIfAborted();
     this.changed(store, await store.envelope());
@@ -203,7 +311,18 @@ export class AgentHost {
         return;
       }
       if (run.finished) return;
+      if (data.type === 'usage' && data.usage) {
+        const prev = task.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 };
+        task.usage = {
+          inputTokens: prev.inputTokens + (Number(data.usage.input) || 0),
+          outputTokens: prev.outputTokens + (Number(data.usage.output) || 0),
+          totalTokens: prev.totalTokens + (Number(data.usage.total) || 0),
+          requests: prev.requests + 1,
+        };
+        return;
+      }
       if (data.type === 'text') run.text += data.text;
+      if (data.type === 'thinking') run.thinking += data.text || '';
       if (data.type === 'tool-start' || data.type === 'tool-end')
         task.messages.push({
           id: uid('msg'),
@@ -222,7 +341,7 @@ export class AgentHost {
           createdAt: new Date().toISOString(),
         });
       }
-      if (['text', 'tool-start', 'tool-end', 'error'].includes(data.type))
+      if (['text', 'thinking', 'tool-start', 'tool-end', 'error'].includes(data.type))
         this.emit({ taskId, runId: id, ...data });
       if (data.type === 'done') await this.finish(run);
     });
@@ -246,6 +365,10 @@ export class AgentHost {
       cwd: workspace,
       agentDir: join(workspace, '.pi-runtime'),
       skillsPath: this.skillsPath,
+      userSkillsPath: this.userSkillsPath,
+      activeSkills,
+      thinkingLevel: options?.thinkingLevel || 'low',
+      images,
       settings: {
         provider: settings.provider,
         model: connection.modelId,
@@ -260,10 +383,10 @@ export class AgentHost {
       sessionPath: task.sessionPath,
       sessionDir,
       prompt,
-      context,
+      context: enrichedContext,
       appRoot: this.appRoot,
       mediaToolsPath: dirname(binary('ffmpeg')),
-      assetPaths: project.assets.map((a) => a.path),
+      assetPaths: [...project.assets.map((a) => a.path), ...attachments.map((a) => a.path)],
     });
     return { runId: id };
   }
@@ -277,11 +400,12 @@ export class AgentHost {
   }
   private async closeRun(run: Run) {
     await Promise.all([...run.jobs].map((id) => this.jobs.cancel(id)));
-    if (run.text)
+    if (run.text || run.thinking)
       run.task.messages.push({
         id: uid('msg'),
         role: 'assistant',
         text: run.text,
+        ...(run.thinking ? { thinking: run.thinking } : {}),
         createdAt: new Date().toISOString(),
       });
     if (run.task.status === 'running') run.task.status = 'idle';
@@ -329,6 +453,114 @@ export class AgentHost {
     }
     if (method === 'list_presets')
       return presetCatalog.filter((p) => !args.category || p.category === args.category);
+    if (method === 'search_assets') {
+      const project = await run.store.project();
+      const q = String(args.query || '').trim().toLowerCase();
+      const reqTags: string[] = Array.isArray(args.tags) ? args.tags.map((t: string) => t.toLowerCase()) : [];
+      const matchTags = (itemTags: string[] = []) =>
+        !reqTags.length || reqTags.every((rt) => itemTags.some((it) => it.toLowerCase().includes(rt)));
+      const matchQuery = (name: string, desc = '') =>
+        !q || name.toLowerCase().includes(q) || desc.toLowerCase().includes(q);
+
+      const results: any[] = [];
+      if (!args.scope || args.scope === 'project') {
+        for (const v of project.vault || []) {
+          const kind = inferAssetEntityKind(v);
+          const role = inferAssetRole(v);
+          const allTags = [...(v.tags || []), ...(v.variants?.flatMap((vr) => vr.tags) || [])];
+          if (args.kind && kind !== args.kind) continue;
+          if (args.role && role !== args.role) continue;
+          if (!matchTags(allTags) || !matchQuery(v.name, v.description || v.promptAnchor)) continue;
+          results.push({
+            source: 'project-vault',
+            id: v.id,
+            name: v.name,
+            kind,
+            role,
+            tags: v.tags || [],
+            version: v.version,
+            variants: (v.variants || []).map((vr) => ({
+              id: vr.id,
+              name: vr.name,
+              version: vr.version,
+              assetId: vr.assetId,
+              tags: vr.tags,
+            })),
+          });
+        }
+        for (const a of project.assets) {
+          const kind = inferAssetEntityKind(a);
+          const role = inferAssetRole(a);
+          if (args.kind && kind !== args.kind) continue;
+          if (args.role && role !== args.role) continue;
+          if (!matchTags(a.tags) || !matchQuery(a.name)) continue;
+          results.push({
+            source: 'project-media',
+            id: a.id,
+            name: a.name,
+            kind,
+            role,
+            tags: a.tags || [],
+            duration: a.duration,
+            hasTranscript: Boolean(a.transcript),
+          });
+        }
+      }
+      if ((!args.scope || args.scope === 'personal') && this._globalVault) {
+        for (const g of await this._globalVault.list()) {
+          const kind = inferAssetEntityKind(g);
+          const role = inferAssetRole(g);
+          if (args.kind && kind !== args.kind) continue;
+          if (args.role && role !== args.role) continue;
+          if (!matchTags(g.tags) || !matchQuery(g.name, g.description || g.promptAnchor)) continue;
+          results.push({
+            source: 'personal-library',
+            id: g.id,
+            name: g.name,
+            kind,
+            role,
+            tags: g.tags || [],
+            version: g.version,
+          });
+        }
+      }
+      if (!args.scope || args.scope === 'studio') {
+        for (const st of BUILT_IN_STYLES) {
+          const kind = inferAssetEntityKind(st);
+          const role = inferAssetRole(st);
+          if (args.kind && kind !== args.kind) continue;
+          if (args.role && role !== args.role) continue;
+          if (!matchTags(st.tags) || !matchQuery(st.name, st.description)) continue;
+          results.push({
+            source: 'built-in-style',
+            id: st.id,
+            name: st.name,
+            kind,
+            role,
+            tags: st.tags || [],
+            description: st.description,
+            styleTokens: st.styleTokens,
+          });
+        }
+        for (const s of this.studioMedia) {
+          const kind = inferAssetEntityKind(s);
+          const role = inferAssetRole(s);
+          if (args.kind && kind !== args.kind) continue;
+          if (args.role && role !== args.role) continue;
+          if (!matchTags(s.tags) || !matchQuery(s.name)) continue;
+          results.push({
+            source: 'built-in-studio',
+            id: s.id,
+            name: s.name,
+            kind,
+            role,
+            tags: s.tags || [],
+            duration: s.duration,
+          });
+        }
+      }
+      return results;
+    }
     if (method === 'list_studio_media') {
       return this.studioMedia
         .filter((a) => !args.kind || a.kind === args.kind)
@@ -354,7 +586,7 @@ export class AgentHost {
       const project = await run.store.project();
       const sequence = project.sequences.find((s) => s.id === (args.sequenceId || run.task.sequenceId));
       if (!sequence) throw new Error('成片不存在');
-      const clip = createPresetClip(args.presetId, args.start || 0, sequence.fps, args.props);
+      const clip = createPresetClip(args.presetId, args.start || 0, sequence.fps, args.props, project);
       if (args.duration !== undefined) {
         if (!Number.isInteger(args.duration) || args.duration < 1) throw new Error('时长需要是正整数帧');
         clip.duration = args.duration;
@@ -395,11 +627,14 @@ export class AgentHost {
       args.operations.unshift(...[...required.values()].map((asset) => ({ type: 'addAsset', asset })));
       if (args.operations.some((op: any) => op.type === 'putComponent'))
         await this.jobs.validateComponents(
-          applyOperations(before, args.operations, 'agent'),
+          applyOperations(before, args.operations, 'agent', run.scope),
           args.operations,
           run.abort.signal,
         );
-      const envelope = await run.store.edit({ ...args, author: 'agent', runId: run.id }, () => run.active);
+      const envelope = await run.store.edit(
+        { ...args, author: 'agent', runId: run.id, scope: run.scope },
+        () => run.active,
+      );
       this.changed(run.store, envelope);
       return { revision: envelope.project.revision, changes: envelope.revisions[0].changes };
     }
@@ -441,11 +676,14 @@ export class AgentHost {
     }
     if (method === 'preview_frame') {
       const project = await run.store.project();
+      const seq = project.sequences.find((s) => s.id === args.sequenceId) || project.sequences[0];
+      const frame = Math.max(0, Math.round(Number(args.frame || 0)));
       const output = join(run.workspace, `preview-${Date.now()}.png`);
-      const job = await this.jobs.render(project, args.sequenceId, output, {
+      const job = await this.jobs.render(project, seq.id, output, {
         still: true,
-        frame: args.frame,
+        frame,
         scale: 0.5,
+        silent: true,
       });
       run.jobs.add(job.id);
       try {
@@ -455,14 +693,41 @@ export class AgentHost {
         run.jobs.delete(job.id);
       }
       if (!run.supportsImages) {
-        const asset = await importMedia(output, run.store.path);
-        run.assets.set(asset.id, asset);
-        return this.generate(run, {
-          use: 'vision',
-          assetId: asset.id,
-          prompt:
-            args.prompt || '检查这个视频画面的排版、文字溢出、层次、对比度和视觉质量，提供具体改进建议。',
-        });
+        let tempAssetPath: string | undefined;
+        try {
+          const asset = await importMedia(output, run.store.path);
+          tempAssetPath = asset.path;
+          run.assets.set(asset.id, asset);
+          return await this.generate(run, {
+            use: 'vision',
+            assetId: asset.id,
+            prompt:
+              args.prompt || '检查这个视频画面的排版、文字溢出、层次、对比度和视觉质量，提供具体改进建议。',
+          });
+        } catch (err) {
+          if (tempAssetPath) await rm(tempAssetPath, { force: true }).catch(() => {});
+          if (/(未配置|请在「设置|用途默认值|缺少提供商|保存 API Key)/.test(String(err))) {
+            const activeClips = seq.clips
+              .filter((c) => frame >= c.start && frame < c.start + c.duration)
+              .map((c) => ({
+                id: c.id,
+                name: c.name,
+                track: c.track,
+                kind: c.kind,
+                text: c.props.text || undefined,
+                presetId: c.props.presetId || undefined,
+              }));
+            return {
+              renderedOk: true,
+              text: '静帧已成功实际渲染（无代码或画面异常）；当前未单独配置视觉理解模型，已返回该帧可见图层结构摘要。',
+              sequence: seq.name,
+              dimensions: `${seq.width}x${seq.height}`,
+              frame,
+              visibleLayers: activeClips,
+            };
+          }
+          throw err;
+        }
       }
       return { data: (await readFile(output)).toString('base64') };
     }

@@ -1,13 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { pointerDrag } from './lib/pointerDrag';
+import { PlayheadClock } from './lib/playheadClock';
 import { ResourceLibrary } from './components/ResourceLibrary';
 import { GenerationDialog, type GenerationDraft } from './components/GenerationDialog';
 import { BrandMark } from './components/BrandMark';
+import { StageOverlay, type StageDomBox } from './components/StageOverlay';
+import { AssetExplorer, type AssetCategory } from './components/AssetExplorer';
+import { CreateCanvas } from './components/CreateCanvas';
+import { StoryboardStudio } from './components/StoryboardStudio';
+import { buildMentionCandidates, friendlySkillTitle, type MentionCandidate } from './core/taxonomy';
+import { computeCompositeShots } from './core/storyboard';
 import { selectedModel } from './core/models';
-import { createPresetClip } from './core/presets';
+import { BUILT_IN_TRANSITIONS, createPresetClip } from './core/presets';
+import { AgentThread, TOOL_LABELS } from './components/AgentThread';
 import { Markdown } from './components/Markdown';
 import {
   PanelLeft,
+  PanelBottom,
   PanelRight,
   Search,
   Plus,
@@ -16,18 +25,12 @@ import {
   FolderOpen,
   Folder,
   Film,
-  Clapperboard,
-  Image,
-  Music,
   AudioLines,
-  Type,
   Layers,
-  Code2,
   Settings as SettingsIcon,
   ArrowUpRight,
   ArrowUp,
   Upload,
-  Download,
   Play,
   Pause,
   SkipBack,
@@ -35,6 +38,9 @@ import {
   Volume2,
   VolumeX,
   Maximize2,
+  Minimize2,
+  MousePointer2,
+  ScissorsLineDashed,
   Undo2,
   Redo2,
   Scissors,
@@ -50,36 +56,53 @@ import {
   X,
   MoreHorizontal,
   FileText,
-  LayoutGrid,
   GitBranch,
   Command,
-  ArrowLeft,
-  MessageSquare,
   SlidersHorizontal,
   Square,
-  ExternalLink,
-  Mic,
-  Copy,
-  GripHorizontal,
   RotateCcw,
   AlertCircle,
-  ChevronUp,
+  AlertTriangle,
+  Crosshair,
+  Camera,
+  BookmarkPlus,
+  Paperclip,
+  Brain,
+  Image as ImageIcon,
 } from 'lucide-react';
 import type {
   BootData,
   ProjectEnvelope,
   Project,
-  Sequence,
   Clip,
   EditOperation,
+  EditScope,
   ProjectSummary,
   Task,
   Settings,
   Job,
   AgentEvent,
   CodeComponent,
+  PreflightIssue,
+  TransitionType,
+  VaultItem,
+  ChatContextRef,
+  ComposerAttachment,
+  ThinkingLevelChoice,
+  SkillInfo,
 } from './core/types';
-import { clone, durationOf, newClip, splitOperations, timecode, uid } from './core/project';
+import {
+  clone,
+  createCompoundVaultItemFromClips,
+  durationOf,
+  instantiateCompoundVaultItemOperations,
+  newClip,
+  prepareScopedComponentOperations,
+  splitOperations,
+  timecode,
+  transcriptToCaptionClips,
+  uid,
+} from './core/project';
 import { mediaUrl } from './composition/Film';
 import { Timeline } from './components/Timeline';
 import { Inspector } from './components/Inspector';
@@ -101,6 +124,7 @@ type Dialog =
   | 'rename-task'
   | 'sequence'
   | null;
+
 const api = <T,>(method: string, payload?: unknown) => window.cocraft.call<T>(method, payload);
 const errorText = (e: unknown) =>
   String(e)
@@ -108,6 +132,29 @@ const errorText = (e: unknown) =>
     .replace(/^Error: /, '');
 const dateLabel = (s: string) =>
   new Date(s).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+const formatCompactTokens = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+const THINKING_OPTIONS: { id: ThinkingLevelChoice; label: string; hint: string }[] = [
+  { id: 'off', label: '关闭', hint: '最快响应，直接执行' },
+  { id: 'low', label: '低', hint: '轻量快速推理' },
+  { id: 'medium', label: '中', hint: '均衡理解与规划' },
+  { id: 'high', label: '高', hint: '深度拆解复杂工程' },
+];
+
+const PlayheadTimecode = React.memo(function PlayheadTimecode({
+  clock,
+  fps,
+}: {
+  clock: PlayheadClock;
+  fps: number;
+}) {
+  const [f, setF] = useState(() => clock.get());
+  useEffect(() => {
+    setF(clock.get());
+    return clock.subscribe(setF);
+  }, [clock, fps]);
+  return <>{timecode(f, fps)}</>;
+});
 
 export function App() {
   const [boot, setBoot] = useState<BootData | null>(null),
@@ -119,17 +166,25 @@ export function App() {
     [taskId, setTaskId] = useState(''),
     [connectingTask, setConnectingTask] = useState(''),
     [selected, setSelected] = useState<string | null>(null),
+    [selectedIds, setSelectedIds] = useState<string[]>([]),
     [frame, setFrame] = useState(70),
+    [isScrubbing, setIsScrubbing] = useState(false),
     [playing, setPlaying] = useState(false),
     [muted, setMuted] = useState(false),
     [previewReady, setPreviewReady] = useState(false),
-    [previewProject, setPreviewProject] = useState<Project | null>(null);
-  const [nav, setNav] = useState<'projects' | 'assets'>('projects'),
-    [doc, setDoc] = useState<'film' | 'brief'>('film'),
+    [previewProject, setPreviewProject] = useState<Project | null>(null),
+    [stageBoxes, setStageBoxes] = useState<Record<string, StageDomBox>>({});
+  const [appMode, setAppMode] = useState<'create' | 'edit'>('create'),
+    [showBrief, setShowBrief] = useState(false),
+    [mentionIndex, setMentionIndex] = useState(0),
+    [showStageFork, setShowStageFork] = useState(false),
+    [stageForkName, setStageForkName] = useState(''),
+    [projectMenuOpen, setProjectMenuOpen] = useState(false),
     [view, setView] = useState('timeline'),
-    [right, setRight] = useState('agent'),
-    [showNav, setShowNav] = useState(true),
-    [showRight, setShowRight] = useState(true),
+    [right, setRight] = useState('inspector'),
+    [showNav, setShowNav] = useState(false),
+    [showBottom, setShowBottom] = useState(false),
+    [showRight, setShowRight] = useState(false),
     [dialog, setDialog] = useState<Dialog>(null),
     [jobsOpen, setJobsOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null),
@@ -137,17 +192,34 @@ export function App() {
     [busy, setBusy] = useState(''),
     [zoom, setZoom] = useState(100),
     [snap, setSnap] = useState(true),
+    [pinMode, setPinMode] = useState(false),
+    [stagePin, setStagePin] = useState<{ x: number; y: number; frame: number } | undefined>(),
+    [strictScope, setStrictScope] = useState(false),
+    [workbenchMode, setWorkbenchMode] = useState<'stage' | 'storyboard'>('stage'),
+    [personalLibrary, setPersonalLibrary] = useState<VaultItem[]>([]),
+    [assetCategory, setAssetCategory] = useState<AssetCategory>('media'),
+    [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select'),
+    [scriptQuery, setScriptQuery] = useState(''),
     [draggingFile, setDraggingFile] = useState(false),
     [timelineHeight, setTimelineHeight] = useState(Number(localStorage.getItem('cc-timeline-height')) || 278),
-    [agentWidth, setAgentWidth] = useState(Number(localStorage.getItem('cc-agent-width')) || 350),
+    [agentWidth, setAgentWidth] = useState(Number(localStorage.getItem('cc-agent-width')) || 316),
     [navWidth, setNavWidth] = useState(Number(localStorage.getItem('cc-nav-width')) || 240);
   const [prompt, setPrompt] = useState(''),
     [scope, setScope] = useState<Clip | null>(null),
+    [chatRefs, setChatRefs] = useState<ChatContextRef[]>([]),
     [stream, setStream] = useState<Record<string, string>>({}),
+    [thinkingStream, setThinkingStream] = useState<Record<string, string>>({}),
     [toolState, setToolState] = useState<Record<string, string>>({}),
+    [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelChoice>(
+      () => (localStorage.getItem('cc-thinking-level') as ThinkingLevelChoice) || 'medium',
+    ),
+    [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]),
+    [activeComposerSkills, setActiveComposerSkills] = useState<string[]>([]),
+    [openComposerMenu, setOpenComposerMenu] = useState<'session' | 'model' | 'thinking' | null>(null),
     [briefDraft, setBriefDraft] = useState(''),
     [formName, setFormName] = useState(''),
     [command, setCommand] = useState(''),
+    [cmdIndex, setCmdIndex] = useState(0),
     [codeComponent, setCodeComponent] = useState<CodeComponent | undefined>(),
     [generationDraft, setGenerationDraft] = useState<GenerationDraft>({ use: 'image' }),
     [settingsTab, setSettingsTab] = useState<string | undefined>(),
@@ -157,21 +229,31 @@ export function App() {
     [resultClip, setResultClip] = useState(''),
     [seqFormat, setSeqFormat] = useState('9:16'),
     [assetQuery, setAssetQuery] = useState('');
+
   const sending = useRef(false);
+  const clipboardClip = useRef<Clip | null>(null);
+  const savedPanesRef = useRef({ nav: true, right: true, bottom: true });
   const appRef = useRef<HTMLDivElement>(null);
   const dragCleanup = useRef<(() => void) | null>(null);
+  const playheadClockRef = useRef<PlayheadClock | null>(null);
+  if (!playheadClockRef.current) playheadClockRef.current = new PlayheadClock(70);
+  const scrubRafRef = useRef<number>(0);
+  const scrubLatestRef = useRef<number>(70);
   useEffect(
     () => () => {
       dragCleanup.current?.();
+      if (scrubRafRef.current) cancelAnimationFrame(scrubRafRef.current);
     },
     [],
   );
+
   const previewState = useRef<{ project: Project | null; sequenceId: string; mediaOrigin: string }>({
     project: null,
     sequenceId: '',
     mediaOrigin: '',
   });
   previewState.current = { project: previewProject, sequenceId, mediaOrigin: boot?.previewOrigin || '' };
+
   const iframe = useRef<HTMLIFrameElement>(null),
     envRef = useRef<ProjectEnvelope | null>(null),
     queue = useRef(Promise.resolve()),
@@ -180,16 +262,19 @@ export function App() {
     promptRef = useRef<HTMLTextAreaElement>(null),
     messagesEnd = useRef<HTMLDivElement>(null),
     notifyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   const notify = useCallback((text: string, error = false) => {
     setToast({ text, error });
     clearTimeout(notifyTimer.current);
     notifyTimer.current = setTimeout(() => setToast(null), error ? 7000 : 3500);
   }, []);
+
   const accept = useCallback((next: ProjectEnvelope) => {
     envRef.current = next;
     setEnv(next);
     void api<ProjectSummary[]>('project.list').then(setProjects);
   }, []);
+
   const work = useCallback(
     async <T,>(label: string, fn: () => Promise<T>): Promise<T | undefined> => {
       setBusy(label);
@@ -203,36 +288,82 @@ export function App() {
     },
     [notify],
   );
+
+  const targetOrigin = boot?.previewOrigin ? new URL(boot.previewOrigin).origin : '*';
   const post = useCallback(
     (type: string, more: Record<string, unknown> = {}) =>
-      iframe.current?.contentWindow?.postMessage({ source: 'cocraft-workbench', type, ...more }, '*'),
-    [],
+      iframe.current?.contentWindow?.postMessage({ source: 'cocraft-workbench', type, ...more }, targetOrigin),
+    [targetOrigin],
   );
+
   const seek = useCallback(
-    (n: number) => {
+    (n: number, options?: { scrubbing?: boolean }) => {
       const e = envRef.current;
       if (!e) return;
       const s = e.project.sequences.find((s) => s.id === sequenceId) || e.project.sequences[0];
       const f = Math.max(0, Math.min(durationOf(s) - 1, Math.round(n)));
       frameRef.current = f;
-      setFrame(f);
-      post('seek', { frame: f });
+      playheadClockRef.current?.set(f);
+      if (options?.scrubbing) {
+        scrubLatestRef.current = f;
+        setIsScrubbing(true);
+        if (!scrubRafRef.current) {
+          scrubRafRef.current = requestAnimationFrame(() => {
+            scrubRafRef.current = 0;
+            post('seek', { frame: scrubLatestRef.current, scrubbing: true });
+          });
+        }
+      } else {
+        if (scrubRafRef.current) {
+          cancelAnimationFrame(scrubRafRef.current);
+          scrubRafRef.current = 0;
+        }
+        setIsScrubbing(false);
+        setFrame(f);
+        post('seek', { frame: f, scrubbing: false });
+      }
     },
     [sequenceId, post],
   );
+
+  const endScrub = useCallback(
+    (finalFrame?: number) => {
+      if (scrubRafRef.current) {
+        cancelAnimationFrame(scrubRafRef.current);
+        scrubRafRef.current = 0;
+      }
+      const f = finalFrame !== undefined ? Math.max(0, Math.round(finalFrame)) : frameRef.current;
+      frameRef.current = f;
+      playheadClockRef.current?.set(f);
+      setIsScrubbing(false);
+      setFrame(f);
+      post('scrub-end', { frame: f });
+    },
+    [post],
+  );
+
   const pause = useCallback(() => {
+    if (scrubRafRef.current) {
+      cancelAnimationFrame(scrubRafRef.current);
+      scrubRafRef.current = 0;
+    }
     post('pause');
     playRef.current = false;
     setPlaying(false);
+    setIsScrubbing(false);
+    setFrame(frameRef.current);
   }, [post]);
+
   const play = useCallback(() => {
     if (playRef.current) pause();
     else {
+      setPinMode(false);
       post('play');
       playRef.current = true;
       setPlaying(true);
     }
   }, [post, pause]);
+
   const edit = useCallback(
     (name: string, operations: EditOperation[]) => {
       const projectId = envRef.current?.project.id;
@@ -254,6 +385,7 @@ export function App() {
     },
     [accept, notify],
   );
+
   const switchProject = async (next: ProjectEnvelope) => {
     pause();
     accept(next);
@@ -261,9 +393,26 @@ export function App() {
     setTaskId(next.tasks[0]?.id || '');
     setFrame(0);
     frameRef.current = 0;
+    playheadClockRef.current?.set(0);
+    setIsScrubbing(false);
     setSelected(null);
+    setSelectedIds([]);
     setScope(null);
-    setDoc('film');
+    setChatRefs([]);
+    setComposerAttachments([]);
+    setActiveComposerSkills([]);
+    setOpenComposerMenu(null);
+    setStagePin(undefined);
+    setPinMode(false);
+    const hasClips = Boolean(next.project.sequences[0]?.clips.length);
+    setAppMode(hasClips ? 'edit' : 'create');
+    setShowNav(hasClips);
+    setShowBottom(hasClips);
+    setShowRight(hasClips);
+    setRight(hasClips ? 'inspector' : 'agent');
+    setAssetCategory('media');
+    setToast(null);
+    setShowBrief(false);
     setModelOverride('');
     setPrompt('');
     setJobsOpen(false);
@@ -272,21 +421,35 @@ export function App() {
     setBriefDraft(next.project.brief);
     void api<BootData['skills']>('skills.list').then((skills) => setBoot((b) => (b ? { ...b, skills } : b)));
   };
+
   const openSettings = (tab?: string, fromStudio = false) => {
     setSettingsTab(tab);
     setReturnToStudio(fromStudio);
     setDialog('settings');
   };
-  const openStudio = (use: GenerationDraft['use'] = 'image', assetId?: string) => {
-    setGenerationDraft({ use, assetId });
+
+  const openStudio = (
+    useOrDraft: GenerationDraft['use'] | GenerationDraft = 'image',
+    assetId?: string,
+  ) => {
+    if (typeof useOrDraft === 'string') {
+      setGenerationDraft({ use: useOrDraft, assetId });
+    } else {
+      setGenerationDraft(useOrDraft);
+    }
     setDialog('generation');
   };
+
   const openDialog = (name: Dialog) => {
     if (name === 'new-task') {
       setDialog(null);
       setTaskId('');
       setPrompt('');
       setScope(null);
+      setComposerAttachments([]);
+      setActiveComposerSkills([]);
+      setOpenComposerMenu(null);
+      setStagePin(undefined);
       setRight('agent');
       setShowRight(true);
       requestAnimationFrame(() => promptRef.current?.focus());
@@ -294,8 +457,10 @@ export function App() {
     }
     setFormName('');
     setCommand('');
+    setCmdIndex(0);
     setDialog(name);
   };
+
   useEffect(() => {
     const reset = () => {
       setNavWidth(240);
@@ -305,15 +470,18 @@ export function App() {
     window.addEventListener('cocraft:reset-layout', reset);
     return () => window.removeEventListener('cocraft:reset-layout', reset);
   }, []);
+
   const refreshSettings = async (s: Partial<Settings>) => {
     const next = await api<Settings>('settings.save', s);
     setSettings(next);
     notify('设置已保存');
   };
+
   useEffect(() => {
     api<BootData>('boot')
       .then((data) => {
         setBoot(data);
+        setPersonalLibrary(data.globalVault || []);
         accept(data.current);
         setProjects(data.projects);
         setSettings(data.settings);
@@ -321,15 +489,30 @@ export function App() {
         setSequenceId(data.current.project.sequences[0].id);
         setTaskId(data.current.tasks[0]?.id || '');
         setBriefDraft(data.current.project.brief);
+        const enterEdit = Boolean(data.current.project.sequences[0]?.clips.length);
+        setAppMode(enterEdit ? 'edit' : 'create');
+        setShowNav(enterEdit);
+        setShowBottom(enterEdit);
+        setShowRight(enterEdit);
+        setRight(enterEdit ? 'inspector' : 'agent');
+        setAssetCategory('media');
       })
       .catch((e) => setFatal(errorText(e)));
     const offProject = window.cocraft.on('project', (e: ProjectEnvelope) => accept(e));
     const offJobs = window.cocraft.on('jobs', (j: Job[]) => setJobs([...j]));
+    const offSettings = window.cocraft.on('settings', (s: Settings) => setSettings(s));
     const offAgent = window.cocraft.on('agent', (e: AgentEvent) => {
       if (e.type === 'text') setStream((s) => ({ ...s, [e.taskId]: (s[e.taskId] || '') + e.text }));
+      if (e.type === 'thinking')
+        setThinkingStream((s) => ({ ...s, [e.taskId]: (s[e.taskId] || '') + e.text }));
+      if (e.type === 'text-commit') {
+        setStream((s) => ({ ...s, [e.taskId]: '' }));
+        setThinkingStream((s) => ({ ...s, [e.taskId]: '' }));
+      }
       if (e.type === 'tool-start') setToolState((s) => ({ ...s, [e.taskId]: e.tool || '工作中' }));
       if (e.type === 'done') {
         setStream((s) => ({ ...s, [e.taskId]: '' }));
+        setThinkingStream((s) => ({ ...s, [e.taskId]: '' }));
         setToolState((s) => ({ ...s, [e.taskId]: '' }));
       }
       if (e.type === 'error') notify(e.text || 'Agent 执行失败', true);
@@ -337,9 +520,29 @@ export function App() {
     return () => {
       offProject();
       offJobs();
+      offSettings();
       offAgent();
     };
   }, []);
+
+  useEffect(() => {
+    if (!openComposerMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement)?.closest('.agent-session-wrap, .composer-popover-anchor')) {
+        setOpenComposerMenu(null);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenComposerMenu(null);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onEsc);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onEsc);
+    };
+  }, [openComposerMenu]);
+
   useEffect(() => {
     if (!settings) return;
     document.documentElement.dataset.glass = settings.glass ? 'on' : 'off';
@@ -357,9 +560,11 @@ export function App() {
     media.addEventListener('change', change);
     return () => media.removeEventListener('change', change);
   }, [settings?.theme, settings?.glass]);
+
   useEffect(() => {
     if (env && !playing) setPreviewProject(env.project);
   }, [env?.project.revision, env?.project.id, playing]);
+
   useEffect(() => {
     if (!previewReady || !previewProject || !boot || !sequenceId) return;
     post('load', {
@@ -367,104 +572,296 @@ export function App() {
       frame: frameRef.current,
     });
   }, [previewReady, previewProject, sequenceId, boot?.previewOrigin, post]);
+
   useEffect(() => {
-    const receive = (e: MessageEvent) => {
-      if (e.source !== iframe.current?.contentWindow || e.data?.source !== 'cocraft-preview') return;
-      const d = e.data;
-      if (d.event === 'ready') {
-        setPreviewReady(true);
-        const current = previewState.current;
-        const p = current.project || envRef.current?.project;
-        if (p && current.mediaOrigin)
-          post('load', {
-            props: {
-              project: p,
-              sequenceId: p.sequences.some((s) => s.id === current.sequenceId)
-                ? current.sequenceId
-                : p.sequences[0].id,
-              mediaOrigin: current.mediaOrigin,
-            },
-            frame: frameRef.current,
-          });
-      }
-      if (d.event === 'frame') {
-        setFrame(d.frame);
-        frameRef.current = d.frame;
-      }
-      if (d.event === 'play') {
-        setPlaying(true);
-        playRef.current = true;
-      }
-      if (d.event === 'pause' || d.event === 'ended') {
-        setPlaying(false);
-        playRef.current = false;
-      }
-      if (d.event === 'error') notify('预览：' + d.message, true);
-    };
-    window.addEventListener('message', receive);
-    return () => window.removeEventListener('message', receive);
-  }, []);
-  useEffect(() => {
-    messagesEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, [taskId, stream[taskId], env?.tasks.find((t) => t.id === taskId)?.messages.length]);
+    if (previewReady) post('selection', { selectedClipId: selected });
+  }, [selected, previewReady, post]);
+
   const project = env?.project,
     sequence = project?.sequences.find((s) => s.id === sequenceId) || project?.sequences[0],
     clip = sequence?.clips.find((c) => c.id === selected),
     task = env?.tasks.find((t) => t.id === taskId),
     duration = sequence ? durationOf(sequence) : 30;
+
   useEffect(() => {
     setModelOverride(task?.modelId || '');
   }, [taskId, task?.modelId, project?.id]);
+
   useEffect(() => {
     if (project && !project.sequences.some((s) => s.id === sequenceId)) {
       pause();
       setSequenceId(project.sequences[0].id);
       setFrame(0);
       frameRef.current = 0;
+      playheadClockRef.current?.set(0);
     }
   }, [project?.revision, project?.id, sequenceId]);
+
+  const switchMode = (nextMode: 'create' | 'edit') => {
+    if (nextMode === 'create') pause();
+    setShowBrief(false);
+    setAppMode(nextMode);
+    if (nextMode === 'edit') {
+      setShowBottom(true);
+      setShowNav(true);
+      setShowRight(true);
+      if (task?.status !== 'running') setRight('inspector');
+    } else {
+      setShowBottom(false);
+      setShowNav(false);
+      if (task?.status !== 'running') setShowRight(false);
+    }
+  };
+
   const changeSequence = (id: string) => {
     pause();
     setSequenceId(id);
     setSelected(null);
+    setSelectedIds([]);
     setScope(null);
-    setDoc('film');
+    setStagePin(undefined);
+    setShowBrief(false);
     setFrame(0);
     frameRef.current = 0;
+    playheadClockRef.current?.set(0);
   };
-  const selectClip = (id: string | null) => {
+
+  const selectClip = useCallback((id: string | null, additive = false) => {
+    if (id === null) {
+      setSelected(null);
+      setSelectedIds([]);
+      return;
+    }
+    if (additive) {
+      setSelectedIds((prev) => {
+        const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+        setSelected((curr) =>
+          curr === id && !next.includes(id) ? (next[next.length - 1] ?? null) : next.includes(id) ? id : curr,
+        );
+        return next;
+      });
+      setRight('inspector');
+      return;
+    }
     setSelected(id);
-    if (id) setRight('inspector');
-  };
-  const addAsset = async (id: string, atFrame = frame) => {
+    setSelectedIds([id]);
+    setRight('inspector');
+  }, []);
+
+  const addAsset = async (payload: string, atFrame = frameRef.current) => {
     if (!project || !sequence) return;
-    const asset = project.assets.find((a) => a.id === id);
+    if (payload.startsWith('preset:')) {
+      const c = createPresetClip(payload.slice(7), atFrame, sequence.fps, {}, project);
+      await edit('拖入动态组件', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
+      selectClip(c.id);
+      return;
+    }
+    if (payload.startsWith('studio:')) {
+      const res = await api<{ envelope: ProjectEnvelope; clipId: string }>('studio.add', {
+        id: payload.slice(7),
+        sequenceId: sequence.id,
+        projectId: project.id,
+        at: atFrame,
+      });
+      accept(res.envelope);
+      selectClip(res.clipId);
+      return;
+    }
+    if (payload.startsWith('shot:')) {
+      const shId = payload.slice(5);
+      const sh = computeCompositeShots(sequence).find((x) => x.id === shId);
+      if (!sh) return;
+      const ops: EditOperation[] = [...sh.compositeClips, ...sh.captionClips].map((orig) => ({
+        type: 'addClip',
+        sequenceId: sequence.id,
+        clip: {
+          ...clone(orig),
+          id: uid('clip'),
+          start: Math.max(0, atFrame + (orig.start - sh.start)),
+          locked: false,
+        },
+      }));
+      await edit(`插入分镜「镜头 ${sh.index}」副本`, ops);
+      return;
+    }
+    if (payload.startsWith('vault:')) {
+      const [, vId, varId] = payload.split(':');
+      const v = (project.vault || []).find((x) => x.id === vId);
+      if (!v) return;
+      if (v.compound?.clips.length) {
+        const { operations, primaryClipId } = instantiateCompoundVaultItemOperations(
+          sequence.id,
+          v,
+          atFrame,
+          sequence.fps,
+        );
+        if (operations.length) {
+          await edit(`插入精剪资产「${v.name}」`, operations);
+          if (primaryClipId) selectClip(primaryClipId);
+        }
+        return;
+      }
+      if (v.rig?.presetId) {
+        const c = createPresetClip(v.rig.presetId, atFrame, sequence.fps, v.rig.props || {}, project);
+        c.name = v.name;
+        await edit(`添加「${v.name}」`, [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
+        selectClip(c.id);
+        return;
+      }
+      const vr = v.variants?.find((x) => x.id === varId) || v.variants?.[0];
+      const aid = vr?.assetId || v.assetId;
+      if (!aid) return;
+      payload = aid;
+    }
+    const asset = project.assets.find((a) => a.id === payload);
     if (!asset) return;
     const c = {
-      ...newClip(asset.kind, atFrame, asset.id),
+      ...newClip(asset.kind === 'model-3d' ? 'shape' : asset.kind, atFrame, asset.id),
       name: asset.name,
       duration: Math.max(1, Math.floor((asset.kind === 'image' ? 5 : asset.duration) * sequence.fps)),
     };
     await edit('添加素材到时间线', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
     selectClip(c.id);
   };
+
+  const relinkAsset = (assetId: string) =>
+    work('正在重新定位素材', async () => {
+      const next = await api<ProjectEnvelope | null>('media.relink', { assetId });
+      if (next) {
+        accept(next);
+        notify('素材已重新定位并恢复在线');
+      }
+    });
+
   const addPreset = async (id: string, overrides?: Record<string, unknown>) => {
     if (!sequence) return;
-    const c = createPresetClip(id, frame, sequence.fps, overrides);
+    const c = createPresetClip(id, frameRef.current, sequence.fps, overrides, project || undefined);
     await edit('添加' + c.name, [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
     selectClip(c.id);
     setShowRight(true);
     notify('已添加到时间线');
   };
+
   const addCaption = async () => {
     if (!sequence) return;
-    const c = newClip('caption', frame);
+    const c = newClip('caption', frameRef.current);
     c.name = '对白字幕';
     c.props.text = '输入字幕';
     await edit('添加字幕', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
     selectClip(c.id);
     setShowRight(true);
   };
+
+  const applyTransitionToActiveClip = async (trId: TransitionType) => {
+    if (!sequence) return;
+    const curFrame = frameRef.current;
+    const target =
+      (clip && clip.kind !== 'audio' ? clip : undefined) ||
+      sequence.clips.find(
+        (c) => c.track === 'visual' && !c.locked && curFrame >= c.start && curFrame < c.start + c.duration,
+      ) ||
+      sequence.clips.find((c) => c.kind !== 'audio' && !c.locked);
+    if (!target || target.locked) {
+      notify('请先选择要应用转场的未锁定画面片段', true);
+      return;
+    }
+    const meta = BUILT_IN_TRANSITIONS.find((t) => t.id === trId);
+    const durationFrames = Math.max(
+      3,
+      Math.min(target.duration, Math.round((meta?.defaultSeconds || 0.6) * sequence.fps)),
+    );
+    await edit(`设置转场「${meta?.name || trId}」`, [
+      {
+        type: 'updateClip',
+        sequenceId: sequence.id,
+        clipId: target.id,
+        changes: { transitionIn: { type: trId, durationFrames } },
+      },
+    ]);
+    selectClip(target.id);
+    notify(`已为「${target.name}」添加 ${meta?.name || trId}`);
+  };
+
+  const publishToLibrary = async (payload: {
+    itemId?: string;
+    assetId?: string;
+    componentId?: string;
+    pack?: { name: string; assetIds?: string[]; componentIds?: string[]; vaultIds?: string[] };
+  }) => {
+    await work('发布到个人库', async () => {
+      const res = await api<{ globalVault: VaultItem[]; promoted: VaultItem }>('vault.promote', payload);
+      setPersonalLibrary(res.globalVault);
+      notify(`已发布「${res.promoted.name}」到个人库`);
+    });
+  };
+
+  const exportMaterialPack = async (payload: {
+    name: string;
+    assetIds: string[];
+    componentIds: string[];
+  }) => {
+    await work('导出素材包', async () => {
+      const res = await api<{ manifest?: { name?: string }; directory?: string } | null>(
+        'packs.export',
+        payload,
+      );
+      if (res?.directory) notify(`已导出素材包「${res.manifest?.name || payload.name}」`);
+    });
+  };
+
+  const saveClipsAsAsset = async (clipsToSave: Clip[], customName?: string) => {
+    if (!project || !sequence || !clipsToSave.length) return;
+    const item = createCompoundVaultItemFromClips(project, sequence, clipsToSave, customName);
+    await edit(`保存为项目资产「${item.name}」`, [{ type: 'putVaultItem', item }]);
+    notify(`已将 ${clipsToSave.length} 个片段保存为项目资产「${item.name}」`);
+  };
+
+  const saveSelectedClipsAsAsset = async () => {
+    if (!sequence) return;
+    const picked =
+      selectedIds.length > 1
+        ? sequence.clips.filter((c) => selectedIds.includes(c.id))
+        : clip
+          ? [clip]
+          : [];
+    if (!picked.length) return;
+    await saveClipsAsAsset(picked);
+  };
+
+  const addRefsToChat = useCallback((refs: ChatContextRef[], openDrawer = true) => {
+    if (!refs.length) return;
+    setChatRefs((prev) => {
+      const map = new Map(prev.map((r) => [r.key, r]));
+      for (const r of refs) map.set(r.key, r);
+      return [...map.values()];
+    });
+    if (openDrawer) {
+      setRight('agent');
+      setShowRight(true);
+      requestAnimationFrame(() => promptRef.current?.focus());
+    }
+  }, []);
+
+  const removeChatRef = useCallback((key: string) => {
+    setChatRefs((prev) => prev.filter((r) => r.key !== key));
+  }, []);
+
+  const pullFromLibrary = async (globalId: string) => {
+    await work('从个人库引入', async () => {
+      const res = await api<{ envelope: ProjectEnvelope; item: VaultItem }>('vault.pull', { id: globalId });
+      accept(res.envelope);
+      notify(`已引入「${res.item.name}」到当前项目`);
+    });
+  };
+
+  const removeFromLibrary = async (globalId: string) => {
+    await work('从个人库移除', async () => {
+      const next = await api<VaultItem[]>('vault.remove', { id: globalId });
+      setPersonalLibrary(next);
+      notify('已从个人库移除');
+    });
+  };
+
   const loadPack = async (example = false) => {
     const next = await api<ProjectEnvelope | null>('packs.import', { example });
     if (next) {
@@ -472,60 +869,173 @@ export function App() {
       notify('素材包已载入项目');
     }
   };
+
   const openDemo = () =>
     work('打开示例工程', async () => {
       await switchProject(await api<ProjectEnvelope>('project.demo'));
       setDialog(null);
     });
+
   const askForMotion = (text: string) => {
     openDialog('new-task');
     setPrompt(text);
   };
+
   const importMedia = () =>
     work('正在导入素材', async () => {
       const e = await api<ProjectEnvelope | null>('media.import');
       if (e) {
         accept(e);
-        setNav('assets');
-        notify('素材已导入。拖入时间线或点击 ＋ 添加。');
+        setShowNav(true);
+        notify('素材已导入工程');
       }
     });
+
   const undo = () =>
     work('撤销', async () => {
       accept(await api<ProjectEnvelope>('project.undo'));
       notify('已撤销上次修改');
     });
+
   const redo = () => work('重做', async () => accept(await api<ProjectEnvelope>('project.redo')));
+
   const split = () => {
     if (!sequence || !clip) return;
     try {
-      void edit('分割片段', splitOperations(sequence, clip, frame));
+      void edit('分割片段', splitOperations(sequence, clip, frameRef.current));
     } catch (e) {
       notify(errorText(e), true);
     }
   };
+
   const remove = (ripple = false) => {
-    if (sequence && clip)
-      void edit(ripple ? '波纹删除片段' : '删除片段', [
-        { type: 'deleteClip', sequenceId: sequence.id, clipId: clip.id, ripple },
-      ]);
+    if (!sequence) return;
+    const targetIds = selectedIds.length > 1 ? selectedIds : clip ? [clip.id] : [];
+    const unlocked = targetIds
+      .map((id) => sequence.clips.find((c) => c.id === id))
+      .filter((c): c is Clip => Boolean(c && !c.locked));
+    if (!unlocked.length) return;
+    void edit(
+      unlocked.length > 1 ? `删除 ${unlocked.length} 个片段` : ripple ? '波纹删除片段' : '删除片段',
+      unlocked.map((c) => ({ type: 'deleteClip', sequenceId: sequence.id, clipId: c.id, ripple })),
+    );
+    selectClip(null);
   };
+
   const reference = () => {
     if (clip) {
       setScope(clone(clip));
       setRight('agent');
       setShowRight(true);
-      promptRef.current?.focus();
+      requestAnimationFrame(() => promptRef.current?.focus());
     }
   };
+
   const chatModel =
     settings &&
     (settings.models.find((m) => m.id === modelOverride && m.capabilities.includes('agent')) ||
       selectedModel(settings, 'agent', project?.modelDefaults));
   const chatProvider = settings?.providers.find((p) => p.id === chatModel?.providerId);
   const chatConnected = !!chatProvider && (!chatProvider.requiresKey || chatProvider.hasApiKey);
-  const send = async () => {
-    if (sending.current || !prompt.trim() || !sequence || !env) return;
+  const agentModels = settings?.models.filter((m) => m.capabilities.includes('agent')) || [];
+
+  const selectAgentModel = (value: string) => {
+    setOpenComposerMenu(null);
+    setModelOverride(value);
+    if (task) {
+      void work('更新会话模型', async () => {
+        try {
+          const updated = await api<Task>('tasks.model', {
+            id: task.id,
+            modelId: value,
+          });
+          const current = envRef.current;
+          if (current && current.project.id === project?.id)
+            accept({
+              ...current,
+              tasks: current.tasks.map((t) => (t.id === updated.id ? updated : t)),
+            });
+        } catch (error) {
+          setModelOverride(task.modelId || '');
+          throw error;
+        }
+      });
+    }
+  };
+
+  const attachFilesToComposer = async (paths?: string[]) => {
+    try {
+      const added = await api<ComposerAttachment[] | null>('agent.attachFiles', paths ? { paths } : {});
+      if (!added?.length) return;
+      setComposerAttachments((prev) => {
+        const seen = new Set(prev.map((a) => a.path));
+        return [...prev, ...added.filter((a) => !seen.has(a.path))];
+      });
+    } catch (e) {
+      notify(errorText(e), true);
+    }
+  };
+
+  const handleComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imgItem = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'));
+    if (imgItem) {
+      const blob = imgItem.getAsFile();
+      if (blob) {
+        e.preventDefault();
+        const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '');
+          void api<ComposerAttachment>('agent.attachPaste', {
+            dataBase64: dataUrl,
+            mimeType: blob.type,
+            ext,
+            name: `剪贴板图片.${ext}`,
+          })
+            .then((att) => setComposerAttachments((prev) => [...prev, att]))
+            .catch((err) => notify(errorText(err), true));
+        };
+        reader.readAsDataURL(blob);
+        return;
+      }
+    }
+    const pastedFiles = Array.from(e.clipboardData?.files || []);
+    if (pastedFiles.length) {
+      const paths = window.cocraft.pathsForFiles(pastedFiles);
+      if (paths.length) {
+        e.preventDefault();
+        void attachFilesToComposer(paths);
+      }
+    }
+  };
+
+  const handleComposerDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer?.files?.length) return;
+    const paths = window.cocraft.pathsForFiles(Array.from(e.dataTransfer.files));
+    if (!paths.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void attachFilesToComposer(paths);
+  };
+
+  const applyMentionCandidate = (cand: MentionCandidate) => {
+    if (cand.skillName) {
+      setActiveComposerSkills((prev) => (prev.includes(cand.skillName!) ? prev : [...prev, cand.skillName!]));
+      setPrompt(
+        prompt.replace(/(?:^|\s)([@#/][^\s]*)$/, (full) => (full.startsWith(' ') ? ' ' : '')).trimStart(),
+      );
+    } else {
+      setPrompt(prompt.replace(/([@#/][^\s]*)$/, `${cand.token} `));
+    }
+    setMentionIndex(0);
+    promptRef.current?.focus();
+  };
+
+  const send = async (promptOverride?: string, scopeClipOverride?: Clip) => {
+    const rawText = (promptOverride ?? prompt).trim();
+    if (sending.current || (!rawText && composerAttachments.length === 0) || !sequence || !env) return;
+    const effectiveRawText = rawText || '请结合附带的参考文件协助我继续创作。';
     if (!chatConnected && task?.status !== 'running') {
       openSettings(
         chatModel
@@ -536,44 +1046,106 @@ export function App() {
       );
       return;
     }
-    const text = prompt.trim();
+    const activeScope = scopeClipOverride ?? scope;
+    const attachmentsToSend = [...composerAttachments];
+    const skillsToSend = [...activeComposerSkills];
     sending.current = true;
     try {
       await work('提交给 Agent', async () => {
+        let targetSeq = sequence;
+        let text = effectiveRawText;
+        let isBranchTrial = false;
+
+        // If user invoked /新建分支试剪, fork an experimental branch AND lock task + server scope strictly to it!
+        if (text.includes('/新建分支试剪')) {
+          isBranchTrial = true;
+          const newSeqId = uid('seq');
+          const bName = `${sequence.name}-试剪-${envRef.current?.project.sequences.length || 1}`;
+          await edit(`派生实验分支「${bName}」`, [
+            { type: 'forkSequenceBranch', sourceSequenceId: sequence.id, newSequenceId: newSeqId, branchName: bName },
+          ]);
+          const found = envRef.current?.project.sequences.find((s) => s.id === newSeqId);
+          if (found) {
+            targetSeq = found;
+            setSequenceId(newSeqId);
+          }
+          text = text.replace('/新建分支试剪', '').trim() || '请在这条新建实验分支上优化剪辑节奏。';
+        }
+
         let currentTask = task;
         if (!currentTask) {
           currentTask = await api<Task>('tasks.create', {
             modelId: modelOverride || undefined,
-            name: text
-              .replace(/^[#\s]+/, '')
-              .replace(/\s+/g, ' ')
-              .slice(0, 24),
-            sequenceId: sequence.id,
+            name:
+              text
+                .replace(/^[@#/\s]+/, '')
+                .replace(/\s+/g, ' ')
+                .slice(0, 24) || '新创作会话',
+            sequenceId: targetSeq.id,
           });
           setTaskId(currentTask.id);
           accept({ ...envRef.current!, tasks: [...envRef.current!.tasks, currentTask] });
+        } else if (currentTask.sequenceId !== targetSeq.id && currentTask.status !== 'running') {
+          currentTask = await api<Task>('tasks.retarget', {
+            id: currentTask.id,
+            sequenceId: targetSeq.id,
+          });
+          accept({
+            ...envRef.current!,
+            tasks: envRef.current!.tasks.map((t) => (t.id === currentTask!.id ? currentTask! : t)),
+          });
         }
         if (currentTask.status !== 'running') setConnectingTask(currentTask.id);
         setStream((s) => ({ ...s, [currentTask!.id]: '' }));
+        setThinkingStream((s) => ({ ...s, [currentTask!.id]: '' }));
+        const extraClipIds = chatRefs
+          .map((r) => r.clipId || (r.kind === 'clip' ? r.id : undefined))
+          .filter((id): id is string => Boolean(id));
+        const scopedClipIds = Array.from(
+          new Set([...(activeScope ? [activeScope.id] : []), ...extraClipIds]),
+        );
+        const editScope: EditScope | undefined =
+          isBranchTrial || activeScope || stagePin || extraClipIds.length > 0
+            ? {
+                sequenceId: targetSeq.id,
+                clipIds: scopedClipIds.length > 0 ? scopedClipIds : undefined,
+                strict: isBranchTrial || (strictScope && !!activeScope),
+                pin: stagePin,
+              }
+            : undefined;
         await api('agent.start', {
           taskId: currentTask.id,
           prompt: text,
           modelId: chatModel?.id,
+          scope: editScope,
+          thinkingLevel,
+          attachments: attachmentsToSend,
+          skillIds: skillsToSend,
           context: JSON.stringify({
-            sequenceId: sequence.id,
-            frame,
-            reference: scope
-              ? { clipId: scope.id, name: scope.name, start: scope.start, duration: scope.duration }
+            sequenceId: targetSeq.id,
+            branchName: targetSeq.branchName || targetSeq.name,
+            frame: frameRef.current,
+            strictScope: strictScope && !!activeScope,
+            activeStyleId: project?.activeBrandId,
+            reference: activeScope
+              ? { clipId: activeScope.id, name: activeScope.name, start: activeScope.start, duration: activeScope.duration }
+              : undefined,
+            references: chatRefs.length > 0 ? chatRefs : undefined,
+            pin: stagePin
+              ? { xPercent: stagePin.x, yPercent: stagePin.y, frame: stagePin.frame }
               : undefined,
           }),
         });
-        setPrompt((previous) => (previous.trim() === text ? '' : previous));
+        setPrompt((previous) => (previous.trim() === rawText ? '' : previous));
+        setComposerAttachments([]);
+        setActiveComposerSkills([]);
       });
     } finally {
       setConnectingTask('');
       sending.current = false;
     }
   };
+
   const commands = [
     { name: '导入素材', detail: '视频、音频、图片', key: '⌘ I', action: () => void importMedia() },
     { name: '添加标题', detail: '可编辑的动态文字', key: 'T', action: () => setDialog('templates') },
@@ -597,7 +1169,7 @@ export function App() {
     {
       name: '动态素材库',
       detail: '标题、字幕、信息图形与背景',
-      key: '',
+      key: 'T',
       action: () => setDialog('templates'),
     },
     { name: '新建示例工程', detail: '相位之间 · 横版与竖版', key: '', action: () => void openDemo() },
@@ -617,14 +1189,14 @@ export function App() {
       key: '',
       action: () => openDialog('sequence'),
     },
-    { name: '导出成片', detail: 'MP4 · 固定当前版本', key: '⌘ E', action: () => setDialog('export') },
+    { name: '导出成片', detail: 'MP4 · 交付预检与固定版本', key: '⌘ E', action: () => setDialog('export') },
     {
       name: '保存当前帧',
       detail: 'PNG 静帧',
       key: '',
       action: () =>
         void work('生成静帧', async () => {
-          await api('export.still', { sequenceId, frame });
+          await api('export.still', { sequenceId, frame: frameRef.current });
           setJobsOpen(true);
         }),
     },
@@ -645,6 +1217,212 @@ export function App() {
     },
     { name: '设置', detail: '模型、外观与 Skills', key: '⌘ ,', action: () => openSettings() },
   ];
+
+  // Unified shortcut executor shared by main window AND preview iframe forwarded hotkeys
+  const handleShortcutRef = useRef<(k: {
+    key: string;
+    code: string;
+    shiftKey: boolean;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    preventDefault?: () => void;
+  }) => void>(() => {});
+
+  handleShortcutRef.current = (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    const lower = e.key.toLowerCase();
+    if (mod && lower === 'k') {
+      e.preventDefault?.();
+      openDialog('command');
+      return;
+    }
+    if (mod && e.key === ',') {
+      e.preventDefault?.();
+      openSettings();
+      return;
+    }
+    if (mod && e.key === '1') {
+      e.preventDefault?.();
+      switchMode('create');
+      return;
+    }
+    if (mod && e.key === '2') {
+      e.preventDefault?.();
+      switchMode('edit');
+      return;
+    }
+    if (mod && e.key === '\\') {
+      e.preventDefault?.();
+      setShowNav((v) => !v);
+      return;
+    }
+    if (mod && lower === 'j') {
+      e.preventDefault?.();
+      setShowBottom((v) => !v);
+      return;
+    }
+    if (dialog) return;
+    if (mod && lower === 'z') {
+      e.preventDefault?.();
+      if (e.shiftKey) void redo();
+      else void undo();
+      return;
+    }
+    if (mod && lower === 'c' && clip) {
+      e.preventDefault?.();
+      clipboardClip.current = clone(clip);
+      notify(`已复制「${clip.name}」`);
+      return;
+    }
+    if (mod && lower === 'v' && clipboardClip.current && sequence) {
+      e.preventDefault?.();
+      const pasted: Clip = {
+        ...clone(clipboardClip.current),
+        id: uid('clip'),
+        name: clipboardClip.current.name + ' · 副本',
+        start: frameRef.current,
+        locked: false,
+      };
+      void edit('粘贴片段', [{ type: 'addClip', sequenceId: sequence.id, clip: pasted }]).then(() =>
+        selectClip(pasted.id),
+      );
+      return;
+    }
+    if (mod && lower === 'd' && clip && sequence) {
+      e.preventDefault?.();
+      const dup: Clip = {
+        ...clone(clip),
+        id: uid('clip'),
+        name: clip.name + ' · 副本',
+        start: clip.start + clip.duration,
+        locked: false,
+      };
+      void edit('复制片段', [{ type: 'addClip', sequenceId: sequence.id, clip: dup }]).then(() =>
+        selectClip(dup.id),
+      );
+      return;
+    }
+    if (e.code === 'Space' && appMode === 'edit') {
+      e.preventDefault?.();
+      play();
+      return;
+    }
+    if (e.key === 'ArrowRight' && appMode === 'edit') {
+      e.preventDefault?.();
+      seek(frameRef.current + (e.shiftKey ? 10 : 1));
+      return;
+    }
+    if (e.key === 'ArrowLeft' && appMode === 'edit') {
+      e.preventDefault?.();
+      seek(frameRef.current - (e.shiftKey ? 10 : 1));
+      return;
+    }
+    if (mod && lower === 'b' && appMode === 'edit') {
+      e.preventDefault?.();
+      split();
+      return;
+    }
+    if ((e.key === 'Backspace' || e.key === 'Delete') && appMode === 'edit') {
+      e.preventDefault?.();
+      remove(e.shiftKey);
+      return;
+    }
+    if (!mod && lower === 'l' && clip && sequence) {
+      e.preventDefault?.();
+      void edit(clip.locked ? '解锁片段' : '锁定片段', [
+        { type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes: { locked: !clip.locked } },
+      ]);
+      return;
+    }
+    if (!mod && lower === 'v' && appMode === 'edit' && view === 'timeline') {
+      e.preventDefault?.();
+      setTimelineTool('select');
+      return;
+    }
+    if (!mod && lower === 'b' && appMode === 'edit' && view === 'timeline') {
+      e.preventDefault?.();
+      setTimelineTool('razor');
+      return;
+    }
+    if (!mod && lower === 't' && appMode === 'edit') {
+      e.preventDefault?.();
+      setDialog('templates');
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (selected || selectedIds.length > 0 || pinMode || jobsOpen) {
+        setSelected(null);
+        setSelectedIds([]);
+        setPinMode(false);
+        setJobsOpen(false);
+      } else if (appMode === 'edit' && !showNav && !showRight && !showBottom) {
+        const saved = savedPanesRef.current;
+        const restoreAny = saved.nav || saved.right || saved.bottom;
+        setShowNav(restoreAny ? saved.nav : true);
+        setShowRight(restoreAny ? saved.right : true);
+        setShowBottom(restoreAny ? saved.bottom : true);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const receive = (e: MessageEvent) => {
+      if (e.source !== iframe.current?.contentWindow || e.data?.source !== 'cocraft-preview') return;
+      const expectedOrigin = previewState.current.mediaOrigin
+        ? new URL(previewState.current.mediaOrigin).origin
+        : '';
+      if (expectedOrigin && e.origin !== expectedOrigin) return;
+      const d = e.data;
+      if (d.event === 'ready') {
+        setPreviewReady(true);
+        const current = previewState.current;
+        const p = current.project || envRef.current?.project;
+        if (p && current.mediaOrigin)
+          iframe.current?.contentWindow?.postMessage(
+            {
+              source: 'cocraft-workbench',
+              type: 'load',
+              props: {
+                project: p,
+                sequenceId: p.sequences.some((s) => s.id === current.sequenceId)
+                  ? current.sequenceId
+                  : p.sequences[0].id,
+                mediaOrigin: current.mediaOrigin,
+              },
+              frame: frameRef.current,
+            },
+            new URL(current.mediaOrigin).origin,
+          );
+      }
+      if (d.event === 'frame') {
+        frameRef.current = d.frame;
+        playheadClockRef.current?.set(d.frame);
+      }
+      if (d.event === 'boxes' && d.boxes) {
+        setStageBoxes(d.boxes as Record<string, StageDomBox>);
+      }
+      if (d.event === 'play') {
+        setPlaying(true);
+        playRef.current = true;
+      }
+      if (d.event === 'pause' || d.event === 'ended') {
+        setPlaying(false);
+        playRef.current = false;
+        setFrame(frameRef.current);
+      }
+      if (d.event === 'hotkey') {
+        handleShortcutRef.current(d);
+      }
+      if (d.event === 'error') notify('预览：' + d.message, true);
+    };
+    window.addEventListener('message', receive);
+    return () => window.removeEventListener('message', receive);
+  }, [notify]);
+
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [taskId, stream[taskId], env?.tasks.find((t) => t.id === taskId)?.messages.length]);
+
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const input = (e.target as HTMLElement)?.closest('input,textarea,select,[contenteditable]');
@@ -659,36 +1437,8 @@ export function App() {
         openSettings();
         return;
       }
-      if (dialog || input) return;
-      if (e.code === 'Space') {
-        e.preventDefault();
-        play();
-      }
-      if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        seek(frameRef.current + (e.shiftKey ? 10 : 1));
-      }
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        seek(frameRef.current - (e.shiftKey ? 10 : 1));
-      }
-      if (mod && e.key.toLowerCase() === 'b') {
-        e.preventDefault();
-        split();
-      }
-      if (e.key === 'Backspace' || e.key === 'Delete') {
-        e.preventDefault();
-        remove(e.shiftKey);
-      }
-      if (!mod && e.key.toLowerCase() === 'l' && clip && sequence)
-        void edit(clip.locked ? '解锁片段' : '锁定片段', [
-          { type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes: { locked: !clip.locked } },
-        ]);
-      if (e.key === 'Escape') {
-        setSelected(null);
-        setScope(null);
-        setJobsOpen(false);
-      }
+      if (input) return;
+      handleShortcutRef.current(e);
     };
     window.addEventListener('keydown', key);
     const off = window.cocraft.on('menu', (name: string) => {
@@ -704,12 +1454,10 @@ export function App() {
       if (name === 'import') void importMedia();
       if (name === 'export') setDialog('export');
       if (name === 'undo') {
-        if ((document.activeElement as HTMLElement)?.matches('input,textarea')) document.execCommand('undo');
-        else void undo();
+        if (!(document.activeElement as HTMLElement)?.matches('input,textarea,[contenteditable]')) void undo();
       }
       if (name === 'redo') {
-        if ((document.activeElement as HTMLElement)?.matches('input,textarea')) document.execCommand('redo');
-        else void redo();
+        if (!(document.activeElement as HTMLElement)?.matches('input,textarea,[contenteditable]')) void redo();
       }
     });
     return () => {
@@ -717,19 +1465,20 @@ export function App() {
       off();
     };
   }, [env, sequenceId, selected, dialog, playing, settings]);
+
   function resize(e: React.PointerEvent<HTMLElement>, axis: 'timeline' | 'agent' | 'nav') {
     dragCleanup.current?.();
     const x = e.clientX,
       y = e.clientY;
     const navSpace = showNav
-      ? appRef.current?.querySelector('.sidebar')?.getBoundingClientRect().width || navWidth
+      ? appRef.current?.querySelector('.asset-explorer-wrap')?.getBoundingClientRect().width || navWidth
       : 0;
     const agentSpace = showRight
       ? appRef.current?.querySelector('.right-panel')?.getBoundingClientRect().width || agentWidth
       : 0;
     const start =
       appRef.current
-        ?.querySelector(axis === 'timeline' ? '.editor-panel' : axis === 'nav' ? '.sidebar' : '.right-panel')
+        ?.querySelector(axis === 'timeline' ? '.editor-panel' : axis === 'nav' ? '.asset-explorer-wrap' : '.right-panel')
         ?.getBoundingClientRect()[axis === 'timeline' ? 'height' : 'width'] ||
       (axis === 'timeline' ? timelineHeight : axis === 'nav' ? navWidth : agentWidth);
     const key = axis === 'timeline' ? '--timeline-height' : axis === 'nav' ? '--nav-width' : '--agent-width';
@@ -743,7 +1492,7 @@ export function App() {
             ? Math.max(180, Math.min(window.innerHeight - 330, start + y - py))
             : axis === 'nav'
               ? Math.max(190, Math.min(420, width - agentSpace - 420, start + px - x))
-              : Math.max(290, Math.min(620, width - navSpace - 420, start + x - px));
+              : Math.max(268, Math.min(620, width - navSpace - 420, start + x - px));
         appRef.current?.style.setProperty(key, `${Math.round(value)}px`);
       },
       () => {
@@ -758,6 +1507,7 @@ export function App() {
       axis === 'timeline' ? 'row-resize' : 'col-resize',
     );
   }
+
   function keyboardResize(e: React.KeyboardEvent<HTMLElement>, axis: 'nav' | 'agent' | 'timeline') {
     const positive = axis === 'nav' ? 'ArrowRight' : axis === 'agent' ? 'ArrowLeft' : 'ArrowUp';
     const negative = axis === 'nav' ? 'ArrowLeft' : axis === 'agent' ? 'ArrowRight' : 'ArrowDown';
@@ -774,13 +1524,13 @@ export function App() {
       axis === 'timeline'
         ? window.innerHeight - 330
         : Math.min(axis === 'nav' ? 420 : 620, window.innerWidth - opposite - 420);
-    const min = axis === 'nav' ? 190 : axis === 'agent' ? 290 : 180;
+    const min = axis === 'nav' ? 190 : axis === 'agent' ? 268 : 180;
     const value =
       e.key === 'Home'
         ? axis === 'nav'
           ? 240
           : axis === 'agent'
-            ? 350
+            ? 296
             : 278
         : Math.max(min, Math.min(max, current + (e.key === positive ? 1 : -1) * (e.shiftKey ? 48 : 12)));
     (axis === 'nav' ? setNavWidth : axis === 'agent' ? setAgentWidth : setTimelineHeight)(value);
@@ -789,6 +1539,109 @@ export function App() {
       String(value),
     );
   }
+
+  const latestActionsRef = useRef({
+    addAsset,
+    importMedia,
+    relinkAsset,
+    openStudio,
+    publishToLibrary,
+    pullFromLibrary,
+    removeFromLibrary,
+    applyTransitionToActiveClip,
+    reference,
+    saveSelectedClipsAsAsset,
+    addStudioMedia: async (studioId: string) => {
+      await work('添加音效/底板', async () => {
+        if (!project || !sequence) return;
+        const res = await api<{ envelope: ProjectEnvelope; clipId: string }>('studio.add', {
+          id: studioId,
+          sequenceId: sequence.id,
+          at: frameRef.current,
+          projectId: project.id,
+        });
+        accept(res.envelope);
+        selectClip(res.clipId);
+      });
+    },
+    openCode: () => {
+      if (!project) return;
+      setCodeComponent(project.components.find((c) => c.id === clip?.componentId));
+      setDialog('code');
+    },
+  });
+  latestActionsRef.current = {
+    addAsset,
+    importMedia,
+    relinkAsset,
+    openStudio,
+    publishToLibrary,
+    pullFromLibrary,
+    removeFromLibrary,
+    applyTransitionToActiveClip,
+    reference,
+    saveSelectedClipsAsAsset,
+    addStudioMedia: async (studioId: string) => {
+      await work('添加音效/底板', async () => {
+        if (!project || !sequence) return;
+        const res = await api<{ envelope: ProjectEnvelope; clipId: string }>('studio.add', {
+          id: studioId,
+          sequenceId: sequence.id,
+          at: frameRef.current,
+          projectId: project.id,
+        });
+        accept(res.envelope);
+        selectClip(res.clipId);
+      });
+    },
+    openCode: () => {
+      if (!project) return;
+      setCodeComponent(project.components.find((c) => c.id === clip?.componentId));
+      setDialog('code');
+    },
+  };
+
+  const getPlayheadCb = useCallback(() => frameRef.current, []);
+  const editVoidCb = useCallback((n: string, o: EditOperation[]) => {
+    void edit(n, o);
+  }, [edit]);
+  const editPromiseCb = useCallback((n: string, o: EditOperation[]) => edit(n, o).then(() => {}), [edit]);
+  const clearSelectCb = useCallback(() => selectClip(null), [selectClip]);
+  const handleLiveTransformCb = useCallback(
+    (override: { clipId: string; props: Record<string, unknown> } | null) => post('live-transform', { override }),
+    [post],
+  );
+  const importMediaCb = useCallback(() => void latestActionsRef.current.importMedia(), []);
+  const relinkCb = useCallback((id: string) => void latestActionsRef.current.relinkAsset(id), []);
+  const openStudioCb = useCallback(
+    (use: 'image' | 'video' | 'speech' | 'transcription', assetId?: string) =>
+      latestActionsRef.current.openStudio(use, assetId),
+    [],
+  );
+  const publishCb = useCallback(
+    (payload: {
+      itemId?: string;
+      assetId?: string;
+      componentId?: string;
+      pack?: { name: string; assetIds?: string[]; componentIds?: string[]; vaultIds?: string[] };
+    }) => latestActionsRef.current.publishToLibrary(payload),
+    [],
+  );
+  const pullCb = useCallback((id: string) => latestActionsRef.current.pullFromLibrary(id), []);
+  const removeLibCb = useCallback((id: string) => latestActionsRef.current.removeFromLibrary(id), []);
+  const addTransitionCb = useCallback(
+    (trId: TransitionType) => latestActionsRef.current.applyTransitionToActiveClip(trId),
+    [],
+  );
+  const addStudioCb = useCallback((studioId: string) => latestActionsRef.current.addStudioMedia(studioId), []);
+  const addAssetCb = useCallback((id: string, f: number) => void latestActionsRef.current.addAsset(id, f), []);
+  const referenceCb = useCallback(() => latestActionsRef.current.reference(), []);
+  const saveSelectedClipsAsAssetCb = useCallback(
+    () => void latestActionsRef.current.saveSelectedClipsAsAsset(),
+    [],
+  );
+  const openCodeCb = useCallback(() => latestActionsRef.current.openCode(), []);
+
   if (fatal)
     return (
       <div className="boot-screen">
@@ -800,6 +1653,7 @@ export function App() {
         </button>
       </div>
     );
+
   if (!boot || !env || !project || !sequence || !settings)
     return (
       <div className="boot-screen">
@@ -807,13 +1661,33 @@ export function App() {
         <p>正在打开工程…</p>
       </div>
     );
+
   const runningJob = jobs.find((j) => j.status === 'running'),
     pendingVersion = playing && previewProject?.revision !== project.revision;
-  const shownAssets = project.assets.filter((a) => a.name.toLowerCase().includes(assetQuery.toLowerCase()));
+  const offlineCount = env.offlineAssetIds?.length || 0;
+  const transcribedAssets = project.assets.filter((a) => a.transcript?.text);
+
+  const filteredCommands = [
+    ...commands
+      .filter((c) => (c.name + c.detail).toLowerCase().includes(command.toLowerCase()))
+      .map((c) => ({ id: 'cmd:' + c.name, name: c.name, detail: c.detail, key: c.key, run: c.action })),
+    ...(command
+      ? project.assets
+          .filter((a) => a.name.toLowerCase().includes(command.toLowerCase()))
+          .map((a) => ({
+            id: 'asset:' + a.id,
+            name: a.name,
+            detail: '添加素材到时间线',
+            key: '+',
+            run: () => void addAsset(a.id),
+          }))
+      : []),
+  ];
+
   return (
     <div
       ref={appRef}
-      className={`app ${!showNav ? 'nav-hidden' : ''} ${!showRight ? 'right-hidden' : ''}`}
+      className={`app ide-shell mode-${appMode} ${!showNav ? 'nav-hidden' : ''} ${!showRight ? 'right-hidden' : ''}`}
       style={
         {
           '--agent-width': `${agentWidth}px`,
@@ -837,267 +1711,296 @@ export function App() {
           const paths = window.cocraft.pathsForFiles(Array.from(e.dataTransfer.files));
           void work('正在导入素材', async () => {
             accept(await api<ProjectEnvelope>('media.import', { paths }));
-            setNav('assets');
-            notify('素材已导入');
+            setShowNav(true);
+            notify('素材已导入工程');
           });
         }
       }}
     >
-      <header className="titlebar">
+      {/* Unified 38px Monochrome IDE Titlebar */}
+      <header className="titlebar ide-titlebar">
         <div className="titlebar-left">
-          <IconButton label="切换项目侧栏" active={!showNav} onClick={() => setShowNav((v) => !v)}>
-            <PanelLeft size={16} />
-          </IconButton>
-          <span className="brand">
-            <BrandMark size={18} />
-            CoCraft
-          </span>
-          <span className="titlebar-divider" />
-          <span className="titlebar-project">{project.name}</span>
+          <div className="project-switcher-wrap">
+            <button
+              type="button"
+              className="project-menu-btn"
+              onClick={() => setProjectMenuOpen((v) => !v)}
+              aria-label="切换或新建工程"
+            >
+              <BrandMark size={16} />
+              <span>{project.name}</span>
+              <ChevronDown size={11} />
+            </button>
+            {projectMenuOpen && (
+              <div className="project-dropdown" role="menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProjectMenuOpen(false);
+                    openDialog('new-project');
+                  }}
+                >
+                  <Plus size={12} /> 新建空白工程…
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProjectMenuOpen(false);
+                    void work('打开工程', async () => {
+                      const e = await api<ProjectEnvelope | null>('project.open');
+                      if (e) await switchProject(e);
+                    });
+                  }}
+                >
+                  <FolderOpen size={12} /> 打开本地工程…
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProjectMenuOpen(false);
+                    setBriefDraft(project.brief);
+                    setShowBrief((v) => !v);
+                  }}
+                >
+                  <FileText size={12} /> 项目创作约定 (brief.md)
+                </button>
+                {projects.length > 0 && <div className="proj-dd-sep" />}
+                {projects.slice(0, 8).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={p.id === project.id ? 'current' : ''}
+                    onClick={() => {
+                      setProjectMenuOpen(false);
+                      if (p.id !== project.id) {
+                        void work('切换工程', async () => {
+                          await switchProject(await api<ProjectEnvelope>('project.open', { path: p.path }));
+                        });
+                      }
+                    }}
+                  >
+                    <span>{p.name}</span>
+                    {p.id === project.id && <Check size={11} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <span className="titlebar-slash">/</span>
+
+          {/* Film Branch Switcher & Fork */}
+          <div className="branch-bar compact">
+            <GitBranch size={11} />
+            <select
+              aria-label="当前成片分支"
+              value={sequence.id}
+              onChange={(e) => changeSequence(e.target.value)}
+            >
+              {project.sequences.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.isMainBranch ? '主干 · ' : '分支 · '}
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="branch-fork-btn"
+              title="从当前版本派生平行实验分支"
+              onClick={() => setShowStageFork((v) => !v)}
+            >
+              + 派生
+            </button>
+          </div>
+
+          <button className="version-chip-btn" onClick={() => setDialog('versions')} title="版本历史与历史派生">
+            v{project.revision}
+          </button>
+
+          {offlineCount > 0 && (
+            <button
+              className="offline-pill"
+              onClick={() => setShowNav(true)}
+              title="部分源媒体文件离线，点击展开资产栏重连"
+            >
+              <AlertTriangle size={11} /> {offlineCount} 离线
+            </button>
+          )}
         </div>
-        <button className="command-launch" onClick={() => openDialog('command')}>
-          <Search size={13} />
-          <span>搜索、跳转或运行命令</span>
-          <kbd>⌘ K</kbd>
-        </button>
-        <div className="titlebar-right">
-          <IconButton label="后台作业" active={jobsOpen} onClick={() => setJobsOpen((v) => !v)}>
-            {runningJob ? <Spinner /> : <Clock3 size={15} />}
+
+        {/* Top-Center Dual-Mode Switch: [ 创造 | 剪辑 ] */}
+        <div className="top-mode-capsule" role="tablist" aria-label="核心工作模式">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={appMode === 'create' && !showBrief}
+            className={appMode === 'create' && !showBrief ? 'active' : ''}
+            onClick={() => switchMode('create')}
+          >
+            创造
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={appMode === 'edit' && !showBrief}
+            className={appMode === 'edit' && !showBrief ? 'active' : ''}
+            onClick={() => switchMode('edit')}
+          >
+            剪辑
+          </button>
+        </div>
+
+        {/* Top-Right IDE Pane Toggles (Left Explorer / Bottom Timeline / Right Agent / Search / Settings / Export) */}
+        <div className="titlebar-right ide-toggles">
+          <div className="ide-pane-group" role="group" aria-label="面板布局控制">
+            <button
+              type="button"
+              className={`ide-pane-btn ${showNav ? 'active' : ''}`}
+              aria-label="切换左侧资产栏"
+              title="展开或折叠左侧资产列表 (⌘\)"
+              onClick={() => setShowNav((v) => !v)}
+            >
+              <PanelLeft size={14} />
+            </button>
+            {appMode === 'edit' && (
+              <button
+                type="button"
+                className={`ide-pane-btn ${showBottom ? 'active' : ''}`}
+                aria-label="切换底部时间线"
+                title="展开或折叠底部时间线面板 (⌘J)"
+                onClick={() => setShowBottom((v) => !v)}
+              >
+                <PanelBottom size={14} />
+              </button>
+            )}
+            <button
+              type="button"
+              className={`ide-pane-btn ${showRight ? 'active' : ''}`}
+              aria-label="切换右侧协作栏"
+              title="展开或折叠右侧 Agent / 属性面板"
+              onClick={() => setShowRight((v) => !v)}
+            >
+              <PanelRight size={14} />
+            </button>
+          </div>
+
+          <IconButton label="快速命令与搜索 ⌘K" onClick={() => openDialog('command')}>
+            <Search size={14} />
           </IconButton>
-          <IconButton label="切换右侧面板" active={!showRight} onClick={() => setShowRight((v) => !v)}>
-            <PanelRight size={16} />
+          <IconButton label="设置 ⌘," onClick={() => openSettings()}>
+            <SettingsIcon size={14} />
+          </IconButton>
+
+          <span className="titlebar-divider" />
+
+          <IconButton label="后台作业" active={jobsOpen} onClick={() => setJobsOpen((v) => !v)}>
+            {runningJob ? <Spinner /> : <Clock3 size={14} />}
           </IconButton>
           <button className="export-button" onClick={() => setDialog('export')}>
-            导出 <ArrowUpRight size={13} />
+            导出
           </button>
         </div>
       </header>
+
+      {/* Collapsible Left Asset & Shot Explorer (shared across Create & Edit!) */}
       {showNav && (
-        <aside className="sidebar">
+        <div className="asset-explorer-wrap">
+          <AssetExplorer
+            project={project}
+            sequence={sequence}
+            getPlayheadFrame={getPlayheadCb}
+            previewOrigin={boot.previewOrigin}
+            personalLibrary={personalLibrary}
+            studioMedia={boot.studioMedia}
+            activeCategory={assetCategory}
+            onCategoryChange={setAssetCategory}
+            onSelectClip={selectClip}
+            onSeek={seek}
+            onImportMedia={importMediaCb}
+            onRelinkAsset={relinkCb}
+            onOpenGeneration={openStudioCb}
+            onEdit={editPromiseCb}
+            onPublishToLibrary={publishCb}
+            onPullFromLibrary={pullCb}
+            onRemoveFromLibrary={removeLibCb}
+            onAddTransition={addTransitionCb}
+            onAddStudioMedia={addStudioCb}
+            onAddRefsToChat={addRefsToChat}
+          />
           <div
-            className="nav-resizer"
+            className="vertical-resizer left-resizer"
             role="separator"
-            aria-label="调整左侧栏宽度"
+            aria-label="调整左侧资产栏宽度"
             aria-orientation="vertical"
             tabIndex={0}
             aria-valuenow={navWidth}
             onKeyDown={(e) => keyboardResize(e, 'nav')}
             onPointerDown={(e) => resize(e, 'nav')}
           />
-          <div className="nav-switch">
-            <button className={nav === 'projects' ? 'active' : ''} onClick={() => setNav('projects')}>
-              <Folder size={13} /> 项目
-            </button>
-            <button className={nav === 'assets' ? 'active' : ''} onClick={() => setNav('assets')}>
-              <Layers size={13} /> 素材 <span>{project.assets.length}</span>
-            </button>
-          </div>
-          {nav === 'projects' ? (
-            <>
-              <div className="sidebar-label">
-                工作空间{' '}
-                <IconButton label="新建项目" onClick={() => openDialog('new-project')}>
-                  <Plus size={13} />
-                </IconButton>
-              </div>
-              <div className="project-tree">
-                <button className="project-active" onClick={() => setDoc('film')}>
-                  <ChevronDown size={12} />
-                  <span className="project-icon">
-                    <Clapperboard size={14} />
-                  </span>
-                  <b>{project.name}</b>
-                  <span className="project-dot" />
-                </button>
-                <div className="task-tree">
-                  {env.tasks.map((t) => (
-                    <button
-                      key={t.id}
-                      className={`task-item ${taskId === t.id ? 'active' : ''}`}
-                      onClick={() => {
-                        setTaskId(t.id);
-                        setRight('agent');
-                        if (t.sequenceId !== sequenceId) changeSequence(t.sequenceId);
-                      }}
-                    >
-                      <span className={`task-dot ${t.status}`} />
-                      <span>{t.name}</span>
-                      {t.status === 'running' && <Spinner />}
-                    </button>
-                  ))}
-                  {env.tasks.length === 0 && <div className="task-empty">从一个想法开始。</div>}
-                  <button className="new-task" onClick={() => openDialog('new-task')}>
-                    <Plus size={12} /> 新会话
-                  </button>
-                </div>
-              </div>
-              <div className="sidebar-label">项目内容</div>
-              <div className="project-docs">
-                {project.sequences.map((s) => (
-                  <button
-                    key={s.id}
-                    className={sequenceId === s.id && doc === 'film' ? 'active' : ''}
-                    onClick={() => changeSequence(s.id)}
-                  >
-                    <Film size={14} />
-                    <span>{s.name}</span>
-                    <span className="ratio-label">
-                      {s.width > s.height ? '16:9' : s.width < s.height ? '9:16' : '1:1'}
-                    </span>
-                  </button>
-                ))}
-                <button
-                  className={doc === 'brief' ? 'active' : ''}
-                  onClick={() => {
-                    setBriefDraft(project.brief);
-                    setDoc('brief');
-                  }}
-                >
-                  <FileText size={14} />
-                  <span>创作约定</span>
-                </button>
-                <button onClick={() => openDialog('sequence')}>
-                  <Plus size={14} />
-                  <span>新建成片版本</span>
-                </button>
-              </div>
-              {projects.filter((p) => p.id !== project.id).length > 0 && (
-                <>
-                  <div className="sidebar-label recent-label">最近项目</div>
-                  {projects
-                    .filter((p) => p.id !== project.id)
-                    .slice(0, 6)
-                    .map((p) => (
-                      <button
-                        className="recent-project"
-                        key={p.id}
-                        onClick={() =>
-                          void work('打开工程', async () =>
-                            switchProject(await api<ProjectEnvelope>('project.open', { path: p.path })),
-                          )
-                        }
-                      >
-                        <ChevronRight size={11} />
-                        <Folder size={14} />
-                        <span>{p.name}</span>
-                      </button>
-                    ))}
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="asset-search">
-                <Search size={12} />
-                <input
-                  aria-label="筛选项目素材"
-                  placeholder="筛选素材…"
-                  value={assetQuery}
-                  onChange={(e) => setAssetQuery(e.target.value)}
-                />
-              </div>
-              <button className="import-zone" onClick={() => void importMedia()}>
-                <Upload size={17} />
-                <span>导入素材</span>
-                <small>或拖放到窗口</small>
-              </button>
-              <div className="sidebar-label">
-                本项目 <span>{shownAssets.length}</span>
-              </div>
-              <div className="asset-list">
-                {shownAssets.map((a) => (
-                  <div
-                    className="asset-item"
-                    key={a.id}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData('application/cocraft-asset', a.id)}
-                  >
-                    <div className="asset-thumb">
-                      {a.thumbnail ? (
-                        <img src={mediaUrl(boot.previewOrigin, a.id, true)} alt="" />
-                      ) : (
-                        <AudioLines size={20} />
-                      )}
-                    </div>
-                    <div className="asset-copy">
-                      <b title={a.name}>{a.name}</b>
-                      <small>
-                        {a.kind === 'audio' ? '音频' : a.kind === 'image' ? '图片' : '视频'} ·{' '}
-                        {a.kind === 'image'
-                          ? `${a.width || 1920} × ${a.height || 1080}`
-                          : a.duration.toFixed(1) + ' s'}
-                      </small>
-                    </div>
-                    <IconButton label={`添加 ${a.name}`} onClick={() => void addAsset(a.id)}>
-                      <Plus size={13} />
-                    </IconButton>
-                  </div>
-                ))}
-              </div>
-              <div className="sidebar-label">素材工具</div>
-              <button className="resource-link" onClick={() => setDialog('templates')}>
-                <Type size={14} /> 动态素材库 <ChevronRight size={12} />
-              </button>
-              <button className="resource-link" onClick={() => setDialog('stock')}>
-                <Search size={14} /> 搜索 Pexels 素材 <ChevronRight size={12} />
-              </button>
-              <button className="resource-link" onClick={() => openStudio()}>
-                <AudioLines size={14} /> 素材工作室 <ChevronRight size={12} />
-              </button>
-            </>
-          )}
-          <div className="sidebar-bottom">
-            <button
-              onClick={() =>
-                void work('打开工程', async () => {
-                  const e = await api<ProjectEnvelope | null>('project.open');
-                  if (e) await switchProject(e);
-                })
-              }
-            >
-              <FolderOpen size={14} /> 打开项目…
-            </button>
-            <button onClick={() => openSettings()}>
-              <SettingsIcon size={14} /> 设置 <kbd>⌘ ,</kbd>
-            </button>
-            <div className="workspace-label">
-              <span className="local-dot" /> 本地工作空间 <span>0.2</span>
-            </div>
-          </div>
-        </aside>
+        </div>
       )}
+
       <main className="workbench">
-        <div className="document-tabs">
-          {project.sequences.map((s) => (
-            <button
-              key={s.id}
-              className={doc === 'film' && s.id === sequenceId ? 'active' : ''}
-              onClick={() => changeSequence(s.id)}
-            >
-              <Film size={13} />
-              {s.name}
-              <span className="tab-dot" />
-            </button>
-          ))}
-          <button
-            className={doc === 'brief' ? 'active' : ''}
-            onClick={() => {
-              setBriefDraft(project.brief);
-              setDoc('brief');
+        {/* Inline Fork Branch Drawer (accessible from Titlebar in both Create & Edit modes) */}
+        {showStageFork && (
+          <form
+            className="sb-inline-drawer"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const newId = uid('seq');
+              const bName = stageForkName.trim() || `${sequence.name}-试剪${project.sequences.length}`;
+              await edit(`派生平行分支「${bName}」`, [
+                {
+                  type: 'forkSequenceBranch',
+                  sourceSequenceId: sequence.id,
+                  newSequenceId: newId,
+                  branchName: bName,
+                },
+              ]);
+              setStageForkName('');
+              setShowStageFork(false);
+              changeSequence(newId);
             }}
           >
-            <FileText size={13} />
-            创作约定
-          </button>
-          <button className="tab-add" aria-label="新建成片版本" onClick={() => openDialog('sequence')}>
-            <Plus size={14} />
-          </button>
-        </div>
-        {doc === 'brief' ? (
+            <GitBranch size={13} />
+            <span>从「{sequence.name} @ v{project.revision}」派生平行分支：</span>
+            <input
+              autoFocus
+              aria-label="派生分支名称"
+              placeholder="输入新分支名（如：30s紧凑版）"
+              value={stageForkName}
+              onChange={(e) => setStageForkName(e.target.value)}
+            />
+            <button type="submit" className="button tiny primary">
+              创建并切换
+            </button>
+            {!sequence.isMainBranch && project.sequences.length > 1 && (
+              <button
+                type="button"
+                className="button tiny"
+                onClick={() => {
+                  setShowStageFork(false);
+                  void edit(`将「${sequence.name}」设为主干`, [
+                    { type: 'promoteSequenceBranch', sequenceId: sequence.id },
+                  ]);
+                }}
+              >
+                将当前设为主干
+              </button>
+            )}
+            <button type="button" className="icon-button tiny" onClick={() => setShowStageFork(false)}>
+              <X size={13} />
+            </button>
+          </form>
+        )}
+
+        {/* Project Brief Drawer */}
+        {showBrief ? (
           <div className="brief-page">
             <div className="eyebrow">PROJECT BRIEF</div>
             <h1>创作约定</h1>
-            <p>这里的约定会进入每个 Agent 任务。写下目标、受众、节奏，以及你想保留的细节。</p>
+            <p>这里的约定会进入每个 Agent 任务。写下目标、受众、节奏与保留细节。</p>
             <textarea
               aria-label="创作约定"
               value={briefDraft}
@@ -1108,32 +2011,113 @@ export function App() {
               <span>
                 <FileText size={13} /> brief.md
               </span>
-              <button
-                className="button primary"
-                onClick={() =>
-                  void work('保存约定', async () => {
-                    await edit('更新创作约定', [{ type: 'updateProject', changes: { brief: briefDraft } }]);
-                    notify('创作约定已保存');
-                  })
-                }
-              >
-                <Check size={14} /> 保存约定
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="button" onClick={() => setShowBrief(false)}>
+                  返回
+                </button>
+                <button
+                  className="button primary"
+                  onClick={() =>
+                    void work('保存约定', async () => {
+                      await edit('更新创作约定', [{ type: 'updateProject', changes: { brief: briefDraft } }]);
+                      setShowBrief(false);
+                      notify('创作约定已保存');
+                    })
+                  }
+                >
+                  <Check size={14} /> 保存
+                </button>
+              </div>
             </footer>
           </div>
         ) : (
-          <>
-            <div className="viewer-bar">
+          <div className="stage-and-storyboard-host">
+            {/* Mode 1: Infinite Creation Canvas (Nodes + Bezier Wires + Storyboard Sequence) */}
+            {appMode === 'create' && (
+              <CreateCanvas
+                project={project}
+                sequence={sequence}
+                selectedClipId={selected}
+                previewOrigin={boot.previewOrigin}
+                leftOpen={showNav}
+                rightOpen={showRight}
+                rightAgentOpen={showRight && right === 'agent'}
+                floatingPrompt={prompt}
+                onFloatingPromptChange={setPrompt}
+                onFloatingSubmit={() => void send()}
+                onToggleLeft={() => setShowNav((v) => !v)}
+                onToggleRightAgent={() => {
+                  setRight('agent');
+                  setShowRight((v) => !v);
+                }}
+                onSelectClip={selectClip}
+                onSeek={seek}
+                onSwitchToEdit={() => switchMode('edit')}
+                onImportMedia={() => void importMedia()}
+                onEdit={(n, ops) => edit(n, ops).then(() => {})}
+                onUndo={() => void undo()}
+                onRedo={() => void redo()}
+                canUndo={env.canUndo}
+                canRedo={env.canRedo}
+                onPublishToLibrary={publishToLibrary}
+                onExportMaterialPack={exportMaterialPack}
+                onSaveClipsAsAsset={saveClipsAsAsset}
+                onAddRefsToChat={addRefsToChat}
+                chatRefs={chatRefs}
+                onRemoveChatRef={removeChatRef}
+                onSendCanvasInstruction={(instruction, scopeClip) => {
+                  if (scopeClip) setScope(clone(scopeClip));
+                  setRight('agent');
+                  setShowRight(true);
+                  void send(instruction, scopeClip);
+                }}
+                onOpenGeneration={(opts) => openStudio(opts)}
+                onAskAgentForShot={(shotClip, draftPrompt) => {
+                  setScope(clone(shotClip));
+                  setStrictScope(true);
+                  setPrompt(draftPrompt);
+                  setRight('agent');
+                  setShowRight(true);
+                  requestAnimationFrame(() => promptRef.current?.focus());
+                }}
+              />
+            )}
+
+            {/* Mode 2: Precision Edit Stage (kept mounted with display:none in Create mode for instant zero-flicker toggle) */}
+            <div className="viewer-bar" style={appMode !== 'edit' ? { display: 'none' } : undefined}>
               <div className="breadcrumbs">
-                <span>{project.name}</span>
-                <ChevronRight size={11} />
-                <b>{sequence.name}</b>
+                <span className="dim-meta">
+                  {sequence.width} × {sequence.height} · {sequence.fps} fps
+                </span>
               </div>
               <div className="viewer-actions">
-                <button className="version-button" onClick={() => setDialog('versions')}>
-                  <GitBranch size={12} /> v{project.revision}
-                  <ChevronDown size={10} />
-                </button>
+                <IconButton
+                  label="捕获当前画面为参考图资产"
+                  disabled={playing || sequence.clips.length === 0}
+                  onClick={() =>
+                    void work('捕获参考帧', async () => {
+                      const res = await api<{ envelope: ProjectEnvelope; asset: { id: string; name: string } }>(
+                        'stage.captureReference',
+                        { sequenceId: sequence.id, frame: frameRef.current },
+                      );
+                      accept(res.envelope);
+                      notify(`已存参考图「${res.asset.name}」`);
+                    })
+                  }
+                >
+                  <Camera size={14} />
+                </IconButton>
+                <IconButton
+                  label="画面打点引用给 Agent"
+                  active={pinMode}
+                  disabled={playing || sequence.clips.length === 0}
+                  onClick={() => {
+                    pause();
+                    setPinMode((v) => !v);
+                  }}
+                >
+                  <Crosshair size={14} />
+                </IconButton>
                 <span className="toolbar-divider" />
                 <IconButton label="撤销 ⌘Z" disabled={!env.canUndo} onClick={() => void undo()}>
                   <Undo2 size={14} />
@@ -1143,7 +2127,14 @@ export function App() {
                 </IconButton>
               </div>
             </div>
-            <div className="viewer-area">
+
+            <div
+              className="viewer-area"
+              style={appMode !== 'edit' ? { display: 'none' } : undefined}
+              onClick={(e) => {
+                if (e.target === e.currentTarget) selectClip(null);
+              }}
+            >
               <div className="preview-canvas">
                 <iframe
                   ref={iframe}
@@ -1152,21 +2143,43 @@ export function App() {
                   sandbox="allow-scripts allow-same-origin"
                   allow="autoplay"
                 />
-                <span className="preview-corner top-left" />
-                <span className="preview-corner top-right" />
-                <span className="preview-corner bottom-left" />
-                <span className="preview-corner bottom-right" />
+                <StageOverlay
+                  project={project}
+                  sequence={sequence}
+                  frame={frame}
+                  playing={playing}
+                  scrubbing={isScrubbing}
+                  selectedId={selected}
+                  pinMode={pinMode}
+                  activePin={stagePin}
+                  domBoxes={stageBoxes}
+                  onLiveTransform={handleLiveTransformCb}
+                  onSelect={selectClip}
+                  onEdit={editVoidCb}
+                  onPin={({ x, y, frame: pinFrame, clipId }) => {
+                    setStagePin({ x, y, frame: pinFrame });
+                    setPinMode(false);
+                    if (clipId) {
+                      const hit = sequence.clips.find((c) => c.id === clipId);
+                      if (hit) setScope(clone(hit));
+                      setSelected(clipId);
+                    }
+                    setRight('agent');
+                    setShowRight(true);
+                    requestAnimationFrame(() => promptRef.current?.focus());
+                    notify(`已标记画面坐标 (${x}%, ${y}%)`);
+                  }}
+                />
                 {sequence.clips.length === 0 && (
                   <div className="empty-canvas">
-                    <Mark />
                     <h2>时间线为空</h2>
-                    <p>导入素材，或让一个想法先变成画面。</p>
+                    <p>从左侧导入媒体，或切换至「创造」画布拆解分镜。</p>
                     <div>
                       <button className="button primary" onClick={() => void importMedia()}>
-                        <Upload size={14} /> 导入素材
+                        <Upload size={13} /> 导入素材
                       </button>
-                      <button className="button" onClick={() => setDialog('templates')}>
-                        <Layers size={14} /> 从内置画面开始
+                      <button className="button" onClick={() => switchMode('create')}>
+                        进入创造画布
                       </button>
                     </div>
                   </div>
@@ -1178,48 +2191,51 @@ export function App() {
                 </button>
               )}
             </div>
-            <div className="playback-bar">
+
+            <div className="playback-bar" style={appMode !== 'edit' ? { display: 'none' } : undefined}>
               <div className="playback-time">
-                <b>{timecode(frame, sequence.fps)}</b>
+                <b>
+                  <PlayheadTimecode clock={playheadClockRef.current!} fps={sequence.fps} />
+                </b>
                 <span>/ {timecode(duration, sequence.fps)}</span>
               </div>
               <div className="transport">
                 <IconButton
                   label="上一个镜头"
-                  onClick={() =>
+                  onClick={() => {
+                    const curFrame = frameRef.current;
                     seek(
                       [
                         ...sequence.clips
-                          .filter((c) => c.track === 'visual' && c.start < frame)
+                          .filter((c) => c.track === 'visual' && c.start < curFrame)
                           .map((c) => c.start),
                       ].sort((a, b) => b - a)[0] || 0,
-                    )
-                  }
+                    );
+                  }}
                 >
                   <SkipBack size={14} />
                 </IconButton>
                 <button className="play-button" aria-label={playing ? '暂停' : '播放'} onClick={play}>
-                  {playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}
+                  {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
                 </button>
                 <IconButton
                   label="下一个镜头"
-                  onClick={() =>
+                  onClick={() => {
+                    const curFrame = frameRef.current;
                     seek(
                       sequence.clips
-                        .filter((c) => c.track === 'visual' && c.start > frame)
+                        .filter((c) => c.track === 'visual' && c.start > curFrame)
                         .sort((a, b) => a.start - b.start)[0]?.start || duration - 1,
-                    )
-                  }
+                    );
+                  }}
                 >
                   <SkipForward size={14} />
                 </IconButton>
               </div>
               <div className="playback-meta">
-                <span>
-                  {sequence.width} × {sequence.height}
-                </span>
                 <IconButton
                   label={muted ? '开启声音' : '静音'}
+                  active={muted}
                   onClick={() => {
                     setMuted((v) => !v);
                     post('mute', { muted: !muted });
@@ -1227,18 +2243,36 @@ export function App() {
                 >
                   {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
                 </IconButton>
-                <IconButton
-                  label="聚焦预览"
-                  onClick={() => {
-                    setShowNav((v) => !v);
-                    setShowRight((v) => !v);
-                  }}
-                >
-                  <Maximize2 size={13} />
-                </IconButton>
+                {(() => {
+                  const isImmersive = !showNav && !showRight && !showBottom;
+                  return (
+                    <IconButton
+                      label={isImmersive ? '退出沉浸预览 (Esc)' : '沉浸预览'}
+                      active={isImmersive}
+                      onClick={() => {
+                        if (!isImmersive) {
+                          savedPanesRef.current = { nav: showNav, right: showRight, bottom: showBottom };
+                          setShowNav(false);
+                          setShowRight(false);
+                          setShowBottom(false);
+                        } else {
+                          const saved = savedPanesRef.current;
+                          const any = saved.nav || saved.right || saved.bottom;
+                          setShowNav(any ? saved.nav : true);
+                          setShowRight(any ? saved.right : true);
+                          setShowBottom(any ? saved.bottom : true);
+                        }
+                      }}
+                    >
+                      {isImmersive ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                    </IconButton>
+                  );
+                })()}
               </div>
             </div>
-            <section className="editor-panel">
+
+            {/* Dockable Bottom Timeline Panel (controlled by IDE Bottom Toggle ⬓ in BOTH Create & Edit modes!) */}
+            <section className="editor-panel" style={!showBottom ? { display: 'none' } : undefined}>
               <div
                 className="horizontal-resizer"
                 role="separator"
@@ -1254,9 +2288,9 @@ export function App() {
                 <div className="editor-tabs">
                   {[
                     ['timeline', '时间线'],
-                    ['transcript', '文稿'],
                     ['storyboard', '分镜'],
-                    ['changes', '修改'],
+                    ['transcript', '文稿'],
+                    ['changes', '历史'],
                   ].map(([id, title]) => (
                     <button key={id} className={view === id ? 'active' : ''} onClick={() => setView(id)}>
                       {title}
@@ -1265,8 +2299,30 @@ export function App() {
                   ))}
                 </div>
                 <div className="timeline-tools">
-                  <IconButton label="分割片段 ⌘B" disabled={!clip || clip.locked} onClick={split}>
-                    <Scissors size={14} />
+                  <div className="tl-mode-group" role="group" aria-label="时间线工具模式">
+                    <button
+                      type="button"
+                      className={`tl-mode-btn ${timelineTool === 'select' ? 'active' : ''}`}
+                      title="选择与拖拽工具 (V)"
+                      aria-label="选择工具 V"
+                      aria-pressed={timelineTool === 'select'}
+                      onClick={() => setTimelineTool('select')}
+                    >
+                      <MousePointer2 size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`tl-mode-btn ${timelineTool === 'razor' ? 'active' : ''}`}
+                      title="刀片切割工具：点击片段直接切开 (B)"
+                      aria-label="刀片切割工具 B"
+                      aria-pressed={timelineTool === 'razor'}
+                      onClick={() => setTimelineTool((m) => (m === 'razor' ? 'select' : 'razor'))}
+                    >
+                      <ScissorsLineDashed size={12} />
+                    </button>
+                  </div>
+                  <IconButton label="在播放头分割片段 ⌘B" disabled={!clip || clip.locked} onClick={split}>
+                    <Scissors size={13} />
                   </IconButton>
                   <IconButton label="删除片段 ⌫" disabled={!clip || clip.locked} onClick={() => remove()}>
                     <Trash2 size={13} />
@@ -1289,51 +2345,77 @@ export function App() {
                   >
                     {clip?.locked ? <Lock size={13} /> : <Unlock size={13} />}
                   </IconButton>
+                  <IconButton
+                    label="保存为项目资产"
+                    disabled={!clip && selectedIds.length === 0}
+                    onClick={saveSelectedClipsAsAssetCb}
+                  >
+                    <BookmarkPlus size={13} />
+                  </IconButton>
                   <span className="toolbar-divider" />
                   <IconButton label="吸附" active={snap} onClick={() => setSnap((v) => !v)}>
                     <Magnet size={13} />
                   </IconButton>
                   <IconButton
                     label="缩小时间线"
-                    disabled={zoom <= 100}
-                    onClick={() => setZoom((z) => Math.max(100, z - 50))}
+                    disabled={zoom <= 50}
+                    onClick={() => setZoom((z) => Math.max(50, Math.round(z / 1.4)))}
                   >
                     <ZoomOut size={13} />
                   </IconButton>
+                  {zoom !== 100 && (
+                    <button
+                      type="button"
+                      className="zoom-reset-btn"
+                      title="适应窗口 (100%)"
+                      onClick={() => setZoom(100)}
+                    >
+                      {zoom}%
+                    </button>
+                  )}
                   <IconButton
                     label="放大时间线"
-                    disabled={zoom >= 400}
-                    onClick={() => setZoom((z) => Math.min(400, z + 50))}
+                    disabled={zoom >= 3200}
+                    onClick={() => setZoom((z) => Math.min(3200, Math.round(z * 1.4)))}
                   >
                     <ZoomIn size={13} />
                   </IconButton>
-                  <button className="add-element" onClick={() => setDialog('templates')}>
-                    <Plus size={13} /> 添加
-                  </button>
                 </div>
               </div>
               {view === 'timeline' && (
                 <Timeline
                   project={project}
                   sequence={sequence}
-                  frame={frame}
+                  playheadClock={playheadClockRef.current!}
                   selected={selected}
+                  selectedIds={selectedIds}
                   onSelect={selectClip}
                   onSeek={seek}
-                  onEdit={(n, o) => void edit(n, o)}
-                  onAssetDrop={(id, f) => void addAsset(id, f)}
+                  onEndScrub={endScrub}
+                  onEdit={editVoidCb}
+                  onAssetDrop={addAssetCb}
                   mediaOrigin={boot.previewOrigin}
                   zoom={zoom}
+                  onZoomChange={setZoom}
                   snap={snap}
+                  toolMode={timelineTool}
                 />
               )}
               {view === 'transcript' && (
                 <div className="transcript-panel">
                   <div className="sub-toolbar">
                     <span>
-                      {sequence.clips.filter((c) => c.kind === 'caption').length} 条字幕 ·
+                      {sequence.clips.filter((c) => c.kind === 'caption').length} 条字幕
+                      {transcribedAssets.length > 0 ? ` · ${transcribedAssets.length} 份已缓存源文稿` : ''} ·
                       点击时间跳转，编辑文字后自动保存
                     </span>
+                    <input
+                      className="script-search-input"
+                      aria-label="检索文稿与字幕"
+                      placeholder="搜索词句…"
+                      value={scriptQuery}
+                      onChange={(e) => setScriptQuery(e.target.value)}
+                    />
                     <button
                       className="button tiny"
                       onClick={() =>
@@ -1359,8 +2441,99 @@ export function App() {
                       导出 SRT
                     </button>
                   </div>
+                  {transcribedAssets.map((a) => {
+                    const matchedSegs = (a.transcript?.segments || []).filter(
+                      (seg) => !scriptQuery.trim() || seg.text.toLowerCase().includes(scriptQuery.trim().toLowerCase()),
+                    );
+                    return (
+                      <details className="source-transcript-card" key={a.id} open={Boolean(scriptQuery.trim())}>
+                        <summary>
+                          <AudioLines size={13} />
+                          <b>源素材转录：{a.name}</b>
+                          <small>{a.transcript?.segments.length || 0} 个时间段</small>
+                          <button
+                            type="button"
+                            className="button tiny"
+                            style={{ marginLeft: 'auto' }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const caps = transcriptToCaptionClips(sequence, a);
+                              if (!caps.length) return;
+                              void edit(
+                                `由「${a.name}」转录生成字幕`,
+                                caps.map((c) => ({ type: 'addClip', sequenceId, clip: c })),
+                              );
+                            }}
+                          >
+                            + 铺入时间线字幕
+                          </button>
+                        </summary>
+                        {matchedSegs.length > 0 ? (
+                          <div className="transcript-segments-list">
+                            {matchedSegs.map((seg, idx) => (
+                              <div className="transcript-seg-row" key={idx}>
+                                <span>{seg.start.toFixed(1)}s</span>
+                                <p>{seg.text}</p>
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() => {
+                                    const fps = sequence.fps;
+                                    const srcIn = Math.max(0, Math.floor(seg.start * fps));
+                                    const dur = Math.max(8, Math.round((seg.end - seg.start) * fps));
+                                    const tail = Math.max(
+                                      frame,
+                                      ...sequence.clips
+                                        .filter((x) => x.track === (a.kind === 'audio' ? 'audio' : 'visual'))
+                                        .map((x) => x.start + x.duration),
+                                      0,
+                                    );
+                                    const mediaClip = {
+                                      ...newClip(a.kind === 'audio' ? 'audio' : 'video', tail, a.id),
+                                      name: seg.text.slice(0, 18) || a.name,
+                                      sourceIn: srcIn,
+                                      duration: dur,
+                                    };
+                                    const capClip = {
+                                      ...newClip('caption', tail),
+                                      name: seg.text.slice(0, 18) || '字幕',
+                                      duration: dur,
+                                      props: {
+                                        text: seg.text,
+                                        fontSize: 44,
+                                        color: '#ffffff',
+                                        position: 'bottom' as const,
+                                        background: '#00000085',
+                                        animation: 'none' as const,
+                                      },
+                                    };
+                                    void edit('插入文稿切片', [
+                                      { type: 'addClip', sequenceId, clip: mediaClip },
+                                      { type: 'addClip', sequenceId, clip: capClip },
+                                    ]);
+                                  }}
+                                >
+                                  + 切片入轨
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p>{a.transcript?.text}</p>
+                        )}
+                      </details>
+                    );
+                  })}
                   {sequence.clips
-                    .filter((c) => c.kind === 'caption')
+                    .filter(
+                      (c) =>
+                        c.kind === 'caption' &&
+                        (!scriptQuery.trim() ||
+                          String(c.props.text || '')
+                            .toLowerCase()
+                            .includes(scriptQuery.trim().toLowerCase())),
+                    )
                     .sort((a, b) => a.start - b.start)
                     .map((c) => (
                       <div
@@ -1402,11 +2575,11 @@ export function App() {
                         </IconButton>
                       </div>
                     ))}
-                  {!sequence.clips.some((c) => c.kind === 'caption') && (
+                  {!sequence.clips.some((c) => c.kind === 'caption') && transcribedAssets.length === 0 && (
                     <div className="panel-empty">
                       <FileText size={23} />
                       <p>把对白与画面连接起来。</p>
-                      <span>导入 SRT 字幕，或添加一条字幕开始编辑。</span>
+                      <span>导入 SRT 字幕，或对音视频素材发起转录。</span>
                       <button className="button tiny" onClick={() => void addCaption()}>
                         <Plus size={12} /> 添加字幕
                       </button>
@@ -1415,37 +2588,26 @@ export function App() {
                 </div>
               )}
               {view === 'storyboard' && (
-                <div className="storyboard-panel">
-                  {sequence.clips
-                    .filter((c) => c.track === 'visual')
-                    .sort((a, b) => a.start - b.start)
-                    .map((c, i) => {
-                      const a = project.assets.find((a) => a.id === c.assetId);
-                      return (
-                        <button
-                          className={`storyboard-card ${selected === c.id ? 'selected' : ''}`}
-                          key={c.id}
-                          onClick={() => {
-                            selectClip(c.id);
-                            seek(c.start);
-                          }}
-                        >
-                          <div>
-                            {a?.thumbnail ? (
-                              <img src={mediaUrl(boot.previewOrigin, a.id, true)} alt="" />
-                            ) : (
-                              <Layers size={28} />
-                            )}
-                            <span>{String(i + 1).padStart(2, '0')}</span>
-                          </div>
-                          <b>{c.name}</b>
-                          <small>
-                            {timecode(c.start, sequence.fps)} · {(c.duration / sequence.fps).toFixed(1)} s
-                          </small>
-                        </button>
-                      );
-                    })}
-                </div>
+                <StoryboardStudio
+                  project={project}
+                  sequence={sequence}
+                  selectedClipId={selected}
+                  previewOrigin={boot.previewOrigin}
+                  onSelectClip={selectClip}
+                  onSeek={seek}
+                  onEdit={(n, ops) => edit(n, ops)}
+                  onOpenGenerationForShot={(genPrompt, refAssetId) => {
+                    openStudio({ use: 'image', prompt: genPrompt, referenceAssetId: refAssetId });
+                  }}
+                  onAskAgentForShot={(targetClip, text) => {
+                    setScope(clone(targetClip));
+                    setStrictScope(true);
+                    setPrompt(text);
+                    setRight('agent');
+                    setShowRight(true);
+                    requestAnimationFrame(() => promptRef.current?.focus());
+                  }}
+                />
               )}
               {view === 'changes' && (
                 <div className="changes-panel">
@@ -1460,6 +2622,22 @@ export function App() {
                       </div>
                       <span>v{r.revision}</span>
                       <small>{dateLabel(r.createdAt)}</small>
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          void work('从历史版本派生分支', async () => {
+                            const res = await api<{ envelope: ProjectEnvelope; newSequenceId: string }>(
+                              'project.forkFromRevision',
+                              { revision: r.revision, sequenceId: sequence.id },
+                            );
+                            accept(res.envelope);
+                            changeSequence(res.newSequenceId);
+                            notify(`已从 v${r.revision} 派生平行试剪分支`);
+                          })
+                        }
+                      >
+                        派生分支
+                      </button>
                       {r.revision === project.revision ? (
                         <span className="current-label">当前</span>
                       ) : (
@@ -1479,34 +2657,8 @@ export function App() {
                   ))}
                 </div>
               )}
-              <div className="selection-bar">
-                <span>
-                  {clip ? (
-                    <>
-                      <span className={`selection-dot ${clip.kind}`} />
-                      {clip.name}
-                      <span className="selection-range">
-                        {timecode(clip.start, sequence.fps)} —{' '}
-                        {timecode(clip.start + clip.duration, sequence.fps)}
-                      </span>
-                      {clip.locked && <Lock size={11} />}
-                    </>
-                  ) : (
-                    <>
-                      <span className="muted-dot" />
-                      {sequence.clips.length} 个片段
-                      <span className="selection-range">拖动调整顺序 · 拖动边缘调整入出点</span>
-                    </>
-                  )}
-                </span>
-                {clip && (
-                  <button onClick={reference}>
-                    引用给 Agent <ArrowUpRight size={12} />
-                  </button>
-                )}
-              </div>
             </section>
-          </>
+          </div>
         )}
       </main>
       {showRight && (
@@ -1522,78 +2674,186 @@ export function App() {
             onPointerDown={(e) => resize(e, 'agent')}
           />
           <div className="right-tabs">
-            <button className={right === 'agent' ? 'active' : ''} onClick={() => setRight('agent')}>
-              <Mark small /> Agent
-            </button>
             <button className={right === 'inspector' ? 'active' : ''} onClick={() => setRight('inspector')}>
               <SlidersHorizontal size={13} /> 属性
             </button>
-            <IconButton label="新建 Agent 任务" onClick={() => openDialog('new-task')}>
-              <Plus size={14} />
-            </IconButton>
+            <button className={right === 'agent' ? 'active' : ''} onClick={() => setRight('agent')}>
+              <Mark small /> Agent
+            </button>
           </div>
           {right === 'inspector' ? (
             <Inspector
               clip={clip}
+              selectedClipIds={selectedIds}
               sequence={sequence}
               project={project}
-              onEdit={(n, o) => void edit(n, o)}
-              onReference={reference}
-              onCode={() => {
-                setCodeComponent(project.components.find((c) => c.id === clip?.componentId));
-                setDialog('code');
-              }}
+              previewOrigin={boot.previewOrigin}
+              onEdit={editVoidCb}
+              onReference={referenceCb}
+              onSaveAsAsset={saveSelectedClipsAsAssetCb}
+              onRelink={relinkCb}
+              onClearSelect={clearSelectCb}
+              onCode={openCodeCb}
             />
           ) : (
             <div className="agent-panel">
               <div className="agent-task-heading">
-                <div>
-                  <b>{task?.name || '新会话'}</b>
-                  <small>
-                    <Film size={11} />
-                    {sequence.name}
+                <div className="agent-session-wrap" style={{ minWidth: 0, flex: 1 }}>
+                  <div className="agent-session-row">
+                    <button
+                      type="button"
+                      className="agent-session-trigger"
+                      aria-label="切换对话会话"
+                      aria-expanded={openComposerMenu === 'session'}
+                      onClick={() =>
+                        setOpenComposerMenu((m) => (m === 'session' ? null : 'session'))
+                      }
+                    >
+                      <span className="agent-session-title">{task?.name || '新会话'}</span>
+                      <ChevronDown size={12} />
+                    </button>
+                  </div>
+                  {openComposerMenu === 'session' && (
+                    <div className="agent-session-popover" role="menu" aria-label="对话会话列表">
+                      <button
+                        type="button"
+                        className="session-pop-new"
+                        onClick={() => {
+                          setOpenComposerMenu(null);
+                          openDialog('new-task');
+                        }}
+                      >
+                        <Plus size={12} />
+                        <span>新建对话</span>
+                      </button>
+                      {env.tasks.length > 0 && <div className="session-pop-sep" />}
+                      <div className="session-pop-list">
+                        {env.tasks.map((t) => {
+                          const isCurrent = t.id === task?.id;
+                          const seqLabel =
+                            project.sequences.find((s) => s.id === t.sequenceId)?.name || sequence.name;
+                          const isRun = t.status === 'running';
+                          return (
+                            <div
+                              key={t.id}
+                              className={`session-pop-item ${isCurrent ? 'active' : ''}`}
+                            >
+                              <button
+                                type="button"
+                                className="session-pop-main"
+                                onClick={() => {
+                                  setOpenComposerMenu(null);
+                                  setTaskId(t.id);
+                                  if (t.sequenceId !== sequenceId) changeSequence(t.sequenceId);
+                                }}
+                              >
+                                <span className="session-pop-check">
+                                  {isRun ? (
+                                    <Spinner />
+                                  ) : isCurrent ? (
+                                    <Check size={12} />
+                                  ) : null}
+                                </span>
+                                <span className="session-pop-meta">
+                                  <b>{t.name}</b>
+                                  <small>
+                                    {seqLabel}
+                                    {t.usage && t.usage.totalTokens > 0
+                                      ? ` · ${formatCompactTokens(t.usage.totalTokens)} tok`
+                                      : ''}
+                                  </small>
+                                </span>
+                              </button>
+                              <div className="session-pop-actions">
+                                <button
+                                  type="button"
+                                  aria-label={`重命名会话 ${t.name}`}
+                                  title="重命名"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    setOpenComposerMenu(null);
+                                    setTaskId(t.id);
+                                    setFormName(t.name);
+                                    setDialog('rename-task');
+                                  }}
+                                >
+                                  <MoreHorizontal size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label={`删除会话 ${t.name}`}
+                                  title="删除"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    setOpenComposerMenu(null);
+                                    void work('删除会话', async () => {
+                                      const next = await api<ProjectEnvelope>('tasks.delete', { id: t.id });
+                                      accept(next);
+                                      if (taskId === t.id) setTaskId(next.tasks[0]?.id || '');
+                                    });
+                                  }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  <small className="agent-task-submeta">
+                    <GitBranch size={11} />
+                    <span>{sequence.name}</span>
                     <span>·</span>
-                    {task?.status === 'running'
-                      ? '正在工作'
-                      : task?.id && task.id === connectingTask
-                        ? '正在连接模型…'
-                        : '随时可以开始'}
+                    <span>
+                      {task?.status === 'running'
+                        ? '正在工作'
+                        : task?.id && task.id === connectingTask
+                          ? '正在连接模型…'
+                          : '就绪'}
+                    </span>
+                    {task?.usage && task.usage.totalTokens > 0 && (
+                      <>
+                        <span>·</span>
+                        <span>{formatCompactTokens(task.usage.totalTokens)} tok</span>
+                      </>
+                    )}
                   </small>
                 </div>
-                {task?.status === 'running' || (!!task?.id && task.id === connectingTask) ? (
-                  <button className="button tiny stop" onClick={() => void api('agent.stop', { taskId })}>
-                    <Square size={10} fill="currentColor" /> 停止
-                  </button>
-                ) : (
-                  task && (
-                    <IconButton
-                      label="重命名会话"
-                      onClick={() => {
-                        setFormName(task.name);
-                        setDialog('rename-task');
-                      }}
-                    >
-                      <MoreHorizontal size={16} />
-                    </IconButton>
-                  )
-                )}
+                <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                  <IconButton label="新建 Agent 任务" onClick={() => openDialog('new-task')}>
+                    <Plus size={14} />
+                  </IconButton>
+                  {(task?.status === 'running' || (!!task?.id && task.id === connectingTask)) && (
+                    <button className="button tiny stop" onClick={() => void api('agent.stop', { taskId })}>
+                      <Square size={10} fill="currentColor" /> 停止
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="agent-scroll">
-                {(!task || task.messages.length === 0) && (
+                {(!task || task.messages.length === 0) && !stream[taskId] && !thinkingStream[taskId] && (
                   <div className="agent-welcome">
                     <div className="welcome-mark">
                       <Mark />
                     </div>
-                    <h2>想怎样剪这条片？</h2>
-                    <p>可以从素材、某个片段或一段新画面开始。</p>
+                    <h2>想生产什么资产或镜头？</h2>
+                    <p>输入 @ 引用角色状态与媒体、# 按自定义标签筛选、/ 选用剪辑规范或新建分支试剪。</p>
                     <div className="prompt-suggestions">
                       {[
-                        ['让开头更有吸引力', '分析当前素材，优化开场三秒的叙事与节奏，并直接完成修改。'],
                         [
-                          '做一个更好的动态片头',
-                          '制作一个专业的动态片头，结合当前内容选择合适的构图和节奏，保留可编辑参数。',
+                          '新建分支大胆试剪',
+                          '/新建分支试剪 在不影响主干的前提下，帮我重新编排一版节奏更紧凑的剪辑方案。',
                         ],
-                        ['整理一版竖屏预告', '基于主片新建一份 9:16 竖屏版本，重新安排标题位置，保留主片。'],
+                        [
+                          '生产一段动态逻辑图解',
+                          '为当前成片主题制作一段清晰可改字的分步逻辑与数据对比动态组件，并放入时间线。',
+                        ],
+                        [
+                          '整理项目资产与标签',
+                          '查看当前项目资产，按内容用途打上清晰的结构化标签并整理镜头顺序。',
+                        ],
                       ].map(([title, text]) => (
                         <button
                           key={title}
@@ -1607,67 +2867,23 @@ export function App() {
                         </button>
                       ))}
                     </div>
-                    <div className="agent-capabilities">
-                      <span>
-                        <Scissors size={11} /> 剪辑
-                      </span>
-                      <span>
-                        <Code2 size={12} /> 编码
-                      </span>
-                      <span>
-                        <Layers size={11} /> Skills
-                      </span>
-                    </div>
                   </div>
                 )}
-                {task?.messages.map((m) =>
-                  m.role === 'tool' ? (
-                    m.status === 'tool-start' ? (
-                      <details className="tool-message" key={m.id}>
-                        <summary>
-                          <TerminalIcon />
-                          <span>
-                            {(
-                              {
-                                read: '读取文件',
-                                write: '编写文件',
-                                edit: '编辑文件',
-                                bash: '运行脚本',
-                                read_project: '读取工程',
-                                publish_edit: '发布剪辑修改',
-                                compile_component: '编译画面组件',
-                                preview_frame: '检查预览帧',
-                              } as Record<string, string>
-                            )[m.tool || ''] || m.tool}
-                          </span>
-                          <ChevronRight size={11} />
-                        </summary>
-                        <pre>{m.text}</pre>
-                      </details>
-                    ) : null
-                  ) : (
-                    <div className={`message ${m.role}`} key={m.id}>
-                      {m.role === 'assistant' && (
-                        <div className="assistant-label">
-                          <Mark small /> CoCraft
-                        </div>
-                      )}
-                      <Markdown text={m.text} />
-                    </div>
-                  ),
-                )}
-                {!!stream[taskId] && (
-                  <div className="message assistant streaming">
-                    <div className="assistant-label">
-                      <Mark small /> CoCraft
-                    </div>
-                    <Markdown text={stream[taskId]} />
-                  </div>
-                )}
+                <AgentThread
+                  messages={task?.messages || []}
+                  liveText={stream[taskId] || ''}
+                  liveThinking={thinkingStream[taskId] || ''}
+                  isRunning={task?.status === 'running'}
+                  dateLabel={dateLabel}
+                  onSeekTimecode={(sec) => {
+                    pause();
+                    seek(Math.round(sec * sequence.fps));
+                  }}
+                />
                 {task?.status === 'running' && (
                   <div className="agent-working">
                     <Spinner />
-                    <span>{toolState[taskId] || '正在思考与创作…'}</span>
+                    <span>{TOOL_LABELS[toolState[taskId]] || toolState[taskId] || '正在思考与创作…'}</span>
                   </div>
                 )}
                 <div ref={messagesEnd} />
@@ -1681,25 +2897,190 @@ export function App() {
                     <span className="muted-dot" /> 连接模型，开启 Agent 创作 <ArrowUpRight size={11} />
                   </button>
                 )}
-                <div className="composer">
-                  {scope && (
-                    <div className="scope-chip">
-                      <Film size={11} />
-                      <span>{scope.name}</span>
-                      <button aria-label="移除片段引用" onClick={() => setScope(null)}>
-                        <X size={10} />
-                      </button>
+                <div
+                  className="composer"
+                  onDragOver={(e) => {
+                    if (e.dataTransfer?.types?.includes('Files')) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }
+                  }}
+                  onDrop={handleComposerDrop}
+                >
+                  {(scope || stagePin || chatRefs.length > 0 || activeComposerSkills.length > 0) && (
+                    <div className="scope-bar">
+                      {activeComposerSkills.map((sk) => (
+                        <div key={sk} className="scope-chip skill">
+                          <span>/{friendlySkillTitle(sk)}</span>
+                          <button
+                            type="button"
+                            aria-label={`移除规范 ${friendlySkillTitle(sk)}`}
+                            onClick={() =>
+                              setActiveComposerSkills((prev) => prev.filter((x) => x !== sk))
+                            }
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                      {scope && (
+                        <div className="scope-chip">
+                          <Film size={11} />
+                          <span>{scope.name}</span>
+                          <button
+                            type="button"
+                            className={`scope-strict-toggle ${strictScope ? 'active' : ''}`}
+                            title="开启后强制要求 Agent 只允许修改此片段"
+                            onClick={() => setStrictScope((v) => !v)}
+                          >
+                            {strictScope ? '仅改此处' : '参考'}
+                          </button>
+                          <button aria-label="移除片段引用" onClick={() => setScope(null)}>
+                            <X size={10} />
+                          </button>
+                        </div>
+                      )}
+                      {stagePin && (
+                        <div className="scope-chip pin">
+                          <Crosshair size={11} />
+                          <span>
+                            坐标 ({stagePin.x}%, {stagePin.y}%)
+                          </span>
+                          <button aria-label="移除画面坐标" onClick={() => setStagePin(undefined)}>
+                            <X size={10} />
+                          </button>
+                        </div>
+                      )}
+                      {chatRefs.map((cr) => (
+                        <div key={cr.key} className="scope-chip">
+                          <span>@{cr.label}</span>
+                          <button aria-label={`移除引用 ${cr.label}`} onClick={() => removeChatRef(cr.key)}>
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   )}
+                  {composerAttachments.length > 0 && (
+                    <div className="composer-attachments" aria-label="已附带文件">
+                      {composerAttachments.map((att) => (
+                        <div key={att.id} className={`composer-att-chip ${att.kind}`}>
+                          {att.previewDataUrl ? (
+                            <img src={att.previewDataUrl} alt={att.name} className="composer-att-thumb" />
+                          ) : (
+                            <span className="composer-att-icon">
+                              {att.kind === 'video' ? (
+                                <Film size={12} />
+                              ) : att.kind === 'audio' ? (
+                                <AudioLines size={12} />
+                              ) : att.kind === 'image' ? (
+                                <ImageIcon size={12} />
+                              ) : (
+                                <FileText size={12} />
+                              )}
+                            </span>
+                          )}
+                          <span className="composer-att-name" title={att.path}>
+                            {att.name}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={`移除附件 ${att.name}`}
+                            onClick={() =>
+                              setComposerAttachments((prev) => prev.filter((x) => x.id !== att.id))
+                            }
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(() => {
+                    const match = prompt.match(/(?:^|\s)([@#/][^\s]*)$/);
+                    if (!match) return null;
+                    const tokenPrefix = match[1];
+                    const trigger = tokenPrefix[0] as '@' | '#' | '/';
+                    const keyword = tokenPrefix.slice(1).toLowerCase();
+                    const candidates = buildMentionCandidates(project, sequence, boot.skills)
+                      .filter(
+                        (c) =>
+                          c.trigger === trigger &&
+                          (!keyword ||
+                            c.label.toLowerCase().includes(keyword) ||
+                            c.token.toLowerCase().includes(keyword)),
+                      )
+                      .slice(0, 8);
+                    if (!candidates.length) return null;
+                    const safeIdx = Math.min(mentionIndex, candidates.length - 1);
+                    return (
+                      <div className="mention-popover" role="listbox" aria-label="引用建议">
+                        {candidates.map((cand, cIdx) => (
+                          <button
+                            key={cand.token}
+                            type="button"
+                            role="option"
+                            aria-selected={cIdx === safeIdx}
+                            className={cIdx === safeIdx ? 'active' : ''}
+                            onMouseDown={(ev) => {
+                              ev.preventDefault();
+                              applyMentionCandidate(cand);
+                            }}
+                          >
+                            <b>{cand.label}</b>
+                            <small>{cand.sublabel}</small>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   <textarea
                     ref={promptRef}
                     aria-label="给 Agent 的指令"
                     placeholder={
-                      task?.status === 'running' ? '补充方向，随时打断…' : '描述你想要的画面或修改…'
+                      task?.status === 'running'
+                        ? '补充方向，随时打断…'
+                        : '描述画面或修改（输入 @ 引用、/ 选规范，可粘贴/拖放图片）…'
                     }
                     value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
+                    onPaste={handleComposerPaste}
+                    onChange={(e) => {
+                      setPrompt(e.target.value);
+                      setMentionIndex(0);
+                    }}
                     onKeyDown={(e) => {
+                      const match = prompt.match(/(?:^|\s)([@#/][^\s]*)$/);
+                      if (match && !e.nativeEvent.isComposing) {
+                        const trigger = match[1][0] as '@' | '#' | '/';
+                        const keyword = match[1].slice(1).toLowerCase();
+                        const candidates = buildMentionCandidates(project, sequence, boot.skills)
+                          .filter(
+                            (c) =>
+                              c.trigger === trigger &&
+                              (!keyword ||
+                                c.label.toLowerCase().includes(keyword) ||
+                                c.token.toLowerCase().includes(keyword)),
+                          )
+                          .slice(0, 8);
+                        if (candidates.length > 0) {
+                          if (e.key === 'ArrowDown') {
+                            e.preventDefault();
+                            setMentionIndex((i) => (i + 1) % candidates.length);
+                            return;
+                          }
+                          if (e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            setMentionIndex((i) => (i - 1 + candidates.length) % candidates.length);
+                            return;
+                          }
+                          if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                            e.preventDefault();
+                            const picked = candidates[Math.min(mentionIndex, candidates.length - 1)];
+                            applyMentionCandidate(picked);
+                            return;
+                          }
+                        }
+                      }
                       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                         e.preventDefault();
                         void send();
@@ -1707,63 +3088,130 @@ export function App() {
                     }}
                   />
                   <div className="composer-bottom">
-                    <div className="composer-model">
-                      <span className={chatConnected ? 'connected-dot' : 'muted-dot'} />
-                      <select
-                        aria-label="会话模型"
-                        value={modelOverride}
-                        disabled={task?.status === 'running' || (!!task?.id && task.id === connectingTask)}
-                        onChange={(e) => {
-                          if (e.target.value === ':settings') openSettings('models');
-                          else {
-                            const value = e.target.value;
-                            setModelOverride(value);
-                            if (task)
-                              void work('更新会话模型', async () => {
-                                try {
-                                  const updated = await api<Task>('tasks.model', {
-                                    id: task.id,
-                                    modelId: value,
-                                  });
-                                  const current = envRef.current;
-                                  if (current?.project.id === project.id)
-                                    accept({
-                                      ...current,
-                                      tasks: current.tasks.map((t) => (t.id === updated.id ? updated : t)),
-                                    });
-                                } catch (error) {
-                                  setModelOverride(task.modelId || '');
-                                  throw error;
-                                }
-                              });
-                          }
-                        }}
+                    <div className="composer-tools-left">
+                      <button
+                        type="button"
+                        className="composer-icon-btn"
+                        aria-label="添加附件"
+                        title="添加参考图片、音视频或文稿 (支持直接粘贴截图与拖放文件)"
+                        onClick={() => void attachFilesToComposer()}
                       >
-                        <option value="">
-                          {selectedModel(settings, 'agent', project.modelDefaults)?.name || '选择模型'}
-                        </option>
-                        {settings.models
-                          .filter((m) => m.capabilities.includes('agent'))
-                          .map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name} · {settings.providers.find((p) => p.id === m.providerId)?.name}
-                            </option>
-                          ))}
-                        <option value=":settings">管理模型…</option>
-                      </select>
+                        <Paperclip size={13} />
+                      </button>
+
+                      <div className="composer-popover-anchor">
+                        <button
+                          type="button"
+                          className="composer-pill-btn"
+                          aria-label="会话模型"
+                          aria-expanded={openComposerMenu === 'model'}
+                          disabled={
+                            task?.status === 'running' || (!!task?.id && task.id === connectingTask)
+                          }
+                          onClick={() =>
+                            setOpenComposerMenu((m) => (m === 'model' ? null : 'model'))
+                          }
+                        >
+                          <span className={chatConnected ? 'connected-dot' : 'muted-dot'} />
+                          <span className="composer-pill-label">{chatModel?.name || '选择模型'}</span>
+                          <ChevronDown size={11} />
+                        </button>
+                        {openComposerMenu === 'model' && (
+                          <div className="composer-popover" role="menu" aria-label="选择会话模型">
+                            {agentModels.map((m) => {
+                              const pName =
+                                settings.providers.find((p) => p.id === m.providerId)?.name || '';
+                              const active = chatModel?.id === m.id;
+                              return (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  className={active ? 'active' : ''}
+                                  onClick={() => selectAgentModel(m.id)}
+                                >
+                                  <span className="pop-check">{active && <Check size={12} />}</span>
+                                  <span className="pop-text">
+                                    <b>{m.name}</b>
+                                    {pName && <small>{pName}</small>}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                            {agentModels.length > 0 && <div className="pop-sep" />}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenComposerMenu(null);
+                                openSettings('models');
+                              }}
+                            >
+                              <span className="pop-check" />
+                              <span className="pop-text">
+                                <b>管理模型…</b>
+                              </span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="composer-popover-anchor">
+                        <button
+                          type="button"
+                          className="composer-pill-btn"
+                          aria-label="思考深度"
+                          title="调节模型推理 / 思考深度"
+                          aria-expanded={openComposerMenu === 'thinking'}
+                          disabled={
+                            task?.status === 'running' || (!!task?.id && task.id === connectingTask)
+                          }
+                          onClick={() =>
+                            setOpenComposerMenu((m) => (m === 'thinking' ? null : 'thinking'))
+                          }
+                        >
+                          <Brain size={12} />
+                          <span className="composer-pill-label">
+                            {THINKING_OPTIONS.find((o) => o.id === thinkingLevel)?.label || '中'}
+                          </span>
+                          <ChevronDown size={11} />
+                        </button>
+                        {openComposerMenu === 'thinking' && (
+                          <div className="composer-popover" role="menu" aria-label="选择思考深度">
+                            {THINKING_OPTIONS.map((opt) => {
+                              const active = thinkingLevel === opt.id;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  className={active ? 'active' : ''}
+                                  onClick={() => {
+                                    setThinkingLevel(opt.id);
+                                    localStorage.setItem('cc-thinking-level', opt.id);
+                                    setOpenComposerMenu(null);
+                                  }}
+                                >
+                                  <span className="pop-check">{active && <Check size={12} />}</span>
+                                  <span className="pop-text">
+                                    <b>{opt.label}</b>
+                                    <small>{opt.hint}</small>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </div>
+
                     <button
+                      type="button"
                       className="send-button"
                       aria-label="发送给 Agent"
-                      disabled={!prompt.trim()}
+                      disabled={!prompt.trim() && composerAttachments.length === 0}
                       onClick={() => void send()}
                     >
-                      <ArrowUp size={16} />
+                      <ArrowUp size={15} />
                     </button>
                   </div>
-                </div>
-                <div className="composer-note">
-                  <Lock size={10} /> 锁定的片段始终由你掌控<span>↵ 发送</span>
                 </div>
               </div>
             </div>
@@ -1775,6 +3223,19 @@ export function App() {
           <span className={busy ? 'busy-dot' : 'local-dot'} />
           {busy || '所有修改已保存'}
           {pendingVersion && <span>· 预览固定在 v{previewProject?.revision}</span>}
+          {appMode === 'edit' && clip && (
+            <span className="statusbar-clip-ctx">
+              <span className={`selection-dot ${clip.kind}`} />
+              <b>{clip.name}</b>
+              <span>
+                {timecode(clip.start, sequence.fps)}—{timecode(clip.start + clip.duration, sequence.fps)}
+              </span>
+              {clip.locked && <Lock size={10} />}
+              <button type="button" className="statusbar-ref-btn" onClick={reference}>
+                引用给 Agent <ArrowUpRight size={11} />
+              </button>
+            </span>
+          )}
         </div>
         <div>
           {runningJob && (
@@ -1787,9 +3248,7 @@ export function App() {
             <Folder size={11} /> 本地工程
           </button>
           <span className="status-separator" />
-          <span>{sequence.fps} fps</span>
-          <span>SDR</span>
-          <button onClick={() => openDialog('command')}>
+          <button onClick={() => openDialog('command')} title="快速命令与搜索 (⌘K)">
             <Command size={11} />
           </button>
         </div>
@@ -1814,9 +3273,19 @@ export function App() {
         <div className="jobs-popover">
           <header>
             <b>后台作业</b>
-            <IconButton label="关闭后台作业" onClick={() => setJobsOpen(false)}>
-              <X size={14} />
-            </IconButton>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {jobs.some((j) => j.status !== 'running' && j.status !== 'queued') && (
+                <button
+                  className="text-button"
+                  onClick={() => void api<Job[]>('jobs.clear').then(setJobs)}
+                >
+                  清理已完成
+                </button>
+              )}
+              <IconButton label="关闭后台作业" onClick={() => setJobsOpen(false)}>
+                <X size={14} />
+              </IconButton>
+            </div>
           </header>
           {jobs.length === 0 ? (
             <div className="jobs-empty">导出、生成和分析作业会在这里显示。</div>
@@ -1910,6 +3379,19 @@ export function App() {
           settings={settings}
           initialTab={settingsTab}
           skills={boot.skills}
+          onRefreshSkills={(nextSkills: SkillInfo[]) =>
+            setBoot((b) => (b ? { ...b, skills: nextSkills } : b))
+          }
+          activeSkillIds={project.activeSkillIds || []}
+          onToggleProjectSkill={async (skillName, enabled) => {
+            const current = project.activeSkillIds || [];
+            const next = enabled
+              ? [...new Set([...current, skillName])]
+              : current.filter((x) => x !== skillName);
+            await edit(`${enabled ? '常驻启用' : '取消常驻'} Skill「${friendlySkillTitle(skillName)}」`, [
+              { type: 'updateProject', changes: { activeSkillIds: next } },
+            ]);
+          }}
           onSave={refreshSettings}
           onClose={() => {
             setDialog(returnToStudio ? 'generation' : null);
@@ -1923,6 +3405,13 @@ export function App() {
           sequence={sequence}
           revision={project.revision}
           onClose={() => setDialog(null)}
+          onJumpToIssue={(issue: PreflightIssue) => {
+            if (issue.assetId) {
+              setShowNav(true);
+            }
+            if (issue.frame !== undefined) seek(issue.frame);
+            if (issue.clipId) selectClip(issue.clipId);
+          }}
           onExport={async (scale, choose) => {
             const job = await api<Job | null>('export.start', { sequenceId, scale, choose });
             if (job) {
@@ -2047,46 +3536,50 @@ export function App() {
               aria-label="搜索命令"
               placeholder="搜索命令、素材或成片…"
               value={command}
-              onChange={(e) => setCommand(e.target.value)}
+              onChange={(e) => {
+                setCommand(e.target.value);
+                setCmdIndex(0);
+              }}
+              onKeyDown={(e) => {
+                if (!filteredCommands.length) return;
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setCmdIndex((i) => (i + 1) % filteredCommands.length);
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setCmdIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const picked = filteredCommands[Math.min(cmdIndex, filteredCommands.length - 1)];
+                  if (picked) {
+                    setDialog(null);
+                    picked.run();
+                  }
+                }
+              }}
             />
             <kbd>ESC</kbd>
           </div>
-          <div className="command-results">
-            {commands
-              .filter((c) => (c.name + c.detail).toLowerCase().includes(command.toLowerCase()))
-              .map((c) => (
-                <button
-                  key={c.name}
-                  onClick={() => {
-                    setDialog(null);
-                    c.action();
-                  }}
-                >
-                  <span>
-                    {c.name}
-                    <small>{c.detail}</small>
-                  </span>
-                  <kbd>{c.key || <ArrowUpRight size={13} />}</kbd>
-                </button>
-              ))}
-            {command &&
-              project.assets
-                .filter((a) => a.name.includes(command))
-                .map((a) => (
-                  <button
-                    key={a.id}
-                    onClick={() => {
-                      setDialog(null);
-                      void addAsset(a.id);
-                    }}
-                  >
-                    <span>
-                      {a.name}
-                      <small>添加素材到时间线</small>
-                    </span>
-                    <Plus size={14} />
-                  </button>
-                ))}
+          <div className="command-results" role="listbox">
+            {filteredCommands.map((item, idx) => (
+              <button
+                key={item.id}
+                role="option"
+                aria-selected={idx === cmdIndex}
+                className={idx === cmdIndex ? 'active' : ''}
+                onMouseEnter={() => setCmdIndex(idx)}
+                onClick={() => {
+                  setDialog(null);
+                  item.run();
+                }}
+              >
+                <span>
+                  {item.name}
+                  <small>{item.detail}</small>
+                </span>
+                <kbd>{item.key === '+' ? <Plus size={14} /> : item.key || <ArrowUpRight size={13} />}</kbd>
+              </button>
+            ))}
           </div>
         </Modal>
       )}
@@ -2107,22 +3600,41 @@ export function App() {
                     {dateLabel(r.createdAt)}
                   </p>
                 </div>
-                {r.revision === project.revision ? (
-                  <span className="current-label">当前</span>
-                ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <button
                     className="button tiny"
                     onClick={() =>
-                      void work('恢复版本', async () => {
-                        accept(await api<ProjectEnvelope>('project.restore', { revision: r.revision }));
+                      void work('从历史版本派生分支', async () => {
+                        const res = await api<{ envelope: ProjectEnvelope; newSequenceId: string }>(
+                          'project.forkFromRevision',
+                          { revision: r.revision, sequenceId: sequence.id },
+                        );
+                        accept(res.envelope);
+                        changeSequence(res.newSequenceId);
                         setDialog(null);
-                        notify('版本已恢复，可继续编辑或撤销');
+                        notify(`已从 v${r.revision} 派生平行分支，原成片未受影响`);
                       })
                     }
                   >
-                    <RotateCcw size={12} /> 恢复
+                    <GitBranch size={12} /> 派生分支
                   </button>
-                )}
+                  {r.revision === project.revision ? (
+                    <span className="current-label">当前</span>
+                  ) : (
+                    <button
+                      className="button tiny"
+                      onClick={() =>
+                        void work('恢复版本', async () => {
+                          accept(await api<ProjectEnvelope>('project.restore', { revision: r.revision }));
+                          setDialog(null);
+                          notify('版本已恢复，可继续编辑或撤销');
+                        })
+                      }
+                    >
+                      <RotateCcw size={12} /> 恢复
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -2142,7 +3654,7 @@ export function App() {
                 id,
                 sequenceId,
                 projectId: project.id,
-                at: frame,
+                at: frameRef.current,
               });
               accept(result.envelope);
               selectClip(result.clipId);
@@ -2155,7 +3667,7 @@ export function App() {
               const component = project.components.find((c) => c.id === id);
               if (!component) return;
               const nc = {
-                ...newClip('code', frame),
+                ...newClip('code', frameRef.current),
                 componentId: id,
                 name: component.name,
                 props: { ...component.props, ...overrides },
@@ -2174,10 +3686,13 @@ export function App() {
           component={codeComponent}
           onClose={() => setDialog(null)}
           onApply={async (c) => {
-            const operations: EditOperation[] = [{ type: 'putComponent', component: c }];
+            // Copy-on-Write: if another sequence or locked clip shares this component ID, fork cleanly!
+            const operations: EditOperation[] = codeComponent
+              ? prepareScopedComponentOperations(project, sequenceId, c, clip?.id)
+              : [{ type: 'putComponent', component: c }];
             if (!codeComponent) {
               const nc = {
-                ...newClip('code', frame),
+                ...newClip('code', frameRef.current),
                 componentId: c.id,
                 name: c.name,
                 props: { ...c.props },
@@ -2198,7 +3713,7 @@ export function App() {
           onSettings={() => openSettings('assets')}
           onImport={async (id) => {
             accept(await api<ProjectEnvelope>('stock.import', { id }));
-            setNav('assets');
+            setShowNav(true);
             notify('素材已导入项目');
           }}
         />
@@ -2218,7 +3733,7 @@ export function App() {
           }}
           onStarted={(job) => {
             setDialog(null);
-            setNav('assets');
+            setShowNav(true);
             setJobs((list) => (list.some((j) => j.id === job.id) ? list : [job, ...list]));
             setJobsOpen(true);
           }}
@@ -2280,4 +3795,3 @@ export function App() {
     </div>
   );
 }
-const TerminalIcon = () => <Code2 size={12} />;

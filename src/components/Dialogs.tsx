@@ -1,38 +1,48 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
   ArrowUpRight,
-  KeyRound,
-  Terminal,
   Film,
   Code2,
-  Layers,
-  Type,
-  AudioLines,
   Search,
   Download,
   ExternalLink,
-  FolderOpen,
+  AlertTriangle,
+  CheckCircle2,
 } from 'lucide-react';
-import { Modal, Spinner, Field } from './ui';
-import type { Settings, Sequence, Project, StockVideo, CodeComponent } from '../core/types';
+import { Modal, Spinner } from './ui';
+import type { Sequence, StockVideo, CodeComponent, PreflightIssue } from '../core/types';
 import { durationOf, uid } from '../core/project';
 export { SettingsDialog } from './SettingsDialog';
+
 export function ExportDialog({
   sequence,
   revision,
   onExport,
   onClose,
+  onJumpToIssue,
 }: {
   sequence: Sequence;
   revision: number;
   onExport: (scale: number, choose: boolean) => Promise<void>;
   onClose: () => void;
+  onJumpToIssue?: (issue: PreflightIssue) => void;
 }) {
   const [scale, setScale] = useState(1),
     [choose, setChoose] = useState(false),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [issues, setIssues] = useState<PreflightIssue[] | null>(null);
+
+  useEffect(() => {
+    void window.cocraft
+      .call<PreflightIssue[]>('export.preflight', { sequenceId: sequence.id })
+      .then(setIssues)
+      .catch(() => setIssues([]));
+  }, [sequence.id, revision]);
+
+  const hasBlocker = issues?.some((i) => i.severity === 'blocker') ?? false;
+
   return (
     <Modal
       title="导出成片"
@@ -56,6 +66,39 @@ export function ExportDialog({
           </div>
         </div>
       </div>
+
+      {issues !== null && (
+        <div className="preflight-box" role="region" aria-label="交付前检查">
+          {issues.length === 0 ? (
+            <div className="preflight-ok">
+              <CheckCircle2 size={14} />
+              <span>交付预检通过：素材均在线，未发现空洞或溢出风险</span>
+            </div>
+          ) : (
+            <div className="preflight-list">
+              {issues.map((issue) => (
+                <div
+                  key={issue.id}
+                  className={`preflight-item ${issue.severity}`}
+                  onClick={() => {
+                    if (onJumpToIssue && (issue.frame !== undefined || issue.clipId || issue.assetId)) {
+                      onJumpToIssue(issue);
+                      onClose();
+                    }
+                  }}
+                >
+                  <AlertTriangle size={13} />
+                  <div>
+                    <b>{issue.title}</b>
+                    <p>{issue.detail}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <label className="field">
         <span>输出尺寸</span>
         <select aria-label="输出尺寸" value={scale} onChange={(e) => setScale(Number(e.target.value))}>
@@ -78,14 +121,14 @@ export function ExportDialog({
         </button>
         <button
           className="button primary"
-          disabled={busy}
+          disabled={busy || hasBlocker}
           onClick={async () => {
             setBusy(true);
             try {
               await onExport(scale, choose);
               onClose();
             } catch (e) {
-              setError(String(e));
+              setError(String(e).replace(/^Error:.*?Error: /, ''));
             } finally {
               setBusy(false);
             }
@@ -97,6 +140,7 @@ export function ExportDialog({
     </Modal>
   );
 }
+
 const starter = `import React from 'react';
 import {AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
 
@@ -111,6 +155,7 @@ export default function Scene({text='每一个想法，都值得成为画面。'
     </AbsoluteFill>
   );
 }`;
+
 export function CodeDialog({
   component,
   onApply,
@@ -159,7 +204,7 @@ export function CodeDialog({
       />
       {error && <pre className="code-error">{error}</pre>}
       <footer className="modal-footer">
-        <span className="help-copy">编译通过后发布为一个可撤销版本。</span>
+        <span className="help-copy">编译通过后发布为一个可撤销版本；若与其它成片共用组件会自动派生副本避免误改。</span>
         <button
           className="button primary"
           disabled={busy}
@@ -188,6 +233,7 @@ export function CodeDialog({
     </Modal>
   );
 }
+
 export function StockDialog({
   onImport,
   onClose,

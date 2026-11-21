@@ -1,133 +1,94 @@
-# CoCraft 技术架构
+# CoCraft 技术架构（v0.3）
 
-日期：2026 年 11 月 18 日。状态：0.1 本地 Alpha 已落地；以下设计与实现差异见本节末尾。
+更新日期：2026 年 11 月 18 日。状态：v0.3 架构升级设计（承接 0.1/0.2 已落地底座，系统性解决 25 项审查问题并扩展双层资产、分镜候选与 2D/3D 可编程舞台）。
 
-首版采用 TypeScript 为主的桌面架构，复用编码 Agent、Skill 和现有媒体工具。应用提供可视化工作台与可靠的工程发布边界，Agent 可以在项目工作副本里编码、运行脚本、生成素材和修复错误。
+---
 
-## 技术选择
+## 一、 核心架构原则
 
-| 层 | 首选方案 | 首轮验证 |
-| --- | --- | --- |
-| 桌面与工作台 | Electron、React、TypeScript、Vite | Mac 启动、文件导入、键盘和面板行为 |
-| 高频编辑 | 虚拟化列表、按需 Canvas 绘制，轻量 UI 状态 | 时间线拖动和播放头更新不触发整页重绘 |
-| 工程定义 | 结构化 JSON、字幕文件、TypeScript 组件与资源清单 | 保存、重开、版本差异和迁移 |
-| Agent | Pi SDK，独立进程；DSH 作为后续适配候选 | 真实工具调用、Skill、编码、中断和恢复 |
-| 合成 | Remotion Player 与 Renderer | 同版本、同组件、同输入参数的预览与导出 |
-| 媒体 | FFmpeg、ffprobe、代理与缩略图缓存 | 基线格式、音画同步、代理与原素材时间映射 |
-| 索引与任务 | 原子 JSON 清单；SQLite 按规模需要引入 | 工程、任务、作业持久化与重启恢复 |
-| 分发 | Electron 打包、签名与公证，后续接更新渠道 | 目标机器安装、媒体工具和运行时完整性 |
+1. **单一确定性合成内核（Single Remotion + Three.js Kernel）**
+   - 预览（`@remotion/player`）与导出（`@remotion/renderer`）100% 共享同一套 React 合成树：普通音视频、字幕包装、类 `open-slide` 分步演示页、录屏平滑推拉聚焦（`ScreenFocusRig`）、2D SVG/Canvas 科普图解（`SeeCode`/`Tinycharts`/`Anatomy`），以及基于 `@remotion/three` 的 Three.js 3D 拆解与 `.glb` 模型场景，全部由 `useCurrentFrame()` 帧级确定性驱动。
+   - 不引入冗余的第二套幻灯片框架，也不在桌面端自研高权限负担的系统录屏采集器。
+2. **双模同源状态（Dual-Mode, Single Source of Truth）**
+   - 「分镜与资产编排台（Storyboard Mode）」与「舞台时间线（Timeline Mode）」读写同一个不可变 `Project` 快照中的 `Sequence`、`Shot` 与 `Clip` 结构，绝不维护两份脱节的数据副本。
+3. **双层内容寻址资产库（Project Vault ⇄ Global Asset Library）**
+   - 媒体文件、3D 模型（`.glb/.gltf`）、音频波形、转录结果与编译后的代码组件均采用内容哈希（SHA-256）寻址存储；版本快照（Revision）只存轻量引用与元数据，实现毫秒级保存、撤销与零闪屏预览更新。
+4. **严格的执行、范围与安全边界**
+   - 所有人工与 Agent 修改统一经 `ProjectCore` 校验基线版本、锁定状态、**选区范围约束（Scope Enforcement）** 与跨成片组件 **写时复制（Copy-on-Write）**。
+   - 预览与导出渲染进程均强制施加 CSP 与按工程隔离的媒体访问令牌；脚本沙箱与远程下载严格执行最小权限与防 SSRF 校验。
 
-依赖版本在首次安装时统一锁定。Remotion 的产品嵌入许可、第三方代码与媒体工具发行方式在对应构建交付前核对，依据见 [参考资料](REFERENCES.md)。
+---
 
-## 五个模块
+## 二、 六大核心模块
 
-### Workbench
+### 1. Workbench（双模桌面工作台 · `src/`）
+- **Dual-Mode Shell**：管理顶栏模式切换（分镜编排台 / 舞台时间线）、左侧双层资产树、右侧 Agent 与全量属性面板（Inspector）。
+- **Interactive Stage Overlay（画布直接操控层）**：位于预览 iframe 上方的透明矢量交互层，暂停时映射合成坐标系（如 `1920×1080`）与视口缩放比，支持点击选中当前帧可见片段、拖拽平移（`x, y`）、控制柄缩放（`scale`）、焦点十字准星（`focalX, focalY`）及打点批注（Canvas Pin 引用给 Agent），同时将键盘事件无缝转发回主工作台，彻底解决 iframe 吞焦点问题。
+- **Precision Timeline**：基于真实时间比例尺（`pxPerSecond`，支持大跨度缩放与滚轮缩放）、动态帧率标尺（`MM:SS:FF`）、双端裁切磁吸（Trim In/Out Snap）、音视频全波形绘制与轨道静音。
 
-管理项目导航、内容标签、预览、时间线、文稿、分镜、任务和属性面板。界面状态与工程状态分开，切换面板不会修改作品。Agent 的流式消息不能打断输入焦点、滚动和拖动。
+### 2. ProjectCore（工程、分镜与约束引擎 · `src/core/` & `electron/store.ts`）
+- **统一工程模型（Schema v2，向下自动迁移 v1）**：
+  - `Project`：包含 `assets`（项目资产清单）、`brandKit`、`components`、`recipes`、`sequences`。
+  - `Sequence`：包含 `clips`（时间线精确片段）、`shots`（可选分镜卡列表：记录叙事目标、绑定主体资产 ID、候选列表 `takes[]` 及当前激活 `activeTakeId`，与对应时间区间的 `clips` 双向关联）及 `mutedTracks`。
+- **强约束校验器（`validateAndApply`）**：
+  - **Scope 强校验**：当 Agent 运行携带 `EditScope`（指定 `sequenceId`、`clipIds` 或帧区间）时，越界修改直接拒绝并返回结构化冲突说明，引导 Agent 在授权范围内重算。
+  - **组件 Copy-on-Write**：当修改已被其他成片（如竖版）或锁定片段引用的 `CodeComponent` 时，自动派生新组件版本 ID 更新目标片段，绝不静默污染其他成片。
+  - **智能波纹编辑**：`deleteClip(ripple: true)` 仅平移同轨或关联组下游片段，遇跨切点长背景音乐保持不动，遇下游锁定片段提前报错保护。
+- **O(1) 轻量版本索引**：`.cocraft/head.json` 维护指针，`.cocraft/revisions-index.json` 维护全量版本摘要列表；`envelope()` 无需再遍历解析历史全量快照文件。
 
-### ProjectCore
+### 3. AssetVault（双层资产与重连服务 · `electron/vault.ts` & `electron/media.ts`）
+- **双层目录结构**：
+  - 全局库：`~/Library/Application Support/CoCraft/Library/`（`catalog.json` + `blobs/` + `rigs/` + `recipes/`）。
+  - 项目库：`<project>.cocraft/assets/` 与 `.cocraft/analysis/`。
+- **全媒体探测与离线重连**：
+  - `importMedia` 统一探测 `hasAudio`、帧率、色彩信息，并为**所有含音轨的视频和音频**生成缓存波形。
+  - 每次打开工程或导出前执行轻量 `stat` 在线核验，标记 `offline: true` 的外部引用资产，提供按文件名/大小/哈希快速重连（Relink）入口。
 
-定义素材、成片、片段、字幕、组件参数、约束和版本；提供常用编辑命令；检查基线版本、修改范围和锁定；原子发布新版本；产生修改摘要与撤销信息。
+### 4. Stage & RenderHost（2D/3D 合成与预检渲染引擎 · `src/composition/` & `electron/render-worker.ts`）
+- **无缝热更新预览（Zero-Flash Player）**：
+  - `preview.tsx` 仅以 `sequenceId`（及组件崩溃恢复计数）作为 `ErrorBoundary` 的 key，不再使用 `revision` 作为 key，使 `<Player>` 在连续调参、拖动时间线和文案编辑时保持挂载、零闪烁实时响应。
+- **2D + Three.js 3D 统一舞台**：
+  - 内置 `react`、`remotion`、`three`、`@remotion/three` 运行时模块注入，供内置装置、素材包与 Agent 编译的 TSX 组件直接 `import` 使用。
+  - 支持加载工程内的 `.glb` / `.gltf` 资产（通过受控 `assetUrl(id)`），提供标准 `CameraRig` 与 `ScreenFocusRig` 辅助原语。
+- **静默校验与导出前预检（Preflight）**：
+  - 内部 `validateComponents` 使用独立内存通道渲染候选静帧，**不再写入用户可见的 `jobs.json` 列表**。
+  - 正式导出前运行 `preflightCheck(project, sequenceId)`，集中报告离线资产、未填充的分镜占位（Placeholder）、首尾黑场空洞与超界片段。
 
-所有进入当前成片的修改都经过这里。工具操作与代码变更最终汇成同一个工程变更集。
+### 5. AgentHost & Skill Matrix（编码与创作代理宿主 · `electron/agents.ts` & `electron/agent-worker.ts`）
+- **内置「8 合 4」Skill 包（`resources/skills/`）**：
+  - `cocraft-editing`（工程协议、资产与分镜操作、约束遵守）
+  - `cocraft-seecode`（数据图表、系统架构与分步演示甲板）
+  - `cocraft-tinycharts`（手绘等轴测与状态机推演）
+  - `cocraft-anatomy`（等轴测精密剖面、生物/工程机制与实时遥测面板）
+  - `cocraft-teardown-3d`（Three.js 爆炸拆解、机械运转、产线沙盘与 3D 机位预演）
+  - `remotion-best-practices`（帧确定性动画与合成规范）
+- **严格流式消息时序与中断**：
+  - 当运行中收到 `steer`（补充指令）时，先将当前已流式产出的 `assistant` 文本段封存落盘，再追加用户的 `steer` 消息，保证持久化历史严格按真实时间顺序排列。
+- **用量统计**：解析并累计每次模型响应的 `usage`（input/output tokens）与生成作业次数，持久化到 `Task` 与项目统计中。
 
-### AgentHost
+### 6. Security & Sandbox Layer（安全隔离层）
+- **同源与 CSP 加固**：`MediaServer` 同时为 `/ui/preview.html` 和 `/render/index.html` 下发严格 CSP（`connect-src 'self'`，禁止一切外网连接）；媒体路由按当前活跃工程白名单校验资产归属，防止第三方组件枚举跨工程文件；`postMessage` 显式绑定目标 `origin` 而非 `'*'`。
+- **SSRF 防护**：远程生成产物下载器（`download()`）解析主机名并拒绝回环地址（`127.0.0.0/8`、`::1`、`localhost`）、链路本地与私网段（除非用户显式标记为本地模型连接端点）。
+- **收紧 `sandbox-exec`**：脚本执行配置改为显式只读系统运行库路径 + 当前任务工作区读写，禁止读取 `/Volumes`、`/tmp` 全局目录及其他用户敏感挂载区。
 
-托管 Pi 会话、模型连接、资源加载、Skill、文件和命令工具。接收选区引用、当前版本、用户目标和项目约定，向工作台发送进度、产物和错误。
+---
 
-保留宿主框架的编码能力。常用剪辑工具是便利接口；新效果可通过源码、脚本和项目依赖实现。产品连接的模型凭据与当前开发对话的登录态分别管理。
-
-### RenderHost
-
-从固定工程快照生成统一的合成入口，编排普通媒体片段与代码组件。Player 使用已构建版本预览；独立渲染进程用同一组件和参数导出。初期不同时维护一套独立 FFmpeg 滤镜合成语义。
-
-FFmpeg 负责预处理、代理、音频和编码相关工作。复杂代码场景可预渲染并缓存，缓存键包含源码、参数、依赖、素材版本和输出设置。
-
-### AssetAndJobService
-
-统一导入、内置组件、外部搜索、生成结果和个人素材库。后台转录、抽帧、生成与导出有独立作业身份、幂等键、阶段和可恢复状态，不依赖聊天上下文记住它们。
-
-## 项目文件与单一发布状态
-
-工程定义以可读文件保存；SQLite 保存索引和任务，不同时成为第二份时间线真相。建议的用户工程结构如下，与本应用源码仓库区分：
+## 三、 工程目录结构演进（Schema v2 兼容 v1）
 
 ```text
-my-film/
-  project.json                项目标识、格式版本、成片入口
-  brief.md                    目标与风格约定
-  sequences/                  结构化时间线
-  captions/                   字幕和时间信息
-  components/                 可编程场景与组件清单
-  scripts/                    项目处理脚本
-  skills/                     项目工作流
-  assets/                     素材清单和用户选择收集的文件
-  package.json                项目代码依赖
-  package-lock.json           可复现依赖
-  .cocraft/                   版本快照、工作副本和可重建缓存
+my-project.cocraft/
+  project.json                  可读工程镜像（Schema v2，自动兼容打开 v1）
+  brief.md                      创作目标、受众与风格约定
+  assets/                       收集的生成媒体、3D 模型（.glb）与随附资产
+  components/                   独立 TSX 组件与导入的素材包源码快照
+  recipes/                      本项目保存的可复用工作流配方
+  skills/                       项目级自定义或外部导入的标准 SKILL.md
+  exports/                      MP4 成片、PNG 静帧与 SRT 字幕导出
+  .cocraft/
+    head.json                   唯一原子发布指针（current / undo / redo）
+    revisions-index.json        轻量版本历史摘要索引（O(1) 读取）
+    revisions/                  不可变工程版本快照
+    analysis/                   峰值波形（音频+视频）与持久化转录分段缓存
+    workspaces/                 各 Agent 任务的隔离工作副本
+    sessions/                   Pi 会话上下文与用量记录
 ```
-
-初期通过稳定对象 ID、不可变快照和当前版本指针管理工程。先完整落盘并校验新快照，再切换发布指针；UI 与导出都读取这个已发布状态。工作副本中的半组文件不会变成当前成片。具体落盘协议需要强制退出测试验证。
-
-Git 可用于文本源码历史和任务工作副本，但不替代工程事务、素材管理、冲突检查或撤销语义。视频等大文件用清单和内容标识引用，不随每个分支重复复制。
-
-## 三种可编辑内容
-
-| 内容 | UI 可以编辑什么 | Agent 可以做什么 |
-| --- | --- | --- |
-| 结构化片段 | 入出点、轨道、位置、变换、音量、字幕 | 调用编辑命令或生成经过验证的数据变更 |
-| 参数化代码组件 | 声明出的文案、颜色、数据、布局、时长等 | 修改代码和参数定义、生成新版本、渲染检查 |
-| 自由代码或外部脚本产物 | 外层片段的时间、位置、混合等；已声明参数 | 继续修改源码或重新生成产物 |
-
-代码组件协议至少包括稳定标识、源码版本、参数 schema、时长、画幅和资源依赖。暴露参数可由 UI 生成属性面板。任意 JSX 或脚本不保证自动映射成全部可视化图层。
-
-视频内的动画按帧确定，锁定字体、随机种子、资源和依赖；不能依赖挂钟时间或未固定的网络资源。应用面板动效与视频画面动画分别实现。
-
-## 一次 Agent 修改
-
-1. 读取已发布版本和稳定对象引用，为本次运行建立工作副本。
-2. 加载相关 Skill，读写文件、运行脚本或调用剪辑工具。
-3. 校验数据结构、素材引用、组件构建和受影响片段；必要时生成抽帧与短预览。
-4. 比较当前版本与起始版本，检查人工修改、锁定和作用范围。
-5. 无冲突时保存完整新快照，形成一个可撤销编辑组并发布；冲突时保留人工结果，重新计算相关部分。
-6. 播放中的用户继续观看固定版本，暂停或主动查看后切换到新结果。导出始终绑定固定版本。
-
-锁定组件片段时固定其组件源码和资源版本，避免共享代码更新造成间接覆盖。停止操作先使运行的后续提交失效，再请求中断模型或外部作业。
-
-## 进程与权限边界
-
-桌面主进程负责生命周期和窄接口；工作台渲染进程不直接获得 Node 文件权限。Agent 与媒体任务独立运行，避免模型输出、构建或导出阻塞界面。
-
-项目代码预览使用无应用特权的隔离渲染环境。构建脚本、依赖安装和 shell 的文件与网络权限另行实现、验证；仅设置工作目录或使用子进程不构成安全沙箱。首轮以受控项目和已审阅的内置 Skill 验证，第三方执行边界有独立发布门槛。
-
-项目范围内已经授权的正常工作持续执行，敏感凭据由应用管理，素材上传和付费调用遵守项目设置。构建物和工程中不保存密钥。
-
-## 性能与后续演进
-
-先验证短片闭环，再逐步增加源素材时长、轨道和代码复杂度。用代理、预载、视图虚拟化、短片段缓存和独立作业减少等待。
-
-只有实测发现瓶颈后，才给解码、合成或特定效果添加原生适配。更换媒体实现需要对应范围的一致性测试；保留接口可以减少迁移成本，不保证任意 Remotion 场景可直接迁往另一引擎。
-
-## 0.1 的实际实现
-
-- Workbench 已以 Electron + React 实现，独立 HTTP 预览页与主界面隔离；只在主 frame 暴露窄 IPC。预览页使用 CSP，主界面验证消息来源。
-- ProjectCore 实现在 `src/core` 与 `electron/store.ts`。`.cocraft/head.json` 是唯一发布指针，revisions 保存完整不可变快照；`project.json` 和 `brief.md` 是可读镜像。撤销/重做产生新版本，防止旧 revision 被重新当作当前基线。
-- Pi 1.5.2 在 utility process 中运行；标准文件工具保留并绑定目录校验。bash 使用 macOS sandbox-exec 限制写入，默认不联网；用户可分别启用脚本与脚本联网。项目 Skills 与内置 CoCraft / Remotion Skills 可发现。没有自动借用开发会话的登录态。
-- 代码组件的源文本、编译结果、hash 和 props 保存在版本快照；Agent 的 TSX 在任务工作区开发，通过 compile_component 与 publish_edit 发布。任意 JSX 不自动变成可视化图层。
-- Agent 生成媒体经 import_asset 收集到内容寻址文件，再登记到工程，避免锁定片段仍引用可被脚本覆盖的工作文件。
-- RenderHost 使用静态共享 Film 组件、动态工程 inputProps 和独立 utility process。MP4 在临时文件完成后发布，不覆盖已有输出。导出取消、失败和完成持久化；重启时未完成作业标记为中断。
-- 索引/任务/作业当前使用 JSON，不提前引入 SQLite。没有实现 Git worktree、自动更新、专业代理/缓存体系或多机位引擎。
-
-首轮事实和边界见 [交付说明](DELIVERY-0.1.md)，验收见 [迭代记录](ROADMAP.md)。
-
-## 0.2 已实现的扩展边界
-
-| 边界 | 数据与入口 |
-| --- | --- |
-| 参数化剪辑素材 | `src/core/presets.ts` 定义语义参数、时长、版本、类别与默认值。`PresetFrame` 同时驱动库内预览、播放器与渲染。 |
-| 工程扩展 | `electron/packs.ts` 校验 `cocraft-pack.json`，把工程采用的源文件、依赖和媒体固定在工程。项目组件预览运行在隔离 frame。 |
-| 编码 Agent | Pi 运行在独立进程，加载编辑、动态素材和 Remotion Skills。媒体与项目工具请求回到主进程，与人工编辑共用版本、锁定及停止检查。 |
-| 模型路由 | `SettingsStore` 从同一设置快照选择模型、能力和连接，只把所选模型所需的凭据传给 worker。 |
-| 生成与分析 | `GenerationService` 为图像、视频、TTS、ASR 和视觉理解提供适配器。`JobService` 保存进度、固定的请求参数和远端任务 ID。结果可进入素材库或对齐到受裁切的源片段。 |
-| 手动接管 | 前端通过 Pointer Capture 与每帧尺寸更新完成面板拖动，结束时保存布局。设置外框固定。重叠区间在时间线上分行展示。可选整数 layer 固定同轨合成顺序，新叠加位于同轨已有片段之上，旧快照依照原始顺序绘制。 |
-
-新增提供商可复用已有协议适配器。添加新协议时需实现其实际创建、查询或下载语义。素材包及 Skill 与提供商独立演进。[服务适配记录](MODEL-SERVICES.md) · [素材协议](MATERIAL-ECOSYSTEM.md)

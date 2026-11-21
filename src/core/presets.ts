@@ -1,7 +1,174 @@
 import { newClip } from './project';
-import type { Clip } from './types';
+import type { Clip, Project, StyleTokens, TransitionType, VaultItem } from './types';
 
-export type PresetCategory = 'titles' | 'captions' | 'graphics' | 'backgrounds';
+export const BUILT_IN_STYLES: VaultItem[] = [
+  {
+    id: 'gstyle_cobalt_night',
+    name: '深空钴蓝',
+    entityKind: 'style',
+    role: 'visual-style',
+    tags: ['科技发布', '暗色高对比'],
+    category: 'brand',
+    subkind: 'brand-kit',
+    description: '深海夜空底色搭配电光钴蓝与青翠双强调色，适合产品功能演示、系统架构与数据发布。',
+    styleTokens: {
+      primaryColor: '#3b82f6',
+      secondaryColor: '#14b8a6',
+      backgroundColor: '#0b101d',
+      surfaceColor: '#131c31',
+      inkColor: '#f8fafc',
+      captionColor: '#f8fafc',
+      lightingPreset: 'cyber-rim',
+      cornerRadius: 16,
+    },
+    brand: {
+      primaryColor: '#3b82f6',
+      secondaryColor: '#14b8a6',
+      backgroundColor: '#0b101d',
+      captionColor: '#f8fafc',
+    },
+    version: 1,
+    updatedAt: '2026-11-18T00:00:00.000Z',
+  },
+  {
+    id: 'gstyle_warm_paper',
+    name: '暖米纸白',
+    entityKind: 'style',
+    role: 'visual-style',
+    tags: ['知识科普', '手绘白板', '浅色'],
+    category: 'brand',
+    subkind: 'brand-kit',
+    description: '温润点阵纸白底色搭配墨蓝与琥珀标注色，适合原理科普、手绘状态推演与深度阅读。',
+    styleTokens: {
+      primaryColor: '#2563eb',
+      secondaryColor: '#d97706',
+      backgroundColor: '#fbf9f3',
+      surfaceColor: '#ffffff',
+      inkColor: '#0f172a',
+      captionColor: '#0f172a',
+      lightingPreset: 'porcelain-soft',
+      cornerRadius: 14,
+    },
+    brand: {
+      primaryColor: '#2563eb',
+      secondaryColor: '#d97706',
+      backgroundColor: '#fbf9f3',
+      captionColor: '#0f172a',
+    },
+    version: 1,
+    updatedAt: '2026-11-18T00:00:00.000Z',
+  },
+  {
+    id: 'gstyle_obsidian_titanium',
+    name: '黑曜钛金',
+    entityKind: 'style',
+    role: 'visual-style',
+    tags: ['硬件拆解', '商业质感', '三维'],
+    category: 'brand',
+    subkind: 'brand-kit',
+    description: '黑曜石哑光底搭配香槟钛金与冷银高光，适合硬件结构拆解、工业产品展示与品牌成片。',
+    styleTokens: {
+      primaryColor: '#f59e0b',
+      secondaryColor: '#94a3b8',
+      backgroundColor: '#09090c',
+      surfaceColor: '#14151a',
+      inkColor: '#f8fafc',
+      captionColor: '#fef3c7',
+      lightingPreset: 'titanium-dark',
+      cornerRadius: 12,
+    },
+    brand: {
+      primaryColor: '#f59e0b',
+      secondaryColor: '#94a3b8',
+      backgroundColor: '#09090c',
+      captionColor: '#fef3c7',
+    },
+    version: 1,
+    updatedAt: '2026-11-18T00:00:00.000Z',
+  },
+  {
+    id: 'gstyle_mist_minimal',
+    name: '浅雾极简',
+    entityKind: 'style',
+    role: 'visual-style',
+    tags: ['清爽教程', '日常汇报', '浅色'],
+    category: 'brand',
+    subkind: 'brand-kit',
+    description: '清透浅灰雾面底色搭配青碧主色，干净不抢戏，适合软件操作教程、口播知识分享与汇报。',
+    styleTokens: {
+      primaryColor: '#0d9488',
+      secondaryColor: '#6366f1',
+      backgroundColor: '#f1f5f9',
+      surfaceColor: '#ffffff',
+      inkColor: '#0f172a',
+      captionColor: '#0f172a',
+      lightingPreset: 'porcelain-soft',
+      cornerRadius: 18,
+    },
+    brand: {
+      primaryColor: '#0d9488',
+      secondaryColor: '#6366f1',
+      backgroundColor: '#f1f5f9',
+      captionColor: '#0f172a',
+    },
+    version: 1,
+    updatedAt: '2026-11-18T00:00:00.000Z',
+  },
+];
+
+export function isLightHex(hex?: string): boolean {
+  if (!hex || !hex.startsWith('#')) return false;
+  const clean = hex.slice(1);
+  if (clean.length !== 6 && clean.length !== 3) return false;
+  const full =
+    clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return 0.299 * r + 0.587 * g + 0.114 * b > 155;
+}
+
+export function resolveStyleItem(project?: Project, brandId?: string): VaultItem | undefined {
+  const id = brandId ?? project?.activeBrandId;
+  if (!id) return undefined;
+  return (
+    (project?.vault || []).find((v) => v.id === id && (v.styleTokens || v.brand)) ||
+    BUILT_IN_STYLES.find((v) => v.id === id)
+  );
+}
+
+export function resolveProjectStyle(project?: Project): StyleTokens | undefined {
+  const item = resolveStyleItem(project);
+  if (!item) return undefined;
+  if (item.styleTokens) return item.styleTokens;
+  if (item.brand) {
+    return {
+      primaryColor: item.brand.primaryColor,
+      secondaryColor: item.brand.secondaryColor,
+      backgroundColor: item.brand.backgroundColor,
+      surfaceColor: isLightHex(item.brand.backgroundColor) ? '#ffffff' : '#161b26',
+      inkColor: isLightHex(item.brand.backgroundColor) ? '#0f172a' : '#f8fafc',
+      captionColor: item.brand.captionColor,
+    };
+  }
+  return undefined;
+}
+
+export const BUILT_IN_TRANSITIONS: {
+  id: TransitionType;
+  name: string;
+  description: string;
+  defaultSeconds: number;
+}[] = [
+  { id: 'dissolve', name: '叠化过渡', description: '平滑透明度叠加淡入画面', defaultSeconds: 0.6 },
+  { id: 'fade', name: '黑场淡入', description: '经由纯黑转场揭示下一镜', defaultSeconds: 0.6 },
+  { id: 'slide-left', name: '平滑推入', description: '由右侧横向切入当前画幅', defaultSeconds: 0.5 },
+  { id: 'zoom-in', name: '镜头推近', description: '微妙推镜缩放聚焦入场', defaultSeconds: 0.5 },
+  { id: 'blur', name: '柔焦过渡', description: '高光失焦至清晰锐利焦点', defaultSeconds: 0.6 },
+  { id: 'wipe', name: '线性擦除', description: '硬边划像揭示后续画面', defaultSeconds: 0.5 },
+];
+
+export type PresetCategory = 'titles' | 'captions' | 'graphics' | 'stages' | 'backgrounds';
 export type PresetValue = string | number | boolean;
 export interface PresetParameter {
   key: string;
@@ -27,10 +194,11 @@ export interface PresetDefinition {
 }
 export const presetCategories = [
   { id: 'all', name: '全部' },
-  { id: 'titles', name: '标题包装' },
-  { id: 'captions', name: '字幕' },
-  { id: 'graphics', name: '信息图形' },
-  { id: 'backgrounds', name: '动态背景' },
+  { id: 'stages', name: '演示与三维' },
+  { id: 'graphics', name: '数据图表' },
+  { id: 'titles', name: '标题章节' },
+  { id: 'captions', name: '字幕样式' },
+  { id: 'backgrounds', name: '背景底板' },
 ] as const;
 const title: PresetParameter = { key: 'text', label: '主文案', type: 'text' };
 const subtitle: PresetParameter = { key: 'subtitle', label: '补充文案', type: 'text' };
@@ -354,6 +522,203 @@ export const presetCatalog: PresetDefinition[] = [
     defaultProps: { accent: '#83a9ff', surface: 'dark', intensity: 55 },
     parameters: [accent, amount('intensity', '光照强度'), surface],
   }),
+  define({
+    id: 'teardown-3d',
+    name: '三维空间与结构拆解',
+    category: 'stages',
+    kind: 'shape',
+    durationSeconds: 6,
+    description: '三维机械、芯片叠层与节点沙盘的立体拆解展示，支持切换摄影棚机位或绑定本地 .glb 模型。',
+    keywords: ['三维', '3D', '拆解', '芯片', '机械', '沙盘', '模型'],
+    defaultProps: {
+      text: '精密结构分层解析',
+      subtitle: '三维空间展示',
+      sceneType: 'turbine',
+      cameraPreset: 'orbit',
+      cameraYaw: 0,
+      cameraPitch: 0,
+      explode: 0.65,
+      speed: 1,
+      animateExplode: true,
+      focusLabel: '核心光学镜组与同轴转子',
+      accent: '#3b82f6',
+      secondary: '#14b8a6',
+      surface: 'dark',
+    },
+    parameters: [
+      title,
+      subtitle,
+      {
+        key: 'sceneType',
+        label: '三维结构类型',
+        type: 'select',
+        options: [
+          { value: 'turbine', label: '同轴涡轮与光学镜组' },
+          { value: 'chip-stack', label: '多层芯片与架构叠层' },
+          { value: 'factory-flow', label: '节点流转微缩沙盘' },
+        ],
+      },
+      {
+        key: 'cameraPreset',
+        label: '摄像机视角',
+        type: 'select',
+        options: [
+          { value: 'orbit', label: '环绕审视' },
+          { value: 'isometric', label: '等轴测斜俯视' },
+          { value: 'dolly-in', label: '平滑推近特写' },
+          { value: 'top-down', label: '垂直俯视' },
+          { value: 'hero-low', label: '低机位仰视' },
+        ],
+      },
+      { key: 'cameraYaw', label: '水平偏航角 (°)', type: 'number', min: -180, max: 180, step: 2 },
+      { key: 'cameraPitch', label: '垂直俯仰角 (°)', type: 'number', min: -60, max: 60, step: 2 },
+      { key: 'explode', label: '爆炸拆解间距', type: 'number', min: 0, max: 1.4, step: 0.05 },
+      { key: 'speed', label: '运转与运镜速率', type: 'number', min: 0, max: 3, step: 0.1 },
+      { key: 'animateExplode', label: '自动缓入展开', type: 'boolean' },
+      { key: 'focusLabel', label: '部件标注说明', type: 'text' },
+      accent,
+      { key: 'secondary', label: '辅助光色', type: 'color' },
+      surface,
+    ],
+  }),
+  define({
+    id: 'seecode-architecture',
+    name: '分步架构与流程演示',
+    category: 'stages',
+    kind: 'shape',
+    durationSeconds: 6,
+    description: '高对比编辑排版的流程演进与关键指标对比页，按节拍逐级点亮核心阶段，横竖屏自适应。',
+    keywords: ['架构', '流程', '方案', '对比', '图表', '演示'],
+    defaultProps: {
+      text: '三阶段实时处理流程',
+      subtitle: '系统方案概览',
+      nodes: '信号接入|核心处理|结果输出',
+      metrics: '99.4% 准确率 · 3.2x 效率提升 · <8ms 响应延迟',
+      activeStep: 3,
+      accent: '#3b82f6',
+      surface: 'dark',
+    },
+    parameters: [
+      title,
+      subtitle,
+      { key: 'nodes', label: '阶段名称 (用 | 分隔)', type: 'text' },
+      { key: 'metrics', label: '底部关键指标 (用 · 分隔)', type: 'text' },
+      { key: 'activeStep', label: '点亮至第几步', type: 'number', min: 1, max: 4, step: 1 },
+      accent,
+      surface,
+    ],
+  }),
+  define({
+    id: 'tinycharts-state',
+    name: '手绘白板状态推演',
+    category: 'stages',
+    kind: 'shape',
+    durationSeconds: 6,
+    description: '温暖手绘马克笔点阵纸面质感，直观推演规则正常通过与条件拦截回退两种路径。',
+    keywords: ['手绘', '白板', '状态', '规则', '原理', '科普'],
+    defaultProps: {
+      text: '请求校验与状态流转规则',
+      subtitle: '规则逻辑推演',
+      states: '提交请求|条件校验|完成发布',
+      mode: 'pass',
+      guardNote: '满足前置条件 → 顺利进入下一阶段',
+      accent: '#2563eb',
+      surface: 'light',
+    },
+    parameters: [
+      title,
+      subtitle,
+      { key: 'states', label: '节点文案 (用 | 分隔)', type: 'text' },
+      {
+        key: 'mode',
+        label: '推演结果',
+        type: 'select',
+        options: [
+          { value: 'pass', label: '条件满足 · 顺利通过' },
+          { value: 'reject', label: '条件不符 · 拦截回退' },
+        ],
+      },
+      { key: 'guardNote', label: '底部结论批注', type: 'text' },
+      accent,
+      surface,
+    ],
+  }),
+  define({
+    id: 'anatomy-telemetry',
+    name: '原理机制与粒子剖面',
+    category: 'stages',
+    kind: 'shape',
+    durationSeconds: 6,
+    description: '内部腔体与传导路径剖面动态示意，配确定性粒子流动与实时数值读数。',
+    keywords: ['剖面', '原理', '粒子', '科学', '机制', '科普'],
+    defaultProps: {
+      text: '缓冲限流与平稳放行原理',
+      subtitle: '内部机制动态示意',
+      domain: 'engineering',
+      flowRate: 78,
+      citation: '示意图：稳态通量控制模型',
+      accent: '#14b8a6',
+      surface: 'dark',
+    },
+    parameters: [
+      title,
+      subtitle,
+      {
+        key: 'domain',
+        label: '结构类型',
+        type: 'select',
+        options: [
+          { value: 'engineering', label: '工程腔体 · 缓冲与阀门' },
+          { value: 'biomed', label: '微观传导 · 信号与受体' },
+        ],
+      },
+      { key: 'flowRate', label: '流动速率 (%)', type: 'number', min: 10, max: 100, step: 5 },
+      { key: 'citation', label: '底部来源说明', type: 'text' },
+      accent,
+      surface,
+    ],
+  }),
+  define({
+    id: 'screen-focus-rig',
+    name: '设备外壳与录屏特写',
+    category: 'stages',
+    kind: 'shape',
+    durationSeconds: 6,
+    description: '支持 macOS 窗口、浏览器、手机样机与终端四种设备外壳，将录屏或截图平滑推拉放大至操作焦点。',
+    keywords: ['录屏', '产品演示', '外壳', '样机', '聚焦', '放大', '浏览器', '手机'],
+    defaultProps: {
+      text: '聚焦展示核心交互细节',
+      subtitle: 'cocraft.studio/demo',
+      frameStyle: 'macos',
+      zoomLevel: 1.75,
+      focusX: 68,
+      focusY: 36,
+      showRing: true,
+      accent: '#3b82f6',
+      surface: 'dark',
+    },
+    parameters: [
+      title,
+      subtitle,
+      {
+        key: 'frameStyle',
+        label: '设备外壳样式',
+        type: 'select',
+        options: [
+          { value: 'macos', label: 'macOS 圆角毛玻璃窗' },
+          { value: 'browser', label: '极简浏览器地址栏框' },
+          { value: 'phone', label: '竖屏手机样机外壳' },
+          { value: 'terminal', label: '暗色命令行终端窗' },
+        ],
+      },
+      { key: 'zoomLevel', label: '焦点放大倍率', type: 'number', min: 1, max: 2.8, step: 0.05 },
+      { key: 'focusX', label: '焦点水平位置 (%)', type: 'number', min: 10, max: 90, step: 1 },
+      { key: 'focusY', label: '焦点垂直位置 (%)', type: 'number', min: 10, max: 90, step: 1 },
+      { key: 'showRing', label: '显示光标聚光环', type: 'boolean' },
+      accent,
+      surface,
+    ],
+  }),
 ];
 export function getPreset(id: string, version?: number) {
   return presetCatalog.find((p) => p.id === id && (version === undefined || p.version === version));
@@ -385,18 +750,58 @@ export function normalizePresetProps(id: string, overrides: Record<string, unkno
   }
   return props;
 }
+export function applyStyleTokensToClip(clip: Clip, style: StyleTokens): void {
+  if (clip.locked) return;
+  const isLight = isLightHex(style.backgroundColor);
+  const targetSurface = isLight ? 'light' : 'dark';
+  const presetId = clip.props.presetId ? String(clip.props.presetId) : '';
+  if (presetId) {
+    const preset = getPreset(presetId);
+    clip.props.accent = style.primaryColor;
+    if (preset?.parameters.some((param) => param.key === 'secondary')) {
+      clip.props.secondary = style.secondaryColor;
+    }
+    if (preset?.parameters.some((param) => param.key === 'surface') && clip.props.surface !== 'transparent') {
+      clip.props.surface = targetSurface;
+    }
+    clip.props.color = style.inkColor;
+    return;
+  }
+  if (clip.kind === 'title') {
+    clip.props.color = style.inkColor;
+    if (clip.props.background && clip.props.background !== 'transparent') {
+      clip.props.background = style.surfaceColor;
+    }
+  } else if (clip.kind === 'caption') {
+    clip.props.color = style.captionColor;
+    clip.props.background = isLight ? 'rgba(255,255,255,0.88)' : 'rgba(12,13,16,0.75)';
+  } else if (clip.kind === 'shape') {
+    clip.props.color = style.primaryColor;
+  }
+}
+
 export function createPresetClip(
   id: string,
   start = 0,
   fps = 30,
   overrides: Record<string, unknown> = {},
+  project?: Project,
 ): Clip {
   const preset = getPreset(id);
   if (!preset) throw new Error('素材预设不存在');
-  return {
+  const style = resolveProjectStyle(project);
+  const clip: Clip = {
     ...newClip(preset.kind, Math.max(0, Math.round(start))),
     name: preset.name,
     duration: Math.max(1, Math.round(preset.durationSeconds * fps)),
     props: { ...normalizePresetProps(id, overrides), presetId: id, presetVersion: preset.version },
   };
+  if (style) {
+    applyStyleTokensToClip(clip, style);
+    // Re-apply explicit overrides for style keys if caller passed them intentionally
+    if (overrides.accent !== undefined) clip.props.accent = overrides.accent;
+    if (overrides.secondary !== undefined) clip.props.secondary = overrides.secondary;
+    if (overrides.surface !== undefined) clip.props.surface = overrides.surface;
+  }
+  return clip;
 }

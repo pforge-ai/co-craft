@@ -1,7 +1,9 @@
 import React from 'react';
 import { useCurrentFrame, useVideoConfig } from 'remotion';
-import type { Clip } from '../core/types';
-import { getPreset, phaseAtSecond } from '../core/presets';
+import type { Clip, Project } from '../core/types';
+import { getPreset, isLightHex, phaseAtSecond, resolveProjectStyle } from '../core/presets';
+import { TeardownStage } from './ThreeStage';
+import { SeeCodeRig, TinychartsRig, AnatomyRig, ScreenFocusRig } from './ScienceRigs';
 
 const family = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif';
 const mono = '"SFMono-Regular", Consolas, monospace';
@@ -538,6 +540,9 @@ export interface PresetFrameProps {
   width: number;
   height: number;
   props?: Record<string, unknown>;
+  assetUrl?: string;
+  assetKind?: 'video' | 'image' | 'audio' | 'model-3d';
+  sourceIn?: number;
 }
 export function PresetFrame({
   presetId,
@@ -547,6 +552,9 @@ export function PresetFrame({
   width: w,
   height: h,
   props: overrides = {},
+  assetUrl,
+  assetKind,
+  sourceIn = 0,
 }: PresetFrameProps) {
   const requestedVersion =
     overrides.presetVersion === undefined ? undefined : Number(overrides.presetVersion);
@@ -1459,6 +1467,49 @@ export function PresetFrame({
         </div>
       </>
     );
+  } else if (presetId === 'teardown-3d') {
+    content = (
+      <TeardownStage
+        title={text}
+        subtitle={subtitle}
+        sceneType={textOf(p, 'sceneType', 'turbine')}
+        cameraPreset={textOf(p, 'cameraPreset', 'orbit')}
+        cameraYaw={Number(p.cameraYaw ?? 0)}
+        cameraPitch={Number(p.cameraPitch ?? 0)}
+        explode={Number(p.explode ?? 0.65)}
+        speed={Number(p.speed ?? 1)}
+        animateExplode={Boolean(p.animateExplode ?? true)}
+        focusLabel={textOf(p, 'focusLabel', '')}
+        accent={accent}
+        secondary={secondary}
+        surface={textOf(p, 'surface', 'dark')}
+        modelUrl={assetKind === 'model-3d' ? assetUrl : undefined}
+        frame={frame}
+        fps={fps}
+        width={w}
+        height={h}
+      />
+    );
+  } else if (presetId === 'seecode-architecture') {
+    content = <SeeCodeRig width={w} height={h} frame={frame} fps={fps} duration={duration} props={p} />;
+  } else if (presetId === 'tinycharts-state') {
+    content = <TinychartsRig width={w} height={h} frame={frame} fps={fps} duration={duration} props={p} />;
+  } else if (presetId === 'anatomy-telemetry') {
+    content = <AnatomyRig width={w} height={h} frame={frame} fps={fps} duration={duration} props={p} />;
+  } else if (presetId === 'screen-focus-rig') {
+    content = (
+      <ScreenFocusRig
+        width={w}
+        height={h}
+        frame={frame}
+        fps={fps}
+        duration={duration}
+        props={p}
+        assetUrl={assetUrl}
+        assetKind={assetKind}
+        sourceIn={sourceIn}
+      />
+    );
   }
   return (
     <div data-preset={presetId} style={root}>
@@ -1466,9 +1517,30 @@ export function PresetFrame({
     </div>
   );
 }
-export function PresetContent({ clip }: { clip: Clip }) {
+export function PresetContent({
+  clip,
+  project,
+  mediaOrigin,
+}: {
+  clip: Clip;
+  project?: Project;
+  mediaOrigin?: string;
+}) {
   const frame = useCurrentFrame();
   const { width, height, fps } = useVideoConfig();
+  const linked = clip.assetId ? project?.assets.find((a) => a.id === clip.assetId) : undefined;
+  const assetUrl =
+    linked && mediaOrigin ? `${mediaOrigin}/media/${encodeURIComponent(linked.id)}` : undefined;
+  const style = resolveProjectStyle(project);
+  const resolvedProps: Record<string, unknown> = style
+    ? {
+        accent: style.primaryColor,
+        secondary: style.secondaryColor,
+        surface: isLightHex(style.backgroundColor) ? 'light' : 'dark',
+        color: style.inkColor,
+        ...clip.props,
+      }
+    : clip.props;
   return (
     <PresetFrame
       presetId={String(clip.props.presetId)}
@@ -1477,7 +1549,10 @@ export function PresetContent({ clip }: { clip: Clip }) {
       duration={clip.duration + clip.sourceIn}
       width={width}
       height={height}
-      props={clip.props}
+      props={resolvedProps}
+      assetUrl={assetUrl}
+      assetKind={linked?.kind}
+      sourceIn={clip.sourceIn}
     />
   );
 }

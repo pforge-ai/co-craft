@@ -10,7 +10,7 @@ interface DragStart {
 export function pointerDrag(
   event: DragStart,
   move: (x: number, y: number) => void,
-  end: () => void,
+  end?: (x: number, y: number) => void,
   cursor = 'col-resize',
 ) {
   if (event.button !== 0) return () => {};
@@ -45,7 +45,7 @@ export function pointerDrag(
     if (element.hasPointerCapture(id)) element.releasePointerCapture(id);
     shield.remove();
     delete document.body.dataset.resizing;
-    end();
+    end?.(latest.x, latest.y);
   };
   const onMove = (e: PointerEvent) => {
     if (e.pointerId !== id) return;

@@ -129,6 +129,8 @@ function demoSequence(portrait: boolean, photo: Asset, sound: Asset): Sequence {
   return {
     id: uid('seq'),
     name: portrait ? '竖版 · 相位之间' : '横版 · 相位之间',
+    branchName: portrait ? 'vertical' : 'main',
+    isMainBranch: !portrait,
     width: portrait ? 1080 : 1920,
     height: portrait ? 1920 : 1080,
     fps,

@@ -54,7 +54,7 @@ const [png, jpeg, video, wav] = await Promise.all(
   ),
 );
 const secrets = Object.fromEntries(
-  ['open', 'agent', 'google', 'anthropic', 'ark'].map((id) => [id, 'fixture-' + randomUUID()]),
+  ['open', 'agent', 'google', 'anthropic', 'ark', 'dash'].map((id) => [id, 'fixture-' + randomUUID()]),
 );
 const failures = [];
 const submissions = new Map();
@@ -293,13 +293,18 @@ const endpoint = await serve(async (req, res) => {
     'wrong credential at ' + path,
   );
   for (const key of authlessHeaders.filter((h) => h !== header)) assert.equal(req.headers[key], undefined);
-  if (path.endsWith('/models'))
+  if (path.endsWith('/models')) {
+    if (provider === 'dash') {
+      assert.equal(path, '/dash/compatible-mode/v1/models');
+      return json(res, { data: [{ id: 'qwen3.5-plus' }] });
+    }
     return json(
       res,
       google
         ? { models: [{ name: 'models/gemini-fixture', displayName: 'Gemini fixture' }] }
         : { data: [{ id: 'fixture-model' }] },
     );
+  }
   const data = await body(req);
   if (path.endsWith('/images/generations')) {
     assert.ok(data.prompt);
@@ -399,6 +404,44 @@ const endpoint = await serve(async (req, res) => {
     assert.match(data.messages[0].content[1].image_url.url, /^data:image/);
     return json(res, { choices: [{ message: { content: 'fixture open vision' } }] });
   }
+  if (path === '/dash/compatible-mode/v1/chat/completions') {
+    if (data.model === 'qwen3-asr-flash') {
+      const part = data.messages.at(-1).content[0];
+      assert.equal(part.type, 'input_audio');
+      assert.match(part.input_audio.data, /^data:audio\/wav;base64,/);
+      assert.equal(data.asr_options.language, 'zh');
+      return json(res, { choices: [{ message: { content: '千问语音识别成功' } }] });
+    }
+    assert.equal(data.model, 'qwen3.5-plus');
+    assert.match(data.messages[0].content[1].image_url.url, /^data:image/);
+    return json(res, { choices: [{ message: { content: 'fixture dashscope vision' } }] });
+  }
+  if (path === '/dash/api/v1/services/aigc/multimodal-generation/generation') {
+    if (data.model === 'qwen-image-plus') {
+      const content = data.input.messages[0].content;
+      assert.ok(content.some((c) => typeof c.image === 'string' && c.image.startsWith('data:image/png;base64,')));
+      assert.ok(content.some((c) => c.text === '水墨海岸'));
+      return json(res, { output: { choices: [{ message: { content: [{ image: cdn + '/image.png' }] } }] } });
+    }
+    if (data.model === 'qwen3-tts-flash') {
+      assert.equal(data.input.voice, 'Cherry');
+      assert.ok(data.input.text);
+      return json(res, { output: { audio: { data: wav.toString('base64') } } });
+    }
+  }
+  if (path === '/dash/api/v1/services/aigc/video-generation/video-synthesis') {
+    assert.equal(req.headers['x-dashscope-async'], 'enable');
+    assert.equal(data.model, 'wan2.6-i2v');
+    assert.match(data.input.img_url, /^data:image\/png;base64,/);
+    assert.equal(data.parameters.duration, 5);
+    assert.equal(data.parameters.size, '1280*720');
+    return json(res, { output: { task_id: 'dash-vid-1', task_status: 'PENDING' } });
+  }
+  if (path === '/dash/api/v1/tasks/dash-vid-1') {
+    return json(res, {
+      output: { task_id: 'dash-vid-1', task_status: 'SUCCEEDED', video_url: cdn + '/video.mp4' },
+    });
+  }
   throw new Error('unexpected route ' + path);
 });
 const connect = (id, protocol, baseUrl) => ({
@@ -412,6 +455,7 @@ const connect = (id, protocol, baseUrl) => ({
 });
 const providers = [
   connect('ark', 'ark', endpoint + '/ark/api/v3'),
+  connect('dash', 'dashscope', endpoint + '/dash/api/v1'),
   connect('open', 'openai', endpoint + '/open/v1'),
   connect('agent', 'openai', endpoint + '/agent/v1'),
   connect('google', 'google', endpoint),
@@ -426,13 +470,18 @@ const models = [
   model('google-vision', 'google', 'chat', 'models/gemini-fixture', ['vision']),
   model('anth-vision', 'anthropic', 'chat', 'custom-anthropic', ['vision']),
   model('open-vision', 'open', 'chat', 'custom/vision', ['vision']),
+  model('dash-vision', 'dash', 'chat', 'qwen3.5-plus', ['vision']),
   model('image-open', 'open', 'openai-image', 'custom/image-id', ['image']),
   model('image-ark', 'ark', 'ark-image', 'ark-image-id', ['image']),
+  model('image-dash', 'dash', 'dashscope-image', 'qwen-image-plus', ['image']),
   model('video-ark', 'ark', 'ark-video', 'ark-endpoint-id', ['video']),
+  model('video-dash', 'dash', 'dashscope-video', 'wan2.6-i2v', ['video']),
   model('video-open', 'open', 'openai-video', 'compat-video-id', ['video']),
   model('cloud-speech', 'open', 'openai-speech', 'voice-model', ['speech']),
+  model('speech-dash', 'dash', 'dashscope-speech', 'qwen3-tts-flash', ['speech']),
   model('asr', 'open', 'openai-transcription', 'whisper-1', ['transcription']),
   model('plain-asr', 'open', 'openai-transcription', 'custom/plain-transcript', ['transcription']),
+  model('asr-dash', 'dash', 'dashscope-transcription', 'qwen3-asr-flash', ['transcription']),
 ];
 async function launch() {
   const env = Object.fromEntries(
@@ -508,6 +557,8 @@ try {
   for (const p of saved.providers) assert.equal(p.apiKey, undefined);
   const discovery = await call('providers.inspect', { providerId: 'google' });
   assert.equal(discovery.models[0].id, 'gemini-fixture');
+  const dashDiscovery = await call('providers.inspect', { providerId: 'dash' });
+  assert.equal(dashDiscovery.models[0].id, 'qwen3.5-plus');
   const arkPublic = saved.providers.find((p) => p.id === 'ark');
   await assert.rejects(call('providers.inspect', { provider: { ...arkPublic, baseUrl: cdn } }), /API Key/);
   await assert.rejects(
@@ -542,8 +593,47 @@ try {
   for (const [modelId, expected] of [
     ['anth-vision', 'fixture anthropic'],
     ['open-vision', 'fixture open vision'],
+    ['dash-vision', 'fixture dashscope vision'],
   ])
     assert.equal((await generate({ use: 'vision', assetId: img.id, modelId })).text, expected);
+  assert.equal(
+    (
+      await generate({
+        use: 'speech',
+        modelId: 'speech-dash',
+        voice: 'Cherry',
+        prompt: '千问配音测试',
+      })
+    ).asset.kind,
+    'audio',
+  );
+  const dashImage = (
+    await generate({ use: 'image', modelId: 'image-dash', referenceAssetId: img.id, prompt: '水墨海岸' })
+  ).asset;
+  assert.equal(dashImage.width, 96);
+  const dashTranscript = await generate({
+    use: 'transcription',
+    modelId: 'asr-dash',
+    assetId: speechAsset.id,
+    language: 'zh',
+  });
+  assert.equal(dashTranscript.text, '千问语音识别成功');
+  assert.equal(dashTranscript.segments.length, 1);
+  const dashVideo = (
+    await generate({
+      use: 'video',
+      modelId: 'video-dash',
+      referenceAssetId: img.id,
+      prompt: '海岸起风镜头',
+      seconds: 5,
+      size: '1280x720',
+    })
+  ).asset;
+  assert.ok(dashVideo.duration > 0 && dashVideo.thumbnail);
+  await assert.rejects(
+    call('generation.start', { use: 'video', modelId: 'video-dash', prompt: 'missing-ref' }),
+    /参考图片/,
+  );
   assert.match(
     (await generate({ use: 'vision', assetId: movie.id, prompt: 'video-sample' })).text,
     /采样位置/,

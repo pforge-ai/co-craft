@@ -1,18 +1,241 @@
 export type ClipKind = 'video' | 'image' | 'audio' | 'title' | 'caption' | 'shape' | 'code';
 export type Track = 'visual' | 'overlay' | 'caption' | 'audio';
+
+/** Layer 1: Objective carrier / engine kind (never mixed with usage roles) */
+export type AssetEntityKind =
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'component'
+  | 'three'
+  | 'style'
+  | 'skill'
+  | 'text'
+  | 'compound'
+  | 'pack';
+
+/** Layer 2: Creative usage role (determines activated capabilities & slots) */
+export type AssetRole =
+  | 'character'
+  | 'product'
+  | 'environment'
+  | 'screen-recording'
+  | 'footage'
+  | 'voiceover'
+  | 'sfx'
+  | 'bgm'
+  | 'title-chapter'
+  | 'caption-style'
+  | 'logic-diagram'
+  | 'whiteboard'
+  | 'device-frame'
+  | 'backdrop'
+  | 'editing-skill'
+  | 'animation-skill'
+  | 'visual-style';
+
+/** Legacy v0.3 compatibility aliases */
+export type AssetCategory = 'media' | 'subject' | 'brand' | 'rig' | 'recipe';
+export type VaultSubkind =
+  | 'character'
+  | 'product'
+  | 'environment'
+  | 'media'
+  | 'screen-recording'
+  | 'brand-kit'
+  | 'motion-rig'
+  | 'three-rig'
+  | 'model-3d'
+  | 'recipe'
+  | 'text-note'
+  | 'compound-clip'
+  | 'material-pack';
+
+export interface CustomTagDef {
+  name: string;
+  color: string;
+}
+
+export interface CanvasGroup {
+  id: string;
+  name: string;
+  nodeIds: string[];
+  color?: string;
+}
+
+export interface ChatContextRef {
+  key: string;
+  kind: 'asset' | 'entity' | 'component' | 'clip' | 'shot' | 'group' | 'text';
+  id: string;
+  label: string;
+  clipId?: string;
+}
+
+export interface AssetLineageRef {
+  assetId?: string;
+  vaultItemId?: string;
+  variantId?: string;
+  version?: number;
+  via: 'capture-3d' | 'ai-generate' | 'transcribe-slice' | 'shell-wrap' | 'fork' | 'import' | 'manual-ref' | 'compound-save' | 'text-derive';
+  modelOrSkill?: string;
+  note?: string;
+}
+
+export interface AssetVariant {
+  id: string;
+  name: string;
+  parentVariantId?: string;
+  version: number;
+  assetId?: string;
+  libraryFile?: string;
+  promptDelta?: string;
+  tags: string[];
+  componentProps?: Record<string, string | number | boolean>;
+  updatedAt: string;
+}
+
+export interface StyleTokens {
+  primaryColor: string;
+  secondaryColor: string;
+  backgroundColor: string;
+  surfaceColor: string;
+  inkColor: string;
+  captionColor: string;
+  lightingPreset?: 'titanium-dark' | 'porcelain-soft' | 'cyber-rim';
+  cornerRadius?: number;
+}
+
+export interface ShotBinding {
+  entityId: string;
+  variantId?: string;
+  pinnedVersion?: number;
+}
+
+export interface TranscriptData {
+  text: string;
+  segments: { start: number; end: number; text: string }[];
+  language?: string;
+  updatedAt: string;
+}
+
 export interface Asset {
   id: string;
   name: string;
-  kind: 'video' | 'image' | 'audio';
+  kind: 'video' | 'image' | 'audio' | 'model-3d';
+  role?: AssetRole;
+  category?: AssetCategory;
+  subkind?: VaultSubkind;
   path: string;
   duration: number;
+  hasAudio?: boolean;
+  fps?: number;
+  offline?: boolean;
   waveform?: number[];
   width?: number;
   height?: number;
   thumbnail?: string;
-  source?: { provider: string; url?: string; author?: string; license?: string };
+  tags?: string[];
+  collection?: string;
+  derivedFrom?: AssetLineageRef[];
+  transcript?: TranscriptData;
+  source?: { provider: string; url?: string; author?: string; license?: string; [key: string]: unknown };
   createdAt: string;
 }
+
+export interface CompoundClipBundle {
+  clips: Clip[];
+  durationFrames: number;
+  fps: number;
+  width: number;
+  height: number;
+  assetFiles?: Record<string, string>;
+  componentSources?: Record<string, { name: string; source: string; props: Record<string, string | number | boolean> }>;
+}
+
+export interface VaultPackMember {
+  kind: 'asset' | 'component' | 'vault';
+  name: string;
+  role?: AssetRole;
+  assetId?: string;
+  libraryFile?: string;
+  assetKind?: Asset['kind'];
+  componentId?: string;
+  componentSource?: string;
+  props?: Record<string, any>;
+  promptAnchor?: string;
+  textContent?: string;
+  compound?: CompoundClipBundle;
+}
+
+export interface VaultItem {
+  id: string;
+  name: string;
+  /** Objective carrier kind in v0.4 */
+  entityKind?: AssetEntityKind;
+  /** Creative usage role in v0.4 */
+  role?: AssetRole;
+  /** Open user/Agent custom tags & facet tags (e.g. '状态:雨夜', '第一幕') */
+  tags?: string[];
+  collection?: string;
+  category: AssetCategory;
+  subkind: VaultSubkind;
+  description?: string;
+  /** Freeform canvas script / prompt note content for text nodes */
+  textContent?: string;
+  /** Shared identity anchor across all variants of this entity */
+  promptAnchor?: string;
+  voiceId?: string;
+  assetId?: string;
+  libraryFile?: string;
+  assetKind?: Asset['kind'];
+  /** Multi-state / branch variant tree */
+  variants?: AssetVariant[];
+  defaultVariantId?: string;
+  /** Upstream derivation lineage */
+  derivedFrom?: AssetLineageRef[];
+  /** Saved post-edit compound clip bundle */
+  compound?: CompoundClipBundle;
+  /** Bundled reusable material pack members */
+  packItems?: VaultPackMember[];
+  /** Decoupled Visual Style tokens */
+  styleTokens?: StyleTokens;
+  brand?: {
+    primaryColor: string;
+    secondaryColor: string;
+    backgroundColor: string;
+    captionColor: string;
+  };
+  rig?: {
+    presetId?: string;
+    componentId?: string;
+    componentName?: string;
+    componentSource?: string;
+    props?: Record<string, string | number | boolean>;
+    cameraPreset?: string;
+    slots?: { key: string; label: string; accepts: ('video' | 'image' | 'model-3d')[] }[];
+  };
+  recipe?: {
+    skillId: string;
+    slots: string[];
+    promptTemplate: string;
+    presetId?: string;
+  };
+  version: number;
+  originGlobalId?: string;
+  updatedAt: string;
+}
+
+export interface ClipTake {
+  id: string;
+  label: string;
+  kind: ClipKind;
+  sourceIn: number;
+  assetId?: string;
+  componentId?: string;
+  props: Record<string, any>;
+  createdAt: string;
+}
+
 export interface CodeComponent {
   id: string;
   name: string;
@@ -33,6 +256,14 @@ export interface CodeComponent {
   hash: string;
   props: Record<string, string | number | boolean>;
 }
+
+export type TransitionType = 'dissolve' | 'fade' | 'slide-left' | 'zoom-in' | 'blur' | 'wipe';
+
+export interface ClipTransition {
+  type: TransitionType;
+  durationFrames: number;
+}
+
 export interface Clip {
   id: string;
   name: string;
@@ -46,6 +277,12 @@ export interface Clip {
   assetId?: string;
   componentId?: string;
   locked: boolean;
+  transitionIn?: ClipTransition | null;
+  takes?: ClipTake[];
+  activeTakeId?: string;
+  subjectIds?: string[];
+  subjectBindings?: ShotBinding[];
+  shotNotes?: string;
   props: {
     text?: string;
     subtitle?: string;
@@ -55,16 +292,21 @@ export interface Clip {
     align?: 'left' | 'center' | 'right';
     position?: 'center' | 'bottom' | 'top';
     volume?: number;
+    fadeIn?: number;
+    fadeOut?: number;
     opacity?: number;
     scale?: number;
     x?: number;
     y?: number;
+    focalX?: number;
+    focalY?: number;
     fit?: 'cover' | 'contain';
     animation?: 'fade' | 'rise' | 'type' | 'none';
     template?: string;
     [key: string]: unknown;
   };
 }
+
 export interface Sequence {
   id: string;
   name: string;
@@ -73,7 +315,15 @@ export interface Sequence {
   fps: number;
   clips: Clip[];
   background: string;
+  mutedTracks?: Track[];
+  /** Film Version Tree & Parallel Branch metadata */
+  branchName?: string;
+  parentSequenceId?: string;
+  forkedAtRevision?: number;
+  isMainBranch?: boolean;
+  workflowIntent?: 'product-demo' | 'explainer' | 'story-film' | 'blank';
 }
+
 export interface Project {
   schemaVersion: 1;
   id: string;
@@ -85,8 +335,16 @@ export interface Project {
   assets: Asset[];
   sequences: Sequence[];
   components: CodeComponent[];
+  vault?: VaultItem[];
+  activeBrandId?: string;
+  activeSkillIds?: string[];
+  customTags?: CustomTagDef[];
+  canvasLayout?: Record<string, { x: number; y: number }>;
+  canvasGroups?: CanvasGroup[];
+  workflowIntent?: 'product-demo' | 'explainer' | 'story-film' | 'blank';
   modelDefaults?: Partial<Record<ModelUse, string>>;
 }
+
 export interface Revision {
   revision: number;
   name: string;
@@ -94,6 +352,28 @@ export interface Revision {
   createdAt: string;
   changes: string[];
 }
+
+export type ThinkingLevelChoice = 'off' | 'low' | 'medium' | 'high';
+
+export interface ComposerAttachment {
+  id: string;
+  name: string;
+  path: string;
+  mimeType: string;
+  kind: 'image' | 'video' | 'audio' | 'file';
+  previewDataUrl?: string;
+  sizeBytes?: number;
+}
+
+export interface SkillInfo {
+  name: string;
+  title?: string;
+  description: string;
+  path: string;
+  scope: 'builtin' | 'user' | 'project';
+  body?: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'system';
@@ -101,7 +381,19 @@ export interface Message {
   createdAt: string;
   tool?: string;
   status?: string;
+  thinking?: string;
+  attachments?: Pick<ComposerAttachment, 'id' | 'name' | 'kind' | 'previewDataUrl'>[];
+  skillIds?: string[];
+  refs?: string[];
 }
+
+export interface TaskUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  requests: number;
+}
+
 export interface Task {
   modelId?: string;
   id: string;
@@ -111,13 +403,16 @@ export interface Task {
   messages: Message[];
   status: 'idle' | 'running' | 'error';
   sessionPath?: string;
+  usage?: TaskUsage;
 }
+
 export interface ProjectSummary {
   id: string;
   name: string;
   path: string;
   updatedAt: string;
 }
+
 export interface ProjectEnvelope {
   project: Project;
   path: string;
@@ -125,7 +420,26 @@ export interface ProjectEnvelope {
   revisions: Revision[];
   canUndo: boolean;
   canRedo: boolean;
+  offlineAssetIds?: string[];
 }
+
+export interface EditScope {
+  sequenceId?: string;
+  clipIds?: string[];
+  strict?: boolean;
+  pin?: { x: number; y: number; frame: number; label?: string };
+}
+
+export interface PreflightIssue {
+  id: string;
+  severity: 'blocker' | 'warning';
+  title: string;
+  detail: string;
+  frame?: number;
+  clipId?: string;
+  assetId?: string;
+}
+
 export interface Job {
   id: string;
   type: 'export' | 'import' | 'transcribe' | 'generate';
@@ -151,6 +465,7 @@ export interface Job {
     status?: string;
   };
 }
+
 export type ModelUse = 'agent' | 'vision' | 'transcription' | 'speech' | 'image' | 'video';
 export type ModelAdapter =
   | 'chat'
@@ -160,16 +475,22 @@ export type ModelAdapter =
   | 'openai-video'
   | 'ark-image'
   | 'ark-video'
+  | 'dashscope-image'
+  | 'dashscope-video'
+  | 'dashscope-speech'
+  | 'dashscope-transcription'
   | 'system-speech';
+
 export interface ProviderConnection {
   id: string;
   name: string;
-  protocol: 'openai' | 'anthropic' | 'google' | 'ark' | 'system';
+  protocol: 'openai' | 'anthropic' | 'google' | 'ark' | 'dashscope' | 'system';
   baseUrl: string;
   apiKey?: string;
   hasApiKey: boolean;
   requiresKey: boolean;
 }
+
 export interface ModelDefinition {
   id: string;
   providerId: string;
@@ -179,6 +500,7 @@ export interface ModelDefinition {
   adapter: ModelAdapter;
   parameters: Record<string, string | number | boolean>;
 }
+
 export interface Settings {
   schemaVersion?: 2;
   providers: ProviderConnection[];
@@ -198,25 +520,79 @@ export interface Settings {
   allowShell: boolean;
   allowNetwork: boolean;
 }
+
 export type EditOperation =
   | { type: 'updateClip'; sequenceId: string; clipId: string; changes: Partial<Clip> }
   | { type: 'addClip'; sequenceId: string; clip: Clip }
   | { type: 'deleteClip'; sequenceId: string; clipId: string; ripple?: boolean }
   | { type: 'updateSequence'; sequenceId: string; changes: Partial<Omit<Sequence, 'clips' | 'id'>> }
   | { type: 'addSequence'; sequence: Sequence }
+  | { type: 'deleteSequence'; sequenceId: string }
   | {
       type: 'updateProject';
-      changes: { name?: string; brief?: string; modelDefaults?: Partial<Record<ModelUse, string>> };
+      changes: {
+        name?: string;
+        brief?: string;
+        workflowIntent?: Project['workflowIntent'];
+        activeSkillIds?: string[];
+        canvasLayout?: Record<string, { x: number; y: number }>;
+        canvasGroups?: CanvasGroup[];
+        modelDefaults?: Partial<Record<ModelUse, string>>;
+      };
     }
   | { type: 'addAsset'; asset: Asset }
-  | { type: 'putComponent'; component: CodeComponent };
+  | {
+      type: 'updateAssetMeta';
+      assetId: string;
+      changes: {
+        name?: string;
+        role?: AssetRole;
+        tags?: string[];
+        collection?: string;
+        derivedFrom?: AssetLineageRef[];
+      };
+    }
+  | { type: 'removeAsset'; assetId: string }
+  | {
+      type: 'relinkAsset';
+      assetId: string;
+      path: string;
+      duration?: number;
+      width?: number;
+      height?: number;
+      thumbnail?: string;
+      waveform?: number[];
+      hasAudio?: boolean;
+    }
+  | { type: 'updateAssetTranscript'; assetId: string; transcript: TranscriptData }
+  | { type: 'putComponent'; component: CodeComponent }
+  | { type: 'putVaultItem'; item: VaultItem }
+  | { type: 'removeVaultItem'; itemId: string }
+  | { type: 'setActiveBrand'; itemId?: string }
+  | { type: 'upsertCustomTag'; tag: CustomTagDef }
+  | { type: 'removeCustomTag'; tagName: string }
+  | {
+      type: 'forkSequenceBranch';
+      sourceSequenceId: string;
+      newSequenceId?: string;
+      branchName: string;
+      width?: number;
+      height?: number;
+    }
+  | { type: 'promoteSequenceBranch'; sequenceId: string }
+  | { type: 'addClipTake'; sequenceId: string; clipId: string; take: ClipTake; activate?: boolean }
+  | { type: 'switchClipTake'; sequenceId: string; clipId: string; takeId: string }
+  | { type: 'reorderClips'; sequenceId: string; orderedClipIds: string[] };
+
 export interface EditRequest {
   baseRevision: number;
   name: string;
   operations: EditOperation[];
   author?: 'you' | 'agent';
   runId?: string;
+  scope?: EditScope;
 }
+
 export interface BootData {
   studioMedia: Asset[];
   projects: ProjectSummary[];
@@ -225,15 +601,18 @@ export interface BootData {
   jobs: Job[];
   previewOrigin: string;
   version: string;
-  skills: { name: string; description: string; path: string }[];
+  skills: SkillInfo[];
+  globalVault?: VaultItem[];
 }
+
 export interface AgentEvent {
   taskId: string;
-  type: 'text' | 'tool-start' | 'tool-end' | 'done' | 'error' | 'status';
+  type: 'text' | 'thinking' | 'text-commit' | 'tool-start' | 'tool-end' | 'done' | 'error' | 'status';
   text?: string;
   tool?: string;
   runId: string;
 }
+
 export interface StockVideo {
   id: number;
   name: string;
@@ -245,11 +624,13 @@ export interface StockVideo {
   width: number;
   height: number;
 }
+
 export interface DesktopAPI {
   call<T = unknown>(method: string, payload?: unknown): Promise<T>;
-  on(channel: 'project' | 'agent' | 'jobs' | 'menu', callback: (data: any) => void): () => void;
+  on(channel: 'project' | 'agent' | 'jobs' | 'menu' | 'settings', callback: (data: any) => void): () => void;
   pathsForFiles(files: File[]): string[];
 }
+
 declare global {
   interface Window {
     cocraft: DesktopAPI;

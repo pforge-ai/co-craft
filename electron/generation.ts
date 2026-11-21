@@ -11,7 +11,12 @@ import { ProjectStore, atomicJSON } from './store';
 import type { SettingsStore } from './settings';
 import type { JobService } from './jobs';
 import { uid } from '../src/core/project';
-import { modelUses, selectedModel, normalizeProviderUrl as providerBase } from '../src/core/models';
+import {
+  modelUses,
+  selectedModel,
+  normalizeProviderUrl as providerBase,
+  dashscopeEndpoints,
+} from '../src/core/models';
 import type {
   Asset,
   Job,
@@ -58,11 +63,15 @@ const parameterKeys: Record<ModelAdapter, string[]> = {
     'output_compression',
     'moderation',
   ],
+  'dashscope-image': ['size', 'seed', 'watermark', 'prompt_extend', 'negative_prompt'],
   'ark-video': ['resolution', 'ratio', 'duration', 'seed', 'watermark', 'generate_audio', 'camera_fixed'],
   'openai-video': ['size', 'seconds'],
+  'dashscope-video': ['resolution', 'size', 'duration', 'seed', 'watermark', 'prompt_extend', 'negative_prompt', 'audio'],
   'openai-speech': ['voice', 'speed', 'instructions'],
+  'dashscope-speech': ['voice', 'language_type'],
   'system-speech': ['voice', 'rate'],
   'openai-transcription': ['language', 'response_format', 'temperature'],
+  'dashscope-transcription': ['language', 'temperature'],
 };
 function modelParameters(adapter: ModelAdapter, raw?: Record<string, string | number | boolean>) {
   return Object.fromEntries(
@@ -72,14 +81,21 @@ function modelParameters(adapter: ModelAdapter, raw?: Record<string, string | nu
     ),
   );
 }
+const dashscopeSize = (s?: unknown) =>
+  typeof s === 'string' && /^\d+x\d+$/i.test(s.trim()) ? s.trim().replace(/x/i, '*') : s ? String(s) : undefined;
 // Pi's Anthropic SDK adds /v1 itself; the Google SDK treats the configured base as already versioned.
 export function chatEndpoint(protocol: string, baseUrl: string, modelId: string) {
   let base = providerBase(baseUrl);
   if (protocol === 'anthropic') base = base.replace(/\/v1$/, '');
   if (protocol === 'google' && new URL(base).pathname === '/') base += '/v1beta';
+  if (protocol === 'dashscope') base = dashscopeEndpoints(base).compatBase;
   return { baseUrl: base, modelId: protocol === 'google' ? modelId.replace(/^models\//, '') : modelId };
 }
-function endpoint(provider: ProviderConnection, path: string) {
+function endpoint(provider: ProviderConnection, path: string, useNative = false) {
+  if (provider.protocol === 'dashscope') {
+    const { nativeBase, compatBase } = dashscopeEndpoints(provider.baseUrl);
+    return (useNative ? nativeBase : compatBase) + '/' + path;
+  }
   const { baseUrl } = chatEndpoint(provider.protocol, provider.baseUrl, '');
   return baseUrl + (provider.protocol === 'anthropic' ? '/v1/' : '/') + path;
 }
@@ -102,6 +118,7 @@ async function request(
   path: string,
   init: RequestInit = {},
   signal?: AbortSignal,
+  useNative = false,
 ) {
   const headers = new Headers(init.headers);
   if (provider.protocol === 'anthropic') headers.set('anthropic-version', '2023-06-01');
@@ -110,7 +127,7 @@ async function request(
     else if (provider.protocol === 'google') headers.set('x-goog-api-key', provider.apiKey);
     else headers.set('Authorization', `Bearer ${provider.apiKey}`);
   }
-  const response = await fetch(endpoint(provider, path), {
+  const response = await fetch(endpoint(provider, path, useNative), {
     ...init,
     headers,
     credentials: 'omit',
@@ -130,13 +147,25 @@ async function request(
   }
   return response;
 }
-const jsonRequest = async (p: ProviderConnection, path: string, body: unknown, signal: AbortSignal) =>
+const jsonRequest = async (
+  p: ProviderConnection,
+  path: string,
+  body: unknown,
+  signal: AbortSignal,
+  useNative = false,
+  extraHeaders?: Record<string, string>,
+) =>
   (
     await request(
       p,
       path,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
+        body: JSON.stringify(body),
+      },
       signal,
+      useNative,
     )
   ).json();
 function publicProvider({ id, name, protocol, baseUrl, requiresKey, hasApiKey }: ProviderConnection) {
@@ -201,13 +230,31 @@ export async function collectGeneratedFile(file: string, store: ProjectStore) {
     await rm(snapshot, { force: true });
   }
 }
-async function download(url: string, file: string, signal: AbortSignal) {
+function isPrivateOrLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '::1' || h === '0.0.0.0' || h.endsWith('.local')) return true;
+  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)) return true;
+  const m172 = h.match(/^172\.(\d+)\./);
+  if (m172 && Number(m172[1]) >= 16 && Number(m172[1]) <= 31) return true;
+  return false;
+}
+
+async function download(url: string, file: string, signal: AbortSignal, providerBaseUrl?: string) {
   const target = new URL(url);
   if (!['https:', 'http:'].includes(target.protocol) || target.username || target.password)
     throw new Error('素材下载地址无效');
+  if (target.hostname === '169.254.169.254') throw new Error('已拦截不安全的云元数据地址');
+  if (isPrivateOrLoopbackHost(target.hostname)) {
+    const providerHost = providerBaseUrl ? new URL(providerBaseUrl).hostname : '';
+    // Remote cloud providers must never redirect/point downloads to localhost or LAN endpoints (SSRF guard).
+    if (!providerHost || !isPrivateOrLoopbackHost(providerHost) || target.hostname !== providerHost) {
+      throw new Error('已拦截来自远端服务指向本机或内网的素材下载地址');
+    }
+  }
   const response = await fetch(target, {
     signal: AbortSignal.any([signal, AbortSignal.timeout(300000)]),
     credentials: 'omit',
+    redirect: 'error',
   });
   if (!response.ok || !response.body) throw new Error(`下载生成素材失败 (${response.status})`);
   await pipeline(Readable.fromWeb(response.body as any), createWriteStream(file, { flags: 'wx' }), {
@@ -331,10 +378,10 @@ export class GenerationService {
     if (req.referenceAssetId && !assets.some((a) => a.id === req.referenceAssetId && a.kind === 'image'))
       throw new Error('参考图片不存在');
     const expected: Record<string, string[]> = {
-      image: ['openai-image', 'ark-image'],
-      video: ['openai-video', 'ark-video'],
-      speech: ['openai-speech', 'system-speech'],
-      transcription: ['openai-transcription'],
+      image: ['openai-image', 'ark-image', 'dashscope-image'],
+      video: ['openai-video', 'ark-video', 'dashscope-video'],
+      speech: ['openai-speech', 'system-speech', 'dashscope-speech'],
+      transcription: ['openai-transcription', 'dashscope-transcription'],
       vision: ['chat'],
     };
     if (!expected[req.use].includes(resolved.model.adapter))
@@ -346,6 +393,12 @@ export class GenerationService {
       throw new Error(
         'OpenAI 官方 Videos API 已于 2026-09-24 停止提供。请选择方舟视频模型或其他已支持该协议的服务。',
       );
+    if (
+      resolved.model.adapter === 'dashscope-video' &&
+      /-i2v/i.test(resolved.model.modelId) &&
+      !req.referenceAssetId
+    )
+      throw new Error('图生视频模型需要选择一张参考图片，或改用文生视频模型 (如 wan2.6-t2v)');
     const job: GenerationJob = {
       id: uid('job'),
       name: `${label(req.use)} · ${resolved.model.name}`,
@@ -522,6 +575,44 @@ export class GenerationService {
     const asset = await this.sourceAsset(store, job, id);
     return imageData(asset, dir, signal);
   }
+  private async pollDashscopeTask(
+    provider: ProviderConnection,
+    job: GenerationJob,
+    signal: AbortSignal,
+  ) {
+    const taskId = job.remote!.id;
+    const statusMap: Record<string, string> = {
+      PENDING: 'pending',
+      RUNNING: 'running',
+      SUCCEEDED: 'succeeded',
+      FAILED: 'failed',
+      CANCELED: 'canceled',
+      UNKNOWN: 'expired',
+    };
+    for (;;) {
+      signal.throwIfAborted();
+      const data: any = await (
+        await request(provider, `tasks/${encodeURIComponent(taskId)}`, {}, signal, true)
+      ).json();
+      const rawStatus = String(data.output?.task_status || '').toUpperCase();
+      const status = statusMap[rawStatus];
+      signal.throwIfAborted();
+      if (!status) throw new Error('阿里百炼返回了无法识别的任务状态，请核对控制台记录');
+      const remote = { ...job.remote!, status };
+      if (status === 'succeeded') {
+        await this.jobs.update(job, { remote });
+        return data;
+      }
+      if (['failed', 'canceled', 'expired'].includes(status)) {
+        await this.jobs.update(job, { remote });
+        throw new Error(data.output?.message || data.message || `云任务已终止（${status}）`);
+      }
+      const stage = status === 'pending' ? '云端排队中' : '云端生成中';
+      if (stage !== job.stage || status !== job.remote!.status)
+        await this.jobs.update(job, { remote, stage });
+      await delay(1800, undefined, { signal });
+    }
+  }
   private async image(
     store: ProjectStore,
     job: GenerationJob,
@@ -536,7 +627,109 @@ export class GenerationService {
     const reference = await this.reference(store, job, dir, signal, req.referenceAssetId);
     await this.jobs.update(job, { stage: '正在生成图像' });
     let data: any;
-    if (model.adapter === 'ark-image') {
+    let image: { b64_json?: string; url?: string } | undefined;
+    if (model.adapter === 'dashscope-image') {
+      const dataUri = reference ? `data:image/png;base64,${reference.toString('base64')}` : undefined;
+      let dsRes: any;
+      if (job.remote) {
+        dsRes = await this.pollDashscopeTask(provider, job, signal);
+      } else {
+        const sizeVal = dashscopeSize(req.size || p.size);
+        if (/^qwen-image/i.test(model.modelId)) {
+          dsRes = await jsonRequest(
+            provider,
+            'services/aigc/multimodal-generation/generation',
+            {
+              model: model.modelId,
+              input: {
+                messages: [
+                  {
+                    role: 'user',
+                    content: [...(dataUri ? [{ image: dataUri }] : []), { text: req.prompt }],
+                  },
+                ],
+              },
+              parameters: {
+                ...parameters(p, ['seed', 'watermark', 'prompt_extend', 'negative_prompt']),
+                n: 1,
+                ...(!reference && sizeVal ? { size: sizeVal } : {}),
+              },
+            },
+            signal,
+            true,
+          );
+        } else if (/^wanx/i.test(model.modelId)) {
+          dsRes = await jsonRequest(
+            provider,
+            'services/aigc/text2image/image-synthesis',
+            {
+              model: model.modelId,
+              input: {
+                prompt: req.prompt,
+                ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
+                ...(dataUri ? { ref_img: dataUri } : {}),
+              },
+              parameters: {
+                ...parameters(p, ['seed', 'watermark', 'prompt_extend']),
+                n: 1,
+                ...(sizeVal ? { size: sizeVal } : {}),
+              },
+            },
+            signal,
+            true,
+            { 'X-DashScope-Async': 'enable' },
+          );
+        } else {
+          dsRes = await jsonRequest(
+            provider,
+            'services/aigc/image-generation/generation',
+            {
+              model: model.modelId,
+              input: {
+                messages: [
+                  {
+                    role: 'user',
+                    content: [...(dataUri ? [{ image: dataUri }] : []), { text: req.prompt }],
+                  },
+                ],
+              },
+              parameters: {
+                ...parameters(p, ['seed', 'watermark', 'prompt_extend', 'negative_prompt']),
+                n: 1,
+                ...(sizeVal ? { size: sizeVal } : {}),
+              },
+            },
+            signal,
+            true,
+            { 'X-DashScope-Async': 'enable' },
+          );
+        }
+        if (dsRes?.output?.task_id) {
+          await this.jobs.update(job, {
+            remote: {
+              id: dsRes.output.task_id,
+              status: 'pending',
+              adapter: model.adapter,
+              modelId: model.id,
+              providerId: provider.id,
+              prompt: req.prompt!,
+            },
+          });
+          dsRes = await this.pollDashscopeTask(provider, job, signal);
+        }
+      }
+      const contentImg = dsRes?.output?.choices?.[0]?.message?.content?.find(
+        (c: any) => typeof c?.image === 'string' && c.image,
+      )?.image;
+      const resultItem = dsRes?.output?.results?.[0];
+      const imgVal = contentImg || resultItem?.url || resultItem?.b64_image;
+      if (typeof imgVal === 'string' && imgVal) {
+        image =
+          imgVal.startsWith('data:') || !/^https?:\/\//i.test(imgVal)
+            ? { b64_json: imgVal }
+            : { url: imgVal };
+      }
+    } else if (model.adapter === 'ark-image') {
       data = await jsonRequest(
         provider,
         'images/generations',
@@ -550,6 +743,7 @@ export class GenerationService {
         },
         signal,
       );
+      image = data.data?.[0];
     } else if (reference) {
       const body = new FormData();
       for (const [key, value] of Object.entries({
@@ -562,6 +756,7 @@ export class GenerationService {
         body.append(key, String(value));
       body.append('image', new Blob([new Uint8Array(reference)], { type: 'image/png' }), 'reference.png');
       data = await (await request(provider, 'images/edits', { method: 'POST', body }, signal)).json();
+      image = data.data?.[0];
     } else {
       data = await jsonRequest(
         provider,
@@ -582,15 +777,15 @@ export class GenerationService {
         },
         signal,
       );
+      image = data.data?.[0];
     }
-    const image = data.data?.[0];
     if (!image?.b64_json && !image?.url) throw new Error('服务没有返回图片');
     const output = join(dir, uid('image'));
     if (image.b64_json)
       await writeFile(output, Buffer.from(String(image.b64_json).replace(/^data:[^,]+,/, ''), 'base64'), {
         flag: 'wx',
       });
-    else await download(image.url, output, signal);
+    else if (image.url) await download(image.url, output, signal, provider.baseUrl);
     const handle = await open(output, 'r');
     const header = Buffer.alloc(12);
     try {
@@ -649,6 +844,51 @@ export class GenerationService {
         ],
         { signal },
       );
+    } else if (model.adapter === 'dashscope-speech') {
+      const data: any = await jsonRequest(
+        provider,
+        'services/aigc/multimodal-generation/generation',
+        {
+          model: model.modelId,
+          input: {
+            text: req.prompt,
+            voice: req.voice || p.voice || 'Cherry',
+            ...(p.language_type ? { language_type: p.language_type } : {}),
+          },
+        },
+        signal,
+        true,
+      );
+      const audio = data.output?.audio;
+      if (!audio?.data && !audio?.url) throw new Error('千问语音合成未返回音频内容');
+      const rawFile = join(dir, uid('voice-raw'));
+      if (audio.data) {
+        await writeFile(rawFile, Buffer.from(String(audio.data).replace(/^data:[^,]+,/, ''), 'base64'), {
+          flag: 'wx',
+        });
+      } else {
+        await download(audio.url, rawFile, signal, provider.baseUrl);
+      }
+      const handle = await open(rawFile, 'r');
+      const header = Buffer.alloc(12);
+      try {
+        await handle.read(header);
+      } finally {
+        await handle.close();
+      }
+      const ext =
+        header.toString('ascii', 0, 4) === 'RIFF'
+          ? 'wav'
+          : header.toString('ascii', 0, 3) === 'ID3' || (header[0] === 0xff && (header[1] & 0xe0) === 0xe0)
+            ? 'mp3'
+            : header.toString('ascii', 0, 4) === 'OggS'
+              ? 'ogg'
+              : header.toString('ascii', 0, 4) === 'fLaC'
+                ? 'flac'
+                : 'wav';
+      const named = `${rawFile}.${ext}`;
+      await rename(rawFile, named);
+      return named;
     } else {
       const response = await request(
         provider,
@@ -683,7 +923,14 @@ export class GenerationService {
   ) {
     const req = job.generation!.request;
     const ark = model.adapter === 'ark-video';
-    const route = ark ? 'contents/generations/tasks' : 'videos';
+    const dashscope = model.adapter === 'dashscope-video';
+    if (dashscope && /-i2v/i.test(model.modelId) && !req.referenceAssetId && !job.remote)
+      throw new Error('图生视频模型需要选择一张参考图片，或改用文生视频模型 (如 wan2.6-t2v)');
+    const route = dashscope
+      ? 'services/aigc/video-generation/video-synthesis'
+      : ark
+        ? 'contents/generations/tasks'
+        : 'videos';
     if (!job.remote) {
       await this.jobs.update(job, { stage: '正在提交云端任务' });
       const reference = await this.reference(store, job, dir, signal, req.referenceAssetId);
@@ -696,8 +943,35 @@ export class GenerationService {
       signal.throwIfAborted();
       // A submitted creation request can be billable. Read its acknowledgement even after a local stop.
       const receipt = AbortSignal.timeout(30000);
-      let data;
-      if (ark) {
+      let data: any;
+      if (dashscope) {
+        const sizeInput = req.size || p.size;
+        const sizeIsPreset = typeof sizeInput === 'string' && /^(480|720|1080)p$/i.test(sizeInput.trim());
+        data = await jsonRequest(
+          provider,
+          route,
+          {
+            model: model.modelId,
+            input: {
+              prompt: req.prompt,
+              ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
+              ...(reference ? { img_url: `data:image/png;base64,${reference.toString('base64')}` } : {}),
+            },
+            parameters: {
+              ...parameters(p, ['resolution', 'seed', 'watermark', 'prompt_extend', 'audio']),
+              ...(req.seconds || p.duration ? { duration: Number(req.seconds || p.duration) } : {}),
+              ...(sizeIsPreset
+                ? { resolution: String(sizeInput).trim().toUpperCase() }
+                : sizeInput
+                  ? { size: dashscopeSize(sizeInput) }
+                  : {}),
+            },
+          },
+          receipt,
+          true,
+          { 'X-DashScope-Async': 'enable' },
+        );
+      } else if (ark) {
         data = await jsonRequest(
           provider,
           route,
@@ -735,12 +1009,13 @@ export class GenerationService {
           );
         data = await (await request(provider, route, { method: 'POST', body }, receipt)).json();
       }
-      if (typeof data.id !== 'string' || !data.id)
+      const remoteId = dashscope ? data.output?.task_id : data.id;
+      if (typeof remoteId !== 'string' || !remoteId)
         throw new Error('服务未返回云任务 ID，请核对提供商后台记录再重新提交');
       await this.jobs.update(job, {
         remote: {
-          id: data.id,
-          status: 'queued',
+          id: remoteId,
+          status: dashscope ? 'pending' : 'queued',
           adapter: model.adapter,
           modelId: model.id,
           providerId: provider.id,
@@ -749,6 +1024,15 @@ export class GenerationService {
       });
     }
     signal.throwIfAborted();
+    if (dashscope) {
+      const final = await this.pollDashscopeTask(provider, job, signal);
+      await this.jobs.update(job, { stage: '正在下载生成的视频' });
+      const output = join(dir, `${uid('video')}.mp4`);
+      const videoUrl = final.output?.video_url || final.output?.results?.[0]?.url;
+      if (!videoUrl) throw new Error('云任务完成但未返回视频地址');
+      await download(videoUrl, output, signal, provider.baseUrl);
+      return output;
+    }
     const routeWithId = `${route}/${encodeURIComponent(job.remote!.id)}`;
     let final: any;
     for (;;) {
@@ -793,7 +1077,7 @@ export class GenerationService {
     const output = join(dir, `${uid('video')}.mp4`);
     if (ark) {
       if (!final.content?.video_url) throw new Error('云任务完成但未返回视频地址');
-      await download(final.content.video_url, output, signal);
+      await download(final.content.video_url, output, signal, provider.baseUrl);
     } else {
       const response = await request(provider, `${routeWithId}/content`, {}, signal);
       if (!response.body) throw new Error('服务没有返回视频内容');
@@ -813,25 +1097,30 @@ export class GenerationService {
     const req = job.generation!.request;
     const asset = await this.sourceAsset(store, job, req.assetId!);
     if (asset.kind === 'image') throw new Error('请选择包含语音的视频或音频');
+    if ((asset as Asset).hasAudio === false) throw new Error('该视频素材不包含音轨，无法进行语音转录');
     const p = { ...model.parameters, ...req.parameters };
-    const chunkSeconds = 300;
+    const isDashscopeAsr = model.adapter === 'dashscope-transcription';
+    const chunkSeconds = isDashscopeAsr ? 120 : 300;
+    const overlapSeconds = isDashscopeAsr ? 3 : 4;
+    const stepSeconds = chunkSeconds - overlapSeconds;
     const diarize = model.modelId === 'gpt-4o-transcribe-diarize';
     const format = String(
       p.response_format ||
         (diarize ? 'diarized_json' : model.modelId.includes('whisper') ? 'verbose_json' : 'json'),
     );
-    if (!['json', 'verbose_json', 'diarized_json', 'text'].includes(format))
+    if (!isDashscopeAsr && !['json', 'verbose_json', 'diarized_json', 'text'].includes(format))
       throw new Error('请选择 JSON、带时间戳的 JSON 或纯文本转录格式');
     const segments: { start: number; end: number; text: string }[] = [];
     const texts: string[] = [];
-    for (let start = 0; start < asset.duration; start += chunkSeconds) {
+    let coveredEnd = 0;
+    for (let start = 0; start < asset.duration; start += stepSeconds) {
       signal.throwIfAborted();
       const file = join(dir, `speech-${start}.wav`);
       await this.jobs.update(job, {
         stage: `提取并转录 ${Math.floor(start / 60)}–${Math.ceil(Math.min(asset.duration, start + chunkSeconds) / 60)} 分钟`,
         progress: start / asset.duration,
       });
-      const body = new FormData();
+      let wavBytes: Buffer;
       try {
         await run(
           binary('ffmpeg'),
@@ -858,42 +1147,113 @@ export class GenerationService {
           ],
           { signal },
         );
-        body.append(
-          'file',
-          new Blob([new Uint8Array(await readFile(file))], { type: 'audio/wav' }),
-          'speech.wav',
-        );
+        wavBytes = await readFile(file);
+      } catch (err) {
+        if (String(err).includes('matches no streams') || String(err).includes('Stream map'))
+          throw new Error('该视频素材不包含可提取的音轨');
+        throw err;
       } finally {
         await rm(file, { force: true });
       }
-      body.append('model', model.modelId);
-      body.append('response_format', format);
-      if (format === 'verbose_json') body.append('timestamp_granularities[]', 'segment');
-      if (diarize) body.append('chunking_strategy', 'auto');
-      if (p.temperature !== undefined) body.append('temperature', String(p.temperature));
-      if (req.language || p.language)
-        body.append(
-          model.modelId === 'gpt-transcribe' ? 'languages[]' : 'language',
-          String(req.language || p.language),
+      if (isDashscopeAsr) {
+        const resp = await jsonRequest(
+          provider,
+          'chat/completions',
+          {
+            model: model.modelId,
+            messages: [
+              ...(req.prompt ? [{ role: 'system', content: req.prompt }] : []),
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'input_audio',
+                    input_audio: {
+                      data: `data:audio/wav;base64,${wavBytes.toString('base64')}`,
+                      format: 'wav',
+                    },
+                  },
+                ],
+              },
+            ],
+            ...(p.temperature !== undefined ? { temperature: Number(p.temperature) } : {}),
+            asr_options: {
+              enable_itn: true,
+              ...(req.language || p.language ? { language: String(req.language || p.language) } : {}),
+            },
+          },
+          signal,
         );
-      if (req.prompt && !diarize) body.append('prompt', req.prompt);
-      const response = await request(provider, 'audio/transcriptions', { method: 'POST', body }, signal);
-      const data = format === 'text' ? { text: await response.text() } : await response.json();
-      const chunk = [];
-      for (const s of Array.isArray(data.segments) ? data.segments : []) {
-        const text = typeof s.text === 'string' ? s.text.trim() : '';
-        const from = Math.max(0, s.start),
-          to = Math.min(s.end, asset.duration - start, chunkSeconds);
-        if (text && Number.isFinite(s.start) && Number.isFinite(s.end) && to > from) {
-          segments.push({ start: start + from, end: start + to, text });
-          chunk.push(text);
+        const rawContent = resp.choices?.[0]?.message?.content;
+        const text = (
+          typeof rawContent === 'string'
+            ? rawContent
+            : Array.isArray(rawContent)
+              ? rawContent.map((part: any) => part?.text || '').join(' ')
+              : ''
+        ).trim();
+        if (text) {
+          texts.push(text);
+          const chunkStart = start > 0 ? Math.max(start, coveredEnd) : start;
+          const chunkEnd = Math.min(asset.duration, start + chunkSeconds);
+          if (chunkEnd > chunkStart) {
+            segments.push({ start: chunkStart, end: chunkEnd, text });
+            coveredEnd = Math.max(coveredEnd, chunkEnd);
+          }
         }
+      } else {
+        const body = new FormData();
+        body.append('file', new Blob([new Uint8Array(wavBytes)], { type: 'audio/wav' }), 'speech.wav');
+        body.append('model', model.modelId);
+        body.append('response_format', format);
+        if (format === 'verbose_json') body.append('timestamp_granularities[]', 'segment');
+        if (diarize) body.append('chunking_strategy', 'auto');
+        if (p.temperature !== undefined) body.append('temperature', String(p.temperature));
+        if (req.language || p.language)
+          body.append(
+            model.modelId === 'gpt-transcribe' ? 'languages[]' : 'language',
+            String(req.language || p.language),
+          );
+        if (req.prompt && !diarize) body.append('prompt', req.prompt);
+        const response = await request(provider, 'audio/transcriptions', { method: 'POST', body }, signal);
+        const data = format === 'text' ? { text: await response.text() } : await response.json();
+        const chunk = [];
+        for (const s of Array.isArray(data.segments) ? data.segments : []) {
+          const text = typeof s.text === 'string' ? s.text.trim() : '';
+          const from = Math.max(0, s.start),
+            to = Math.min(s.end, asset.duration - start, chunkSeconds);
+          if (text && Number.isFinite(s.start) && Number.isFinite(s.end) && to > from) {
+            const absStart = start + from;
+            const absEnd = start + to;
+            const mid = (absStart + absEnd) / 2;
+            // Deduplicate segments falling inside the overlap window of the previous chunk
+            if (start > 0 && mid <= coveredEnd + 0.1) continue;
+            const clampedStart = start > 0 ? Math.max(absStart, coveredEnd) : absStart;
+            if (absEnd <= clampedStart) continue;
+            segments.push({ start: clampedStart, end: absEnd, text });
+            coveredEnd = Math.max(coveredEnd, absEnd);
+            chunk.push(text);
+          }
+        }
+        const text = typeof data.text === 'string' && data.text.trim() ? data.text.trim() : chunk.join(' ');
+        if (text) texts.push(text);
       }
-      const text = typeof data.text === 'string' && data.text.trim() ? data.text.trim() : chunk.join(' ');
-      if (text) texts.push(text);
+      if (start + chunkSeconds >= asset.duration) break;
     }
     if (!texts.length && !segments.length) throw new Error('模型没有返回可用的转录文本');
-    return { text: texts.join('\n'), segments };
+    const transcriptResult = { text: texts.join('\n'), segments };
+    // Persist transcript in project analysis cache so Transcript panel retains it across restarts without polluting Undo stack.
+    try {
+      const analysisDir = join(store.path, '.cocraft', 'analysis');
+      await mkdir(analysisDir, { recursive: true });
+      await atomicJSON(join(analysisDir, `transcript-${asset.id}.json`), {
+        ...transcriptResult,
+        language: req.language,
+        updatedAt: new Date().toISOString(),
+      });
+      if (job.generation?.publish) await this.changed(store, await store.envelope());
+    } catch {}
+    return transcriptResult;
   }
   private async vision(
     store: ProjectStore,

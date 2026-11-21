@@ -1,18 +1,21 @@
 import { utilityProcess } from 'electron';
 import { join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { atomicJSON, readJSON } from './store';
 import type { Project, Job, EditOperation } from '../src/core/types';
 import { uid, clone, newClip } from '../src/core/project';
 import type { MediaServer } from './server';
+
 export class JobService {
   jobs: Job[] = [];
+  private internalJobs = new Map<string, Job>();
   private processes = new Map<string, Electron.UtilityProcess>();
   private controllers = new Map<string, AbortController>();
   private settling = new Map<string, Promise<void>>();
   private writes: Promise<unknown> = Promise.resolve();
+
   constructor(
     private root: string,
     private workerPath: string,
@@ -21,9 +24,14 @@ export class JobService {
     private onChange: (jobs: Job[]) => void,
     private devRoot?: string,
   ) {}
+
   async init() {
     await mkdir(join(this.root, 'render-cache'), { recursive: true });
-    this.jobs = await readJSON(join(this.root, 'jobs.json'), []);
+    const saved = await readJSON<Job[]>(join(this.root, 'jobs.json'), []);
+    // Strip any historical internal validation check jobs left by 0.2 / 0.3 preview_frame
+    this.jobs = saved.filter(
+      (j) => !j.name.startsWith('检查画面 · ') && !String(j.output || '').includes('/.cocraft/workspaces/'),
+    );
     for (const job of this.jobs)
       if (job.status === 'running' || job.status === 'queued') {
         job.status = 'failed';
@@ -43,6 +51,7 @@ export class JobService {
       }
     await this.persist();
   }
+
   private async persist() {
     const snapshot = structuredClone(this.jobs);
     const write = this.writes.then(() => atomicJSON(join(this.root, 'jobs.json'), snapshot));
@@ -50,10 +59,18 @@ export class JobService {
     await write;
     this.onChange(this.jobs);
   }
+
+  async clearFinished() {
+    this.jobs = this.jobs.filter((j) => j.status === 'running' || j.status === 'queued');
+    await this.persist();
+    return this.jobs;
+  }
+
   async update(job: Job, patch: Partial<Job>) {
     Object.assign(job, patch);
     await this.persist();
   }
+
   async runTask(
     job: Job,
     task: (signal: AbortSignal) => Promise<Job['result']>,
@@ -61,7 +78,6 @@ export class JobService {
     stage?: string,
   ): Promise<Job> {
     if (job.status === 'completed') return job;
-    // A cancelled POST may still be receiving its remote ID. Only one invocation owns the job at a time.
     if (this.controllers.has(job.id)) {
       if (job.status === 'running') return job;
       await this.settling.get(job.id);
@@ -82,7 +98,6 @@ export class JobService {
         await started;
         controller.signal.throwIfAborted();
         const result = await task(controller.signal);
-        // The task checks abort at its commit point. Once it has committed, expose that actual result.
         Object.assign(job, { result, status: 'completed', progress: 1, stage: '已完成' });
       } catch (error) {
         if (controller.signal.aborted || job.status === 'cancelled') return;
@@ -106,16 +121,22 @@ export class JobService {
     await started;
     return job;
   }
+
+  private lookup(id: string): Job | undefined {
+    return this.jobs.find((j) => j.id === id) || this.internalJobs.get(id);
+  }
+
   async wait(id: string, signal?: AbortSignal): Promise<NonNullable<Job['result']>> {
     while (true) {
       signal?.throwIfAborted();
-      const job = this.jobs.find((j) => j.id === id);
+      const job = this.lookup(id);
       if (!job) throw new Error('作业不存在');
       if (job.status === 'completed') return job.result || {};
       if (job.status === 'failed' || job.status === 'cancelled') throw new Error(job.error || job.stage);
-      await sleep(100, undefined, { signal });
+      await sleep(80, undefined, { signal });
     }
   }
+
   async validateComponents(project: Project, operations: EditOperation[], signal?: AbortSignal) {
     for (const op of operations) {
       if (op.type !== 'putComponent') continue;
@@ -134,10 +155,12 @@ export class JobService {
         { ...sequence, name: `检查画面 · ${op.component.name}`, clips: [{ ...clip, start: 0 }] },
       ];
       const output = join(this.root, 'render-cache', `${uid('check')}.png`);
+      // Silent internal validation: never pollutes user-facing background jobs list!
       const job = await this.render(candidate, sequence.id, output, {
         still: true,
         frame: Math.min(clip.duration - 1, Math.round(sequence.fps * 0.5)),
         scale: 0.25,
+        silent: true,
       });
       const cancel = () => {
         void this.cancel(job.id);
@@ -152,20 +175,24 @@ export class JobService {
         );
       } finally {
         signal?.removeEventListener('abort', cancel);
+        this.internalJobs.delete(job.id);
+        await rm(output, { force: true }).catch(() => {});
       }
     }
   }
+
   async render(
     project: Project,
     sequenceId: string,
     output: string,
-    options: { scale?: number; still?: boolean; frame?: number } = {},
+    options: { scale?: number; still?: boolean; frame?: number; silent?: boolean } = {},
   ): Promise<Job> {
     this.media.register(project.assets);
     await mkdir(join(output, '..'), { recursive: true });
     if (existsSync(output)) throw new Error('导出文件已存在，请使用新文件名');
     const seq = project.sequences.find((s) => s.id === sequenceId);
     if (!seq) throw new Error('成片不存在');
+    const silent = !!options.silent;
     const job: Job = {
       id: uid('job'),
       name: `${seq.name} · v${project.revision}`,
@@ -177,8 +204,12 @@ export class JobService {
       createdAt: new Date().toISOString(),
       revision: project.revision,
     };
-    this.jobs.unshift(job);
-    await this.persist();
+    if (silent) {
+      this.internalJobs.set(job.id, job);
+    } else {
+      this.jobs.unshift(job);
+      await this.persist();
+    }
     const worker = utilityProcess.fork(this.workerPath, [], {
       stdio: 'pipe',
       serviceName: 'CoCraft Renderer',
@@ -193,7 +224,7 @@ export class JobService {
       if (data.type === 'progress') {
         job.progress = data.progress;
         job.stage = data.stage;
-        if (Date.now() - last > 250) {
+        if (!silent && Date.now() - last > 250) {
           last = Date.now();
           this.onChange(this.jobs);
         }
@@ -205,7 +236,7 @@ export class JobService {
         job.error = data.error;
         this.processes.delete(job.id);
         worker.kill();
-        await this.persist();
+        if (!silent) await this.persist();
       }
     });
     worker.on('exit', async (code) => {
@@ -214,14 +245,14 @@ export class JobService {
         job.status = 'failed';
         job.error = stderr || `渲染进程退出 (${code})`;
         job.stage = '导出失败';
-        await this.persist();
+        if (!silent) await this.persist();
       }
     });
     const hasBundle = existsSync(join(this.renderDir, 'index.html'));
     worker.postMessage({
       type: 'render',
-      serveUrl: this.media.origin + '/render/index.html',
-      entryPoint: hasBundle ? undefined : join(this.devRoot!, 'src/composition/register.tsx'),
+      serveUrl: hasBundle ? this.media.origin + '/render/index.html' : undefined,
+      entryPoint: hasBundle ? undefined : this.devRoot ? join(this.devRoot, 'src/composition/register.tsx') : undefined,
       publicDir: this.devRoot ? join(this.devRoot, 'resources/public') : undefined,
       props: { project, sequenceId, mediaOrigin: this.media.origin },
       binariesDirectory: existsSync(join(process.resourcesPath || '', 'media-tools', 'ffmpeg'))
@@ -232,9 +263,11 @@ export class JobService {
     });
     return job;
   }
+
   async cancel(id: string) {
-    const job = this.jobs.find((j) => j.id === id);
+    const job = this.lookup(id);
     if (!job || job.status !== 'running') return;
+    const isInternal = this.internalJobs.has(id);
     job.status = 'cancelled';
     job.stage = job.remote || job.stage === '正在提交云端任务' ? '已停止等待，云端可能继续执行' : '已取消';
     this.controllers.get(id)?.abort(new Error('已停止等待'));
@@ -242,6 +275,6 @@ export class JobService {
     worker?.postMessage({ type: 'cancel' });
     setTimeout(() => worker?.kill(), 1500);
     this.processes.delete(id);
-    await this.persist();
+    if (!isInternal) await this.persist();
   }
 }

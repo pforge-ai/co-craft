@@ -90,10 +90,12 @@ async function start(data: any) {
   };
   await mkdir(agentDir, { recursive: true });
   await mkdir(join(cwd, '.tmp'), { recursive: true });
+  const userSkillsReal = data.userSkillsPath ? await realpath(data.userSkillsPath).catch(() => null) : null;
   const writeRoots = [await realpath(cwd)],
     readRoots = [
       ...writeRoots,
       await realpath(skillsPath),
+      ...(userSkillsReal ? [userSkillsReal] : []),
       ...(await Promise.all((assetPaths || []).map((p: string) => realpath(p).catch(() => p)))),
     ];
   const read = async (p: string) => readFile(await guard(p, readRoots));
@@ -202,16 +204,31 @@ async function start(data: any) {
     ),
     hostTool(
       'list_presets',
-      '浏览素材预设',
-      'Find a built-in editable motion preset by purpose and see its parameter schema, default props, duration and license.',
+      '浏览动态组件母版',
+      'Find a built-in editable motion or 3D component template by purpose and see its parameter schema, default props, duration and license.',
       Type.Object({
         category: Type.Optional(
           Type.Union([
+            Type.Literal('stages'),
             Type.Literal('titles'),
             Type.Literal('captions'),
             Type.Literal('graphics'),
             Type.Literal('backgrounds'),
           ]),
+        ),
+      }),
+    ),
+    hostTool(
+      'search_assets',
+      '检索项目、个人库与官方资产',
+      'Search assets across current project, personal library, built-in visual styles, and built-in studio SFX/backdrops by objective kind, usage role, custom tags, or keyword.',
+      Type.Object({
+        kind: optionalText,
+        role: optionalText,
+        tags: Type.Optional(Type.Array(Type.String())),
+        query: optionalText,
+        scope: Type.Optional(
+          Type.Union([Type.Literal('project'), Type.Literal('personal'), Type.Literal('studio')]),
         ),
       }),
     ),
@@ -271,7 +288,7 @@ async function start(data: any) {
       }) as any,
       execute: async (_id, args) => {
         const response = await request('preview_frame', args);
-        if (response.text) return result(response);
+        if (!response.data) return result(response);
         return {
           content: [{ type: 'image' as const, data: response.data, mimeType: 'image/png' }],
           details: {},
@@ -287,7 +304,7 @@ async function start(data: any) {
           exec: (command, _cwd, options) =>
             new Promise((resolvePromise, reject) => {
               const quote = (s: string) => JSON.stringify(s);
-              const profile = `(version 1)(allow default)(deny file-write*)(deny file-read* (subpath ${quote(homedir())}))(allow file-read* ${[cwd, data.appRoot, skillsPath, data.mediaToolsPath, ...assetPaths].map((s: string) => `(subpath ${quote(s)})`).join(' ')})(allow file-write* (subpath ${quote(cwd)}) (literal "/dev/null"))${settings.allowNetwork ? '' : '(deny network*)'}`;
+              const profile = `(version 1)(allow default)(deny file-write*)(deny file-read* (subpath ${quote(homedir())}) (subpath "/Users") (subpath "/Volumes") (subpath "/private/etc/ssh"))(allow file-read* ${[cwd, data.appRoot, skillsPath, data.mediaToolsPath, ...assetPaths].map((s: string) => `(subpath ${quote(s)})`).join(' ')})(allow file-write* (subpath ${quote(cwd)}) (literal "/dev/null"))${settings.allowNetwork ? '' : '(deny network*)'}`;
               const proc = spawn(
                 '/usr/bin/sandbox-exec',
                 [
@@ -343,6 +360,9 @@ async function start(data: any) {
       .update(settings.provider + settings.baseUrl)
       .digest('hex')
       .slice(0, 16);
+  const thinkingLevel = ['off', 'low', 'medium', 'high'].includes(data.thinkingLevel)
+    ? data.thinkingLevel
+    : 'low';
   runtime.registerProvider(provider, {
     baseUrl: settings.baseUrl,
     api:
@@ -355,7 +375,7 @@ async function start(data: any) {
       {
         id: settings.model,
         name: settings.model,
-        reasoning: false,
+        reasoning: thinkingLevel !== 'off',
         input: settings.modelInput,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: settings.contextWindow,
@@ -370,17 +390,25 @@ async function start(data: any) {
     compaction: { enabled: true },
     retry: { enabled: true, maxRetries: 1 },
   });
+  const activeSkillsNote =
+    Array.isArray(data.activeSkills) && data.activeSkills.length > 0
+      ? ` Active Skills requested for this task: ${data.activeSkills.join(', ')}. Read their SKILL.md files before executing creative or editing steps.`
+      : '';
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
     settingsManager,
-    additionalSkillPaths: [skillsPath, join(cwd, 'skills')],
+    additionalSkillPaths: [
+      join(cwd, 'skills'),
+      ...(userSkillsReal ? [userSkillsReal] : []),
+      skillsPath,
+    ],
     noExtensions: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
     appendSystemPrompt: [
-      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'} Current task context: ${data.context}`,
+      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
     ],
   });
   await loader.reload();
@@ -397,21 +425,38 @@ async function start(data: any) {
     sessionManager: manager,
     customTools,
     tools: customTools.map((t) => t.name),
-    thinkingLevel: 'low',
+    thinkingLevel: thinkingLevel as any,
   });
   session = created.session;
   send({ type: 'session', path: manager.getSessionFile() });
   session.subscribe((event: any) => {
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta')
       send({ type: 'text', text: event.assistantMessageEvent.delta });
+    if (event.type === 'message_update' && event.assistantMessageEvent.type === 'thinking_delta')
+      send({ type: 'thinking', text: event.assistantMessageEvent.delta });
     if (event.type === 'tool_execution_start')
       send({ type: 'tool-start', tool: event.toolName, text: JSON.stringify(event.args).slice(0, 500) });
     if (event.type === 'tool_execution_end')
       send({ type: 'tool-end', tool: event.toolName, text: event.isError ? '工具执行失败' : '完成' });
-    if (event.type === 'message_end' && event.message?.role === 'assistant' && event.message?.errorMessage)
-      send({ type: 'error', text: event.message.errorMessage });
+    if (event.type === 'message_end' && event.message?.role === 'assistant') {
+      if (event.message?.usage) {
+        const u = event.message.usage;
+        send({
+          type: 'usage',
+          usage: {
+            input: u.input ?? u.prompt_tokens ?? 0,
+            output: u.output ?? u.completion_tokens ?? 0,
+            total: u.totalTokens ?? u.total_tokens ?? (u.input || 0) + (u.output || 0),
+          },
+        });
+      }
+      if (event.message?.errorMessage) send({ type: 'error', text: event.message.errorMessage });
+    }
   });
-  const response = session.prompt(prompt);
+  const response = session.prompt(
+    prompt,
+    Array.isArray(data.images) && data.images.length ? { images: data.images } : undefined,
+  );
   for (const message of earlySteers.splice(0)) await session.steer(message);
   await response;
   send({ type: 'done' });

@@ -1,9 +1,11 @@
 import { createReadStream } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { compileComponent } from './code';
 import { importMedia } from './media';
+import type { ProjectStore } from './store';
 import type { Asset, CodeComponent, EditOperation, Project } from '../src/core/types';
 import type { PresetParameter } from '../src/core/presets';
 
@@ -319,4 +321,106 @@ export async function importMaterialPack(
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
+}
+
+function safeAsciiSlug(input: string, fallbackPrefix: string): string {
+  const cleaned = input
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[^a-z0-9]+|[-_.]+$/g, '')
+    .slice(0, 36);
+  const hash = createHash('sha256').update(input).digest('hex').slice(0, 6);
+  return cleaned ? `${cleaned}-${hash}`.slice(0, 63) : `${fallbackPrefix}-${hash}`;
+}
+
+export async function exportMaterialPack(
+  store: ProjectStore,
+  options: {
+    targetDir: string;
+    name?: string;
+    assetIds?: string[];
+    componentIds?: string[];
+    author?: string;
+    license?: string;
+  },
+): Promise<{ directory: string; manifest: MaterialPackManifest }> {
+  const project = await store.project();
+  const packName = options.name?.trim() || `${project.name}-素材包`;
+  const packId = safeAsciiSlug(packName, 'cocraft-pack');
+  const exportDir = join(resolve(options.targetDir), packId);
+  await mkdir(join(exportDir, 'assets'), { recursive: true });
+
+  const selectedAssetSet = new Set(options.assetIds || []);
+  const selectedCompSet = new Set(options.componentIds || []);
+  const chosenAssets =
+    selectedAssetSet.size > 0
+      ? project.assets.filter((a) => selectedAssetSet.has(a.id) && a.path && existsSync(a.path))
+      : project.assets.filter((a) => a.path && existsSync(a.path));
+  const chosenComps =
+    selectedCompSet.size > 0
+      ? project.components.filter((c) => selectedCompSet.has(c.id))
+      : [];
+
+  const packAssets: PackAsset[] = [];
+  const usedNames = new Set<string>();
+  for (let idx = 0; idx < chosenAssets.length; idx++) {
+    const a = chosenAssets[idx];
+    const ext = extname(a.path) || (a.kind === 'audio' ? '.wav' : '.png');
+    if (!mediaExtension.test(`f${ext}`)) continue;
+    let fileBase = basename(a.path, ext).replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_').slice(0, 32) || `asset-${idx + 1}`;
+    let candidate = `${fileBase}${ext}`;
+    while (usedNames.has(candidate)) {
+      fileBase = `${fileBase}_${idx + 1}`;
+      candidate = `${fileBase}${ext}`;
+    }
+    usedNames.add(candidate);
+    const relPath = `assets/${candidate}`;
+    await copyFile(a.path, join(exportDir, relPath));
+    packAssets.push({
+      id: safeAsciiSlug(a.id, `asset${idx + 1}`),
+      path: relPath,
+      name: a.name,
+      license: typeof a.source?.license === 'string' ? a.source.license : undefined,
+      sourceUrl: typeof a.source?.url === 'string' ? a.source.url : undefined,
+    });
+  }
+
+  const packTemplates: PackTemplate[] = [];
+  for (let idx = 0; idx < chosenComps.length; idx++) {
+    const c = chosenComps[idx];
+    const compSlug = safeAsciiSlug(c.name || c.id, `tpl${idx + 1}`);
+    const entryFile = `${compSlug}.tsx`;
+    await writeFile(join(exportDir, entryFile), c.source, 'utf8');
+    const cleanProps: CodeComponent['props'] = {};
+    for (const [k, v] of Object.entries(c.props || {})) {
+      if (validProp(k) && (typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)))) {
+        cleanProps[k] = v;
+      }
+    }
+    packTemplates.push({
+      id: compSlug,
+      name: c.name,
+      entry: entryFile,
+      durationSeconds: c.pack?.durationSeconds && c.pack.durationSeconds >= 0.1 ? c.pack.durationSeconds : 5,
+      defaultProps: cleanProps,
+    });
+  }
+
+  if (!packAssets.length && !packTemplates.length) {
+    throw new Error('选中的素材均离线或无可打包的媒体与组件');
+  }
+
+  const manifest: MaterialPackManifest = {
+    schemaVersion: 1,
+    id: packId,
+    name: packName,
+    version: '1.0.0',
+    author: options.author?.trim() || 'CoCraft Creator',
+    license: options.license?.trim() || 'CC-BY-4.0',
+    ...(packTemplates.length ? { templates: packTemplates } : {}),
+    ...(packAssets.length ? { assets: packAssets } : {}),
+  };
+  validateManifest(manifest);
+  await writeFile(join(exportDir, 'cocraft-pack.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  return { directory: exportDir, manifest };
 }

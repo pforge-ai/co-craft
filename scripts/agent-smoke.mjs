@@ -73,8 +73,24 @@ const server = createServer(async (req, res) => {
     name = 'bash';
     args = { command: 'printf script-ok; touch /tmp/cocraft-shell-escape', timeout: 10 };
   }
+  if (step === 6) {
+    name = 'search_assets';
+    args = { scope: 'studio', kind: 'style' };
+  }
+  if (step === 7) {
+    name = 'publish_edit';
+    args = {
+      baseRevision: project.revision + 1,
+      name: '应用内置视觉风格',
+      operations: [{ type: 'setActiveBrand', itemId: 'gstyle_cobalt_night' }],
+    };
+  }
+  if (step === 8) {
+    name = 'preview_frame';
+    args = { sequenceId: project.sequences[0].id, frame: 5 };
+  }
   const delta =
-    step < 6
+    step < 9
       ? {
           role: 'assistant',
           tool_calls: [
@@ -106,7 +122,7 @@ const server = createServer(async (req, res) => {
       JSON.stringify({
         id: 'chat_smoke',
         object: 'chat.completion.chunk',
-        choices: [{ index: 0, delta: {}, finish_reason: step <= 6 ? 'tool_calls' : 'stop' }],
+        choices: [{ index: 0, delta: {}, finish_reason: step <= 9 ? 'tool_calls' : 'stop' }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }) +
       '\n\n',
@@ -151,12 +167,19 @@ try {
   }
   const t = state.current.tasks.find((t) => t.id === task.id);
   assert.equal(t.status, 'idle');
-  assert.equal(step, 7);
+  assert.equal(step, 10);
   assert.ok(state.current.project.components.find((c) => c.id === 'component_smoke'));
   assert.ok(state.current.project.sequences[0].clips.find((c) => c.id === 'clip_smoke'));
+  assert.equal(state.current.project.activeBrandId, 'gstyle_cobalt_night', 'setActiveBrand applied built-in style');
+  assert.ok(
+    toolResults.some((m) => JSON.stringify(m).includes('gstyle_cobalt_night') && JSON.stringify(m).includes('built-in-style')),
+    'search_assets studio style returned BUILT_IN_STYLES',
+  );
+  assert.ok(toolResults.some((m) => JSON.stringify(m).includes('renderedOk')), 'preview_frame succeeded without vision model');
+  assert.equal(state.jobs.filter((j) => j.type === 'export').length, 0, 'preview_frame silent render did NOT pollute jobs');
   assert.ok(toolResults.some((m) => JSON.stringify(m).includes('路径超出任务工作区')));
   assert.ok(toolResults.some((m) => JSON.stringify(m).includes('Operation not permitted')));
-  console.log('PASS · real Pi SDK → read/write → compile → atomic publish; file and bash escape blocked');
+  console.log('PASS · real Pi SDK → read/write/compile/publish + search_assets(style)/setActiveBrand + silent preview_frame fallback; escapes blocked');
   await mkdir(join(root, 'docs/verification'), { recursive: true });
   console.log('DATA', dataDir);
 } finally {

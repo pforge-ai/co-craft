@@ -61,12 +61,42 @@ const bed = (t, ch) => {
   }
   return sound;
 };
+const uiClick = (t, ch) => {
+  const click1 = attack(t, 0.0012) * Math.exp(-t * 140) * (0.75 * tone(1850, t) + 0.45 * tone(3420, t, ch * 0.4));
+  const release = t > 0.052 ? attack(t - 0.052, 0.0015) * Math.exp(-(t - 0.052) * 180) * 0.38 * tone(1320, t - 0.052) : 0;
+  return click1 + release;
+};
+const cardPop = (t, ch) => {
+  const f = 320 + 540 * (1 - Math.exp(-t * 38));
+  return attack(t, 0.003) * Math.exp(-t * 22) * (0.72 * Math.sin(tau * f * t + ch * 0.15) + 0.18 * tone(980, t));
+};
+const dataTick = (t, ch) => {
+  let out = 0;
+  for (let k = 0; k < 5; k++) {
+    const dt = t - k * 0.095;
+    if (dt >= 0) out += attack(dt, 0.001) * Math.exp(-dt * 95) * (0.55 * tone(2100 + k * 140, dt, ch * 0.2));
+  }
+  return out;
+};
+const warmAmbient = (t, ch) => {
+  const notes = [174.61, 220.0, 261.63, 349.23];
+  const env = attack(t, 0.85) * (0.85 + 0.15 * Math.sin(tau * 0.12 * t + ch * 0.5));
+  let s = 0;
+  for (let i = 0; i < notes.length; i++) {
+    s += 0.22 * tone(notes[i] * (1 + ch * 0.0012), t, i * 1.1) * (0.75 + 0.25 * Math.sin(tau * (0.08 + i * 0.03) * t));
+  }
+  return env * s;
+};
 await mkdir(target, { recursive: true });
 for (const [filename, seconds, level, f] of [
   ['glass-ident', 1.75, 0.8, glass],
   ['soft-impact', 0.75, 0.79, impact],
   ['slipstream', 1.4, 0.76, sweep],
   ['pulse-bed', 10.8, 0.7, bed],
+  ['ui-click', 0.22, 0.78, uiClick],
+  ['card-pop', 0.32, 0.76, cardPop],
+  ['data-tick', 0.58, 0.72, dataTick],
+  ['warm-ambient', 10.0, 0.58, warmAmbient],
 ]) {
   const samples = Math.ceil(seconds * rate),
     pcm = new Float32Array(samples * 2);

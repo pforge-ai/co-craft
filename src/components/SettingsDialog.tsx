@@ -17,16 +17,27 @@ import {
   Search,
 } from 'lucide-react';
 import { Modal, Spinner } from './ui';
-import { modelUses, adapters, providerPresets, compatibleAdapters } from '../core/models';
+import {
+  modelUses,
+  adapters,
+  providerPresets,
+  compatibleAdapters,
+  providerModelSuites,
+  DASHSCOPE_VOICES,
+} from '../core/models';
 import { uid } from '../core/project';
-import type { Settings, ProviderConnection, ModelDefinition, ModelUse } from '../core/types';
+import { friendlySkillTitle } from '../core/taxonomy';
+import type { Settings, ProviderConnection, ModelDefinition, ModelUse, SkillInfo } from '../core/types';
 
 type Props = {
   settings: Settings;
   initialTab?: string;
   onSave: (s: Partial<Settings>) => Promise<void>;
   onClose: () => void;
-  skills: { name: string; description: string }[];
+  skills: SkillInfo[];
+  onRefreshSkills?: (skills: SkillInfo[]) => void;
+  activeSkillIds?: string[];
+  onToggleProjectSkill?: (skillName: string, enabled: boolean) => Promise<void>;
   onOpenSkills: () => void;
   projectDefaults?: Partial<Record<ModelUse, string>>;
   onProjectDefaults?: (v: Partial<Record<ModelUse, string>>) => Promise<void>;
@@ -46,6 +57,9 @@ export function SettingsDialog({
   onSave,
   onClose,
   skills,
+  onRefreshSkills,
+  activeSkillIds = [],
+  onToggleProjectSkill,
   onOpenSkills,
   projectDefaults = {},
   onProjectDefaults,
@@ -66,6 +80,15 @@ export function SettingsDialog({
     [checking, setChecking] = useState(false);
   const [discovered, setDiscovered] = useState<{ id: string; name: string }[]>([]),
     [filter, setFilter] = useState('');
+  const [selectedSkillKey, setSelectedSkillKey] = useState<string>(skills[0]?.name || '');
+  const [skillEditor, setSkillEditor] = useState<{
+    mode: 'new' | 'edit';
+    scope: 'project' | 'user';
+    slug: string;
+    description: string;
+    body: string;
+  } | null>(null);
+  const [skillBusy, setSkillBusy] = useState(false);
   const provider = draft.providers.find((p) => p.id === providerId),
     model = draft.models.find((m) => m.id === modelId);
   const field = <K extends keyof Settings>(key: K, value: Settings[K]) =>
@@ -133,6 +156,52 @@ export function SettingsDialog({
     setModelId(m.id);
     setTab('models');
     setInfo('');
+  };
+  const applyProviderSuite = (p: ProviderConnection) => {
+    const suite = providerModelSuites[p.protocol];
+    if (!suite) return;
+    let added = 0;
+    let firstId = '';
+    setDraft((d) => {
+      const nextModels = [...d.models];
+      const nextDefaults = { ...d.defaults };
+      const byModelId = new Map<string, ModelDefinition>();
+      for (const existing of nextModels) {
+        if (existing.providerId === p.id) byModelId.set(existing.modelId, existing);
+      }
+      for (const tpl of suite.models) {
+        let entry = byModelId.get(tpl.modelId);
+        if (!entry) {
+          entry = {
+            id: uid('model'),
+            providerId: p.id,
+            name: tpl.name,
+            modelId: tpl.modelId,
+            capabilities: [...tpl.capabilities],
+            adapter: tpl.adapter,
+            parameters: { ...tpl.parameters },
+          };
+          nextModels.push(entry);
+          byModelId.set(tpl.modelId, entry);
+          added++;
+        }
+        if (!firstId) firstId = entry.id;
+      }
+      for (const [use, mId] of Object.entries(suite.defaultRoles) as [ModelUse, string][]) {
+        const target = byModelId.get(mId);
+        if (target && (!nextDefaults[use] || (use === 'speech' && nextDefaults[use] === 'system-speech'))) {
+          nextDefaults[use] = target.id;
+        }
+      }
+      return { ...d, models: nextModels, defaults: nextDefaults };
+    });
+    if (firstId) setModelId(firstId);
+    setError('');
+    setInfo(
+      added > 0
+        ? `已为「${p.name}」填入 ${added} 个全模态模型并关联默认用途；填写 API Key 后保存即可使用。`
+        : `「${p.name}」推荐模型套件已存在并完成默认用途校验。`,
+    );
   };
   const discover = async () => {
     if (!provider) return;
@@ -264,6 +333,8 @@ export function SettingsDialog({
                 {[
                   ['播放 / 暂停', 'Space'],
                   ['命令面板', '⌘ K'],
+                  ['切换 创作 / 精剪模式', '⌘ 1 / ⌘ 2'],
+                  ['收起 / 展开左右栏', '⌘ \\ / ⌘ J'],
                   ['分割片段', '⌘ B'],
                   ['撤销 / 重做', '⌘ Z / ⇧ ⌘ Z'],
                   ['导入素材', '⌘ I'],
@@ -426,6 +497,7 @@ export function SettingsDialog({
                         }
                       >
                         <option value="openai">OpenAI 兼容</option>
+                        <option value="dashscope">阿里百炼 / 千问 (DashScope)</option>
                         <option value="anthropic">Anthropic</option>
                         <option value="google">Google Gemini</option>
                         <option value="ark">火山方舟</option>
@@ -466,6 +538,16 @@ export function SettingsDialog({
                     <button className="button" disabled={checking || !provider.baseUrl} onClick={discover}>
                       {checking ? <Spinner /> : <RefreshCw size={14} />}检测连接 / 获取模型
                     </button>
+                    {providerModelSuites[provider.protocol] && (
+                      <button
+                        type="button"
+                        className="button subtle"
+                        onClick={() => applyProviderSuite(provider)}
+                      >
+                        <Boxes size={14} />
+                        {providerModelSuites[provider.protocol]!.label}
+                      </button>
+                    )}
                     <button className="button subtle" onClick={() => addModel()}>
                       <Plus size={14} />
                       手动添加模型
@@ -642,7 +724,7 @@ export function SettingsDialog({
                   <p className="help-copy">
                     能力以服务商实际支持为准。对话兼容接口不代表同时支持图片、音频或视频生成。
                   </p>
-                  {model.adapter === 'ark-video' && (
+                  {(model.adapter === 'ark-video' || model.adapter === 'dashscope-video') && (
                     <div className="settings-fields">
                       <label className="field">
                         <span>默认分辨率</span>
@@ -653,25 +735,30 @@ export function SettingsDialog({
                           }
                         >
                           <option value="">模型默认</option>
-                          {['480p', '720p', '1080p'].map((v) => (
+                          {(model.adapter === 'dashscope-video'
+                            ? ['480P', '720P', '1080P']
+                            : ['480p', '720p', '1080p']
+                          ).map((v) => (
                             <option key={v}>{v}</option>
                           ))}
                         </select>
                       </label>
-                      <label className="field">
-                        <span>默认宽高比</span>
-                        <select
-                          value={String(model.parameters.ratio || '')}
-                          onChange={(e) =>
-                            updateModel({ parameters: { ...model.parameters, ratio: e.target.value } })
-                          }
-                        >
-                          <option value="">模型默认</option>
-                          {['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].map((v) => (
-                            <option key={v}>{v}</option>
-                          ))}
-                        </select>
-                      </label>
+                      {model.adapter === 'ark-video' && (
+                        <label className="field">
+                          <span>默认宽高比</span>
+                          <select
+                            value={String(model.parameters.ratio || '')}
+                            onChange={(e) =>
+                              updateModel({ parameters: { ...model.parameters, ratio: e.target.value } })
+                            }
+                          >
+                            <option value="">模型默认</option>
+                            {['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].map((v) => (
+                              <option key={v}>{v}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
                     </div>
                   )}
                   {(model.capabilities.includes('image') || model.capabilities.includes('video')) && (
@@ -681,7 +768,11 @@ export function SettingsDialog({
                           <span>默认画面尺寸</span>
                           <input
                             placeholder={
-                              model.capabilities.includes('image') ? '例如 1024x1024' : '例如 1280x720'
+                              model.adapter === 'dashscope-image'
+                                ? '例如 1280*720'
+                                : model.capabilities.includes('image')
+                                  ? '例如 1024x1024'
+                                  : '例如 1280x720'
                             }
                             value={String(model.parameters.size || '')}
                             onChange={(e) =>
@@ -697,14 +788,19 @@ export function SettingsDialog({
                             type="number"
                             min={1}
                             value={String(
-                              model.parameters[model.adapter === 'ark-video' ? 'duration' : 'seconds'] || '',
+                              model.parameters[
+                                model.adapter === 'ark-video' || model.adapter === 'dashscope-video'
+                                  ? 'duration'
+                                  : 'seconds'
+                              ] || '',
                             )}
                             onChange={(e) =>
                               updateModel({
                                 parameters: {
                                   ...model.parameters,
-                                  [model.adapter === 'ark-video' ? 'duration' : 'seconds']:
-                                    Number(e.target.value) || '',
+                                  [model.adapter === 'ark-video' || model.adapter === 'dashscope-video'
+                                    ? 'duration'
+                                    : 'seconds']: Number(e.target.value) || '',
                                 },
                               })
                             }
@@ -719,7 +815,11 @@ export function SettingsDialog({
                       <input
                         aria-label="默认音色"
                         value={String(model.parameters.voice || '')}
-                        placeholder="例如 alloy，或提供商的音色 ID"
+                        placeholder={
+                          model.adapter === 'dashscope-speech'
+                            ? `例如 ${DASHSCOPE_VOICES.join(' / ')}`
+                            : '例如 alloy，或提供商的音色 ID'
+                        }
                         onChange={(e) =>
                           updateModel({ parameters: { ...model.parameters, voice: e.target.value } })
                         }
@@ -861,26 +961,257 @@ export function SettingsDialog({
           {tab === 'skills' && (
             <>
               <div className="settings-section">
-                <div className="setting-row">
-                  <div>
-                    <b>项目 Skills</b>
-                    <p>标准 SKILL.md；下次运行自动发现。</p>
+                <div className="section-toolbar">
+                  <span>{skills.length} 个可用 Skill（对话中输入 / 可按需激活）</span>
+                  <div className="skill-toolbar-actions">
+                    <button
+                      type="button"
+                      className="button subtle"
+                      onClick={() => {
+                        setError('');
+                        setInfo('');
+                        setSkillEditor({
+                          mode: 'new',
+                          scope: 'project',
+                          slug: 'custom-editing-guide',
+                          description: '描述何时激活及此 Skill 负责的创作规范',
+                          body: '# 创作规范\n\n1. 说明目标成片的节奏、镜头语言与组件要求。\n2. 约定文字、字幕或配音的处理规则。\n',
+                        });
+                      }}
+                    >
+                      <Plus size={14} />
+                      新建 Skill
+                    </button>
+                    <button
+                      type="button"
+                      className="button subtle"
+                      onClick={() =>
+                        void (async () => {
+                          setError('');
+                          try {
+                            const updated = await window.cocraft.call<SkillInfo[] | null>('skills.import', {
+                              scope: 'project',
+                            });
+                            if (updated) {
+                              onRefreshSkills?.(updated);
+                              setInfo('已导入 Skill 至当前项目目录。');
+                            }
+                          } catch (e) {
+                            setError(String(e).replace(/^Error:.*?Error: /, ''));
+                          }
+                        })()
+                      }
+                    >
+                      <ArrowDownToLine size={14} />
+                      导入 SKILL.md
+                    </button>
+                    <button type="button" className="button subtle" onClick={onOpenSkills}>
+                      <FolderOpen size={14} />
+                      目录
+                    </button>
                   </div>
-                  <button className="button subtle" onClick={onOpenSkills}>
-                    <FolderOpen size={14} />
-                    打开目录
-                  </button>
                 </div>
-                {skills.map((s) => (
-                  <div className="skill-row" key={s.name}>
-                    <Code2 size={16} />
-                    <div>
-                      <b>{s.name}</b>
-                      <p>{s.description}</p>
+                {skills.map((s) => {
+                  const scopeLabel = s.scope === 'project' ? '项目' : s.scope === 'user' ? '全局' : '内置';
+                  const isPinned = s.name === 'cocraft-editing' || activeSkillIds.includes(s.name);
+                  const isSelected = selectedSkillKey === s.name;
+                  return (
+                    <div
+                      className={`skill-row interactive ${isSelected ? 'selected' : ''}`}
+                      key={s.name}
+                      onClick={() => {
+                        setSelectedSkillKey(s.name);
+                        if (s.scope !== 'builtin') {
+                          setSkillEditor({
+                            mode: 'edit',
+                            scope: s.scope,
+                            slug: s.name,
+                            description: s.description,
+                            body: s.body || '',
+                          });
+                        } else {
+                          setSkillEditor(null);
+                        }
+                      }}
+                    >
+                      <Code2 size={16} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="skill-row-head">
+                          <b>{friendlySkillTitle(s.name)}</b>
+                          <span className={`skill-scope-badge ${s.scope}`}>{scopeLabel}</span>
+                          <small className="skill-slug-tag">{s.name}</small>
+                        </div>
+                        <p>{s.description}</p>
+                      </div>
+                      {onToggleProjectSkill && (
+                        <label
+                          className="skill-pin-toggle"
+                          title={
+                            s.name === 'cocraft-editing'
+                              ? '核心基础规范默认常驻'
+                              : '开启后每次对话自动载入此规范'
+                          }
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span>常驻</span>
+                          <input
+                            className="switch"
+                            aria-label={`常驻启用 ${friendlySkillTitle(s.name)}`}
+                            type="checkbox"
+                            disabled={s.name === 'cocraft-editing'}
+                            checked={isPinned}
+                            onChange={(e) => void onToggleProjectSkill(s.name, e.target.checked)}
+                          />
+                        </label>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+              {skillEditor ? (
+                <div className="settings-editor">
+                  <div className="editor-heading">
+                    <h3>{skillEditor.mode === 'new' ? '新建自定义 Skill' : `编辑 ${skillEditor.slug}`}</h3>
+                    {skillEditor.mode === 'edit' && (
+                      <button
+                        type="button"
+                        className="icon-button danger"
+                        aria-label="删除自定义 Skill"
+                        disabled={skillBusy}
+                        onClick={() =>
+                          void (async () => {
+                            setSkillBusy(true);
+                            setError('');
+                            try {
+                              const next = await window.cocraft.call<SkillInfo[]>('skills.delete', {
+                                scope: skillEditor.scope,
+                                name: skillEditor.slug,
+                              });
+                              onRefreshSkills?.(next);
+                              setSkillEditor(null);
+                              setInfo(`已移除「${skillEditor.slug}」。`);
+                            } catch (e) {
+                              setError(String(e).replace(/^Error:.*?Error: /, ''));
+                            } finally {
+                              setSkillBusy(false);
+                            }
+                          })()
+                        }
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="settings-fields">
+                    <label className="field">
+                      <span>Skill 标识 (slug)</span>
+                      <input
+                        aria-label="Skill 标识"
+                        disabled={skillEditor.mode === 'edit'}
+                        value={skillEditor.slug}
+                        placeholder="例如 my-story-guide"
+                        onChange={(e) => setSkillEditor((v) => v && { ...v, slug: e.target.value })}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>保存范围</span>
+                      <select
+                        aria-label="Skill 保存范围"
+                        disabled={skillEditor.mode === 'edit'}
+                        value={skillEditor.scope}
+                        onChange={(e) =>
+                          setSkillEditor((v) => v && { ...v, scope: e.target.value as 'project' | 'user' })
+                        }
+                      >
+                        <option value="project">当前项目 (skills/)</option>
+                        <option value="user">个人全局 (所有项目共享)</option>
+                      </select>
+                    </label>
+                    <label className="field full">
+                      <span>一句话简介 (用于 / 唤起提示)</span>
+                      <input
+                        aria-label="Skill 描述"
+                        value={skillEditor.description}
+                        onChange={(e) => setSkillEditor((v) => v && { ...v, description: e.target.value })}
+                      />
+                    </label>
+                    <label className="field full">
+                      <span>SKILL.md 正文指南</span>
+                      <textarea
+                        aria-label="Skill 正文"
+                        rows={7}
+                        className="skill-body-textarea"
+                        value={skillEditor.body}
+                        onChange={(e) => setSkillEditor((v) => v && { ...v, body: e.target.value })}
+                      />
+                    </label>
+                  </div>
+                  <div className="editor-actions">
+                    <button
+                      type="button"
+                      className="button primary"
+                      disabled={skillBusy}
+                      onClick={() =>
+                        void (async () => {
+                          setSkillBusy(true);
+                          setError('');
+                          try {
+                            const next = await window.cocraft.call<SkillInfo[]>('skills.save', {
+                              scope: skillEditor.scope,
+                              slug: skillEditor.slug,
+                              description: skillEditor.description,
+                              body: skillEditor.body,
+                            });
+                            onRefreshSkills?.(next);
+                            setSelectedSkillKey(skillEditor.slug.trim().toLowerCase());
+                            setSkillEditor((v) => v && { ...v, mode: 'edit' });
+                            setInfo(`已保存 Skill「${skillEditor.slug}」，下次 Agent 运行生效。`);
+                          } catch (e) {
+                            setError(String(e).replace(/^Error:.*?Error: /, ''));
+                          } finally {
+                            setSkillBusy(false);
+                          }
+                        })()
+                      }
+                    >
+                      {skillBusy ? <Spinner /> : <Check size={14} />}
+                      保存 Skill
+                    </button>
+                    <button type="button" className="button subtle" onClick={() => setSkillEditor(null)}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                (() => {
+                  const activeSkill = skills.find((s) => s.name === selectedSkillKey) || skills[0];
+                  if (!activeSkill) return null;
+                  return (
+                    <div className="settings-editor">
+                      <div className="editor-heading">
+                        <h3>{friendlySkillTitle(activeSkill.name)}</h3>
+                        <button
+                          type="button"
+                          className="button subtle"
+                          onClick={() =>
+                            setSkillEditor({
+                              mode: 'new',
+                              scope: 'project',
+                              slug: activeSkill.name,
+                              description: activeSkill.description,
+                              body: activeSkill.body || '',
+                            })
+                          }
+                        >
+                          派生到当前项目并自定义
+                        </button>
+                      </div>
+                      <p className="help-copy">{activeSkill.path}</p>
+                      {activeSkill.body && <pre className="skill-body-preview">{activeSkill.body}</pre>}
+                    </div>
+                  );
+                })()
+              )}
               <div className="settings-section">
                 <div className="setting-row">
                   <div>

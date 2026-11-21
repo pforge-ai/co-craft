@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeTheme, nativeImage } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, extname, basename, resolve } from 'node:path';
-import { mkdir, readFile, writeFile, copyFile, readdir } from 'node:fs/promises';
+import { dirname, join, extname, resolve, basename } from 'node:path';
+import { mkdir, readFile, writeFile, readdir, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { Library, ProjectStore } from './store';
 import { SettingsStore } from './settings';
@@ -10,16 +10,28 @@ import { JobService } from './jobs';
 import { AgentHost } from './agents';
 import { studioCatalog, addStudioAsset } from './studio-media';
 import { GenerationService } from './generation';
-import { importMaterialPack } from './packs';
+import { importMaterialPack, exportMaterialPack } from './packs';
 import { createDemo } from './demo';
-import { importMedia, run, binary } from './media';
+import { importMedia } from './media';
 import { compileComponent } from './code';
-import { newClip, uid, applyOperations } from '../src/core/project';
-import type { Asset, EditOperation, ProjectEnvelope, StockVideo, Task } from '../src/core/types';
+import { GlobalVault } from './vault';
+import { newClip, uid, applyOperations, parseSRTText, preflightSequence } from '../src/core/project';
+import { friendlySkillTitle } from '../src/core/taxonomy';
+import type {
+  Asset,
+  ComposerAttachment,
+  EditOperation,
+  ProjectEnvelope,
+  SkillInfo,
+  StockVideo,
+  Task,
+  VaultItem,
+} from '../src/core/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 if (process.env.COCRAFT_DATA_DIR) app.setPath('userData', resolve(process.env.COCRAFT_DATA_DIR));
 app.setName('CoCraft');
+
 let win: BrowserWindow,
   store: ProjectStore,
   library: Library,
@@ -27,37 +39,46 @@ let win: BrowserWindow,
   media: MediaServer,
   jobs: JobService,
   generation: GenerationService,
-  agents: AgentHost;
+  agents: AgentHost,
+  globalVault: GlobalVault;
+
 const resources = app.isPackaged ? join(process.resourcesPath, 'resources') : join(here, '../resources');
 const renderDir = app.isPackaged ? join(process.resourcesPath, 'render-bundle') : join(here, 'render-bundle');
 let studioMedia: Asset[] = [];
 const knownStock = new Map<number, StockVideo>();
+
 const emit = (channel: string, data: unknown) => {
   if (win && !win.isDestroyed()) win.webContents.send('cocraft:' + channel, data);
 };
+
 async function changed(target: ProjectStore, envelope: ProjectEnvelope) {
-  media.register(envelope.project.assets);
   await library.remember(target, false);
-  if (store.path === target.path) emit('project', envelope);
+  if (store.path === target.path) {
+    media.setProjectAssets(envelope.project.assets);
+    emit('project', envelope);
+  }
 }
-async function importFiles(paths: string[], append = false) {
+
+async function importFiles(paths: string[], append = false, sequenceId?: string) {
   const target = store;
   const p = await target.project();
+  const seq = p.sequences.find((s) => s.id === sequenceId) || p.sequences[0];
   const operations: EditOperation[] = [];
   let start = Math.max(
     0,
-    ...p.sequences[0].clips.filter((c) => c.track === 'visual').map((c) => c.start + c.duration),
+    ...seq.clips.filter((c) => c.track === 'visual').map((c) => c.start + c.duration),
   );
   for (const path of paths) {
     const a = await importMedia(path, target.path);
     operations.push({ type: 'addAsset', asset: a });
     if (append) {
+      const clipKind = a.kind === 'model-3d' ? 'shape' : a.kind;
       const c = {
-        ...newClip(a.kind, start, a.id),
+        ...newClip(clipKind, start, a.id),
         name: a.name,
-        duration: Math.max(1, Math.floor(a.duration * p.sequences[0].fps)),
+        duration: Math.max(1, Math.floor(a.duration * seq.fps)),
       };
-      operations.push({ type: 'addClip', sequenceId: p.sequences[0].id, clip: c });
+      operations.push({ type: 'addClip', sequenceId: seq.id, clip: c });
       if (a.kind !== 'audio') start += c.duration;
     }
   }
@@ -70,69 +91,37 @@ async function importFiles(paths: string[], append = false) {
   await changed(target, result);
   return result;
 }
-function parseSRT(text: string, fps: number) {
-  const frame = (s: string) => {
-    const [h, m, rest] = s.replace(',', '.').split(':');
-    return Math.round((Number(h) * 3600 + Number(m) * 60 + Number(rest)) * fps);
-  };
-  const rows = text
-    .replace(/\r/g, '')
-    .trim()
-    .split(/\n\s*\n/);
-  return rows.flatMap((row) => {
-    const lines = row.split('\n');
-    const ti = lines.findIndex((l) => l.includes('-->'));
-    if (ti < 0) return [];
-    const [from, to] = lines[ti].split('-->').map((s) => s.trim().split(' ')[0]);
-    const start = frame(from),
-      end = frame(to);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
-    return [
-      {
-        ...newClip('caption', start),
-        duration: end - start,
-        name:
-          lines
-            .slice(ti + 1)
-            .join(' ')
-            .slice(0, 24) || '字幕',
-        props: {
-          text: lines.slice(ti + 1).join('\n'),
-          fontSize: 46,
-          color: '#fff',
-          position: 'bottom' as const,
-          background: '#00000080',
-          animation: 'none' as const,
-        },
-      },
-    ];
-  });
-}
+
 async function handle(method: string, arg: any = {}) {
   switch (method) {
-    case 'boot':
+    case 'boot': {
+      const current = await store.envelope();
+      media.setProjectAssets(current.project.assets);
       return {
         projects: await library.list(),
-        current: await store.envelope(),
+        current,
         settings: await settings.get(),
         jobs: jobs.jobs,
         studioMedia,
         previewOrigin: media.origin,
         version: app.getVersion(),
         skills: await listSkills(),
+        globalVault: await globalVault.list(),
       };
+    }
     case 'project.list':
       return library.list();
     case 'project.demo': {
       store = await createDemo(library, resources);
       const envelope = await store.envelope();
-      media.register(envelope.project.assets);
+      media.setProjectAssets(envelope.project.assets);
       return envelope;
     }
     case 'project.create': {
       store = await library.create(String(arg.name || '未命名项目'));
-      media.register((await store.project()).assets);
-      return store.envelope();
+      const envelope = await store.envelope();
+      media.setProjectAssets(envelope.project.assets);
+      return envelope;
     }
     case 'project.open': {
       let path = arg.path;
@@ -146,7 +135,7 @@ async function handle(method: string, arg: any = {}) {
       }
       store = await library.open(extname(path) === '.json' ? dirname(path) : path);
       const e = await store.envelope();
-      media.register(e.project.assets);
+      media.setProjectAssets(e.project.assets);
       return e;
     }
     case 'project.reveal':
@@ -184,6 +173,43 @@ async function handle(method: string, arg: any = {}) {
     }
     case 'project.snapshot':
       return store.snapshot(arg.revision);
+    case 'project.forkFromRevision': {
+      const target = store;
+      const rev = Number(arg.revision);
+      const snap = await target.snapshot(rev);
+      const current = await target.project();
+      const sourceSeq = snap.sequences.find((s) => s.id === arg.sequenceId) || snap.sequences[0];
+      if (!sourceSeq) throw new Error('历史版本成片不存在');
+      const newSeqId = uid('seq');
+      const branchLabel = String(arg.branchName || `${sourceSeq.name}-源自v${rev}`).trim();
+      const ops: EditOperation[] = [];
+      for (const comp of snap.components) {
+        if (!current.components.some((c) => c.id === comp.id)) ops.push({ type: 'putComponent', component: comp });
+      }
+      for (const asset of snap.assets) {
+        if (!current.assets.some((a) => a.id === asset.id)) ops.push({ type: 'addAsset', asset });
+      }
+      ops.push({
+        type: 'addSequence',
+        sequence: {
+          ...structuredClone(sourceSeq),
+          id: newSeqId,
+          name: branchLabel,
+          branchName: branchLabel,
+          parentSequenceId: sourceSeq.id,
+          forkedAtRevision: rev,
+          isMainBranch: false,
+          clips: sourceSeq.clips.map((c) => ({ ...structuredClone(c), id: uid('clip'), locked: false })),
+        },
+      });
+      const envelope = await target.edit({
+        baseRevision: current.revision,
+        name: `从 v${rev} 派生平行分支「${branchLabel}」`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, newSequenceId: newSeqId };
+    }
     case 'media.import': {
       let paths = arg.paths;
       if (!paths) {
@@ -192,7 +218,7 @@ async function handle(method: string, arg: any = {}) {
           properties: ['openFile', 'multiSelections'],
           filters: [
             {
-              name: '视频、图片与音频',
+              name: '视频、图片、音频与 3D 模型',
               extensions: [
                 'mp4',
                 'mov',
@@ -210,6 +236,8 @@ async function handle(method: string, arg: any = {}) {
                 'm4a',
                 'aac',
                 'flac',
+                'glb',
+                'gltf',
               ],
             },
           ],
@@ -217,9 +245,57 @@ async function handle(method: string, arg: any = {}) {
         if (d.canceled) return null;
         paths = d.filePaths;
       }
-      return importFiles(paths, arg.append);
+      return importFiles(paths, arg.append, arg.sequenceId);
+    }
+    case 'media.relink': {
+      const target = store;
+      const p = await target.project();
+      const asset = p.assets.find((a) => a.id === arg.assetId);
+      if (!asset) throw new Error('待重连的资产不存在');
+      let filePath: string | undefined = arg.path;
+      if (!filePath) {
+        const d = await dialog.showOpenDialog(win, {
+          title: `重新定位「${asset.name}」`,
+          properties: ['openFile'],
+          filters: [
+            {
+              name: asset.kind === 'image' ? '图片' : asset.kind === 'audio' ? '音频' : '视频',
+              extensions:
+                asset.kind === 'image'
+                  ? ['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif', 'avif']
+                  : asset.kind === 'audio'
+                    ? ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg']
+                    : ['mp4', 'mov', 'm4v', 'webm', 'mkv'],
+            },
+          ],
+        });
+        if (d.canceled || !d.filePaths[0]) return null;
+        filePath = d.filePaths[0];
+      }
+      const probed = await importMedia(filePath, target.path, asset.id);
+      if (probed.kind !== asset.kind) throw new Error('所选文件类型与原资产不一致');
+      const e = await target.edit({
+        baseRevision: p.revision,
+        name: `重连素材「${asset.name}」`,
+        operations: [
+          {
+            type: 'relinkAsset',
+            assetId: asset.id,
+            path: probed.path,
+            duration: probed.duration,
+            width: probed.width,
+            height: probed.height,
+            thumbnail: probed.thumbnail,
+            waveform: probed.waveform,
+            hasAudio: probed.hasAudio,
+          },
+        ],
+      });
+      await changed(target, e);
+      return e;
     }
     case 'captions.import': {
+      const target = store;
       let text = arg.text;
       if (!text) {
         const d = await dialog.showOpenDialog(win, {
@@ -230,16 +306,16 @@ async function handle(method: string, arg: any = {}) {
         if (d.canceled) return null;
         text = await readFile(d.filePaths[0], 'utf8');
       }
-      const p = await store.project(),
+      const p = await target.project(),
         s = p.sequences.find((s) => s.id === arg.sequenceId) || p.sequences[0];
-      const clips = parseSRT(text, s.fps);
+      const clips = parseSRTText(text, s.fps);
       if (!clips.length) throw new Error('没有读取到有效的 SRT 字幕');
-      const e = await store.edit({
+      const e = await target.edit({
         baseRevision: p.revision,
         name: `导入 ${clips.length} 条字幕`,
         operations: clips.map((clip) => ({ type: 'addClip', sequenceId: s.id, clip })),
       });
-      await changed(store, e);
+      await changed(target, e);
       return e;
     }
     case 'captions.export': {
@@ -287,7 +363,9 @@ async function handle(method: string, arg: any = {}) {
     case 'packs.import': {
       const target = store;
       let directory = join(resources, 'packs', 'studio-signature');
-      if (!arg.example) {
+      if (arg.directory) {
+        directory = String(arg.directory);
+      } else if (!arg.example) {
         const picked = await dialog.showOpenDialog(win, {
           title: '选择含 cocraft-pack.json 的素材包',
           properties: ['openDirectory'],
@@ -318,6 +396,15 @@ async function handle(method: string, arg: any = {}) {
     }
     case 'tasks.rename':
       return store.updateTaskDetails(arg.id, { name: String(arg.name || '') });
+    case 'tasks.retarget':
+      return store.updateTaskDetails(arg.id, { sequenceId: String(arg.sequenceId || '') });
+    case 'tasks.delete': {
+      const target = store;
+      await target.deleteTask(arg.id);
+      const e = await target.envelope();
+      await changed(target, e);
+      return e;
+    }
     case 'tasks.create': {
       const task: Task = {
         id: uid('task'),
@@ -331,6 +418,62 @@ async function handle(method: string, arg: any = {}) {
       await store.saveTask(task);
       return task;
     }
+    case 'agent.attachFiles': {
+      let paths: string[] = Array.isArray(arg.paths) ? arg.paths.map(String).filter(Boolean) : [];
+      if (!paths.length) {
+        const picked = await dialog.showOpenDialog(win, {
+          title: '选择对话参考附件',
+          properties: ['openFile', 'multiSelections'],
+          filters: [
+            {
+              name: '媒体与文稿',
+              extensions: [
+                'png',
+                'jpg',
+                'jpeg',
+                'webp',
+                'gif',
+                'svg',
+                'mp4',
+                'mov',
+                'webm',
+                'mp3',
+                'wav',
+                'm4a',
+                'txt',
+                'md',
+                'srt',
+                'json',
+              ],
+            },
+            { name: '所有文件', extensions: ['*'] },
+          ],
+        });
+        if (picked.canceled || !picked.filePaths.length) return null;
+        paths = picked.filePaths;
+      }
+      const list: ComposerAttachment[] = [];
+      for (const p of paths) {
+        const built = await buildComposerAttachment(p).catch(() => null);
+        if (built) list.push(built);
+      }
+      return list;
+    }
+    case 'agent.attachPaste': {
+      const target = store;
+      const b64 = String(arg.dataBase64 || '').replace(/^data:[^,]+,/, '');
+      if (!b64) throw new Error('粘贴内容为空');
+      const rawExt = String(arg.ext || 'png')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+      const safeExt = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'txt', 'md'].includes(rawExt) ? rawExt : 'png';
+      const dir = join(target.path, '.cocraft', 'attachments');
+      await mkdir(dir, { recursive: true });
+      const fileName = `${uid('paste')}.${safeExt}`;
+      const filePath = join(dir, fileName);
+      await writeFile(filePath, Buffer.from(b64, 'base64'));
+      return await buildComposerAttachment(filePath, String(arg.name || `粘贴图片.${safeExt}`));
+    }
     case 'agent.start': {
       const target = store;
       return agents.start(
@@ -339,6 +482,12 @@ async function handle(method: string, arg: any = {}) {
         arg.prompt,
         async () => settings.agent(arg.modelId, (await target.project()).modelDefaults),
         arg.context || '',
+        arg.scope,
+        {
+          thinkingLevel: arg.thinkingLevel,
+          attachments: arg.attachments,
+          skillIds: arg.skillIds,
+        },
       );
     }
     case 'agent.stop':
@@ -354,15 +503,26 @@ async function handle(method: string, arg: any = {}) {
     case 'settings.save': {
       const s = await settings.save(arg);
       nativeTheme.themeSource = s.theme;
+      emit('settings', s);
       return s;
     }
+    case 'export.preflight': {
+      const p = await store.project();
+      const missing = p.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
+      return preflightSequence(p, arg.sequenceId, missing);
+    }
     case 'export.start': {
-      const p = await store.project(),
+      const target = store;
+      const p = await target.project(),
         seq = p.sequences.find((s) => s.id === arg.sequenceId)!;
       if (!seq) throw new Error('成片不存在');
       if (!seq.clips.length) throw new Error('先添加一些画面，再导出成片');
+      const missing = p.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
+      const issues = preflightSequence(p, seq.id, missing);
+      const blocker = issues.find((i) => i.severity === 'blocker');
+      if (blocker) throw new Error(`${blocker.title}：${blocker.detail}`);
       const name = `${seq.name}-v${p.revision}-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`;
-      let output = join(store.path, 'exports', name);
+      let output = join(target.path, 'exports', name);
       if (arg.choose) {
         const d = await dialog.showSaveDialog(win, {
           title: '导出成片',
@@ -382,6 +542,8 @@ async function handle(method: string, arg: any = {}) {
     case 'jobs.cancel':
       await jobs.cancel(arg.id);
       return true;
+    case 'jobs.clear':
+      return jobs.clearFinished();
     case 'file.reveal': {
       const job = jobs.jobs.find((j) => j.id === arg.jobId);
       if (job?.output) shell.showItemInFolder(job.output);
@@ -400,7 +562,65 @@ async function handle(method: string, arg: any = {}) {
     }
     case 'skills.list':
       return listSkills();
+    case 'skills.save': {
+      const scope = arg.scope === 'user' ? 'user' : 'project';
+      const rawSlug = String(arg.slug || arg.name || '')
+        .trim()
+        .toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]{1,48}$/.test(rawSlug)) {
+        throw new Error('Skill 标识仅支持 2~49 位小写字母、数字、中划线或下划线，且以字母或数字开头');
+      }
+      const description = String(arg.description || '').replace(/\r?\n/g, ' ').trim();
+      const body = String(arg.body || '').trim();
+      if (!description || !body) throw new Error('请填写 Skill 简介和规范正文');
+      const root = scope === 'user' ? join(app.getPath('userData'), 'skills') : join(store.path, 'skills');
+      const skillDir = join(root, rawSlug);
+      await mkdir(skillDir, { recursive: true });
+      const content = `---\nname: ${rawSlug}\ndescription: ${description}\n---\n\n${body}\n`;
+      await writeFile(join(skillDir, 'SKILL.md'), content, 'utf8');
+      return listSkills();
+    }
+    case 'skills.delete': {
+      if (arg.scope === 'builtin') throw new Error('内置规范不支持删除，可在项目内新建覆盖');
+      const scope = arg.scope === 'user' ? 'user' : 'project';
+      const root = await realpathSafe(
+        scope === 'user' ? join(app.getPath('userData'), 'skills') : join(store.path, 'skills'),
+      );
+      const list = await listSkills();
+      const target = list.find((s) => s.scope === scope && s.name === String(arg.name || ''));
+      if (!target) throw new Error('未找到指定的自定义 Skill');
+      const skillFile = await realpathSafe(target.path);
+      const skillDir = dirname(skillFile);
+      if (dirname(skillDir) !== root) throw new Error('Skill 路径无效');
+      await rm(skillDir, { recursive: true, force: true });
+      return listSkills();
+    }
+    case 'skills.import': {
+      let sourcePath = arg.sourcePath ? String(arg.sourcePath) : '';
+      if (!sourcePath) {
+        const picked = await dialog.showOpenDialog(win, {
+          title: '导入 SKILL.md',
+          properties: ['openFile'],
+          filters: [{ name: 'Skill 文档', extensions: ['md'] }],
+        });
+        if (picked.canceled || !picked.filePaths[0]) return null;
+        sourcePath = picked.filePaths[0];
+      }
+      const raw = await readFile(sourcePath, 'utf8');
+      const parsed = parseSkillMarkdown(raw, basename(dirname(sourcePath)));
+      const scope = arg.scope === 'user' ? 'user' : 'project';
+      const root = scope === 'user' ? join(app.getPath('userData'), 'skills') : join(store.path, 'skills');
+      const skillDir = join(root, parsed.name);
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(skillDir, 'SKILL.md'),
+        `---\nname: ${parsed.name}\ndescription: ${parsed.description || parsed.name}\n---\n\n${parsed.body}\n`,
+        'utf8',
+      );
+      return listSkills();
+    }
     case 'skills.open':
+      await mkdir(join(store.path, 'skills'), { recursive: true });
       await shell.openPath(join(store.path, 'skills'));
       return true;
     case 'stock.search': {
@@ -438,21 +658,23 @@ async function handle(method: string, arg: any = {}) {
       });
     }
     case 'stock.import': {
+      // Capture target store BEFORE async network download to prevent cross-project race condition!
+      const target = store;
       const item = knownStock.get(arg.id);
       if (!item?.download) throw new Error('请先重新搜索这条素材');
-      const response = await fetch(item.download);
+      const response = await fetch(item.download, { credentials: 'omit' });
       if (!response.ok) throw new Error('素材下载失败');
-      const file = join(store.path, 'assets', `pexels-${item.id}.mp4`);
+      const file = join(target.path, 'assets', `pexels-${item.id}.mp4`);
       await writeFile(file, Buffer.from(await response.arrayBuffer()));
-      const asset = await importMedia(file, store.path);
+      const asset = await importMedia(file, target.path);
       asset.source = { provider: 'Pexels', url: item.url, author: item.author, license: 'Pexels License' };
-      const p = await store.project();
-      const e = await store.edit({
+      const p = await target.project();
+      const e = await target.edit({
         baseRevision: p.revision,
         name: '添加 Pexels 素材',
         operations: [{ type: 'addAsset', asset }],
       });
-      await changed(store, e);
+      await changed(target, e);
       return e;
     }
     case 'voice.generate': {
@@ -465,28 +687,200 @@ async function handle(method: string, arg: any = {}) {
       await generation.wait(job.id);
       return target.envelope();
     }
+    case 'vault.list':
+      return globalVault.list();
+    case 'vault.promote':
+      return globalVault.promoteFromProject(store, arg);
+    case 'vault.pull': {
+      const target = store;
+      const res = await globalVault.pullToProject(target, String(arg.id));
+      await changed(target, res.envelope);
+      return res;
+    }
+    case 'vault.remove':
+    case 'vault.removeGlobal':
+      return globalVault.removeGlobal(String(arg.id));
+    case 'packs.export': {
+      let targetDir = arg.targetDir ? String(arg.targetDir) : '';
+      if (!targetDir) {
+        const picked = await dialog.showOpenDialog(win, {
+          title: '选择素材包导出目录',
+          properties: ['openDirectory', 'createDirectory'],
+        });
+        if (picked.canceled || !picked.filePaths[0]) return null;
+        targetDir = picked.filePaths[0];
+      }
+      return exportMaterialPack(store, {
+        targetDir,
+        name: arg.name,
+        assetIds: arg.assetIds,
+        componentIds: arg.componentIds,
+      });
+    }
+    case 'stage.captureReference': {
+      const target = store;
+      const p = await target.project();
+      const seq = p.sequences.find((s) => s.id === arg.sequenceId) || p.sequences[0];
+      const frame = Math.max(0, Math.round(Number(arg.frame ?? 0)));
+      const assetsDir = join(target.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+      const fileName = `previs-${uid('frame')}.png`;
+      const outPath = join(assetsDir, fileName);
+      const job = await jobs.render(p, seq.id, outPath, {
+        still: true,
+        frame,
+        scale: 1,
+        silent: true,
+      });
+      await jobs.wait(job.id);
+      const asset = await importMedia(outPath, target.path);
+      asset.name = arg.name || `透视构图参考 · ${seq.name} f${frame}`;
+      asset.role = 'environment';
+      asset.tags = ['透视参考', '舞台抽帧'];
+      asset.category = 'subject';
+      asset.subkind = 'environment';
+      asset.derivedFrom = [
+        {
+          via: 'capture-3d',
+          note: `捕获自成片「${seq.name}」第 ${frame} 帧`,
+        },
+      ];
+      const vaultItem: VaultItem = {
+        id: uid('pvault'),
+        name: asset.name,
+        entityKind: 'image',
+        role: 'environment',
+        tags: ['透视参考', '舞台抽帧'],
+        category: 'subject',
+        subkind: 'environment',
+        description: `捕获自「${seq.name}」第 ${frame} 帧，可用作分镜生图/生视频的精确透视构图参考。`,
+        promptAnchor: arg.promptAnchor || '严格对齐参考图中的三维透视机位、主体方位与光影构图',
+        assetId: asset.id,
+        assetKind: 'image',
+        derivedFrom: asset.derivedFrom,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+      };
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `捕获预演构图真值「${asset.name}」`,
+        operations: [
+          { type: 'addAsset', asset },
+          { type: 'putVaultItem', item: vaultItem },
+        ],
+      });
+      await changed(target, envelope);
+      return { envelope, asset, vaultItem };
+    }
     default:
       throw new Error('未知操作：' + method);
   }
 }
-async function listSkills() {
-  const result = [];
-  for (const root of [join(resources, 'skills'), join(store.path, 'skills')]) {
+
+async function realpathSafe(target: string) {
+  try {
+    const { realpath } = await import('node:fs/promises');
+    return await realpath(target);
+  } catch {
+    return resolve(target);
+  }
+}
+
+function parseSkillMarkdown(source: string, fallbackSlug: string) {
+  const normalized = source.replace(/\r\n/g, '\n');
+  const fmMatch = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const fm = fmMatch ? fmMatch[1] : '';
+  const body = (fmMatch ? fmMatch[2] : normalized).trim();
+  const rawName = (fm.match(/^name:\s*(.+)$/m)?.[1] || fallbackSlug || 'custom-skill')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '');
+  const name = /^[a-z0-9]/.test(rawName) && rawName.length >= 2 ? rawName.slice(0, 48) : 'custom-skill';
+  const description = (fm.match(/^description:\s*(.+)$/m)?.[1] || '').trim();
+  return { name, description, body };
+}
+
+async function buildComposerAttachment(filePath: string, overrideName?: string): Promise<ComposerAttachment> {
+  const abs = resolve(filePath);
+  const info = await stat(abs);
+  const ext = extname(abs).toLowerCase();
+  const mimeMap: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.mp4': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.webm': 'video/webm',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.srt': 'text/plain',
+    '.json': 'application/json',
+  };
+  const kind: ComposerAttachment['kind'] = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'].includes(ext)
+    ? 'image'
+    : ['.mp4', '.mov', '.webm'].includes(ext)
+      ? 'video'
+      : ['.mp3', '.wav', '.m4a'].includes(ext)
+        ? 'audio'
+        : 'file';
+  let previewDataUrl: string | undefined;
+  if (kind === 'image') {
+    const img = nativeImage.createFromPath(abs);
+    if (!img.isEmpty()) {
+      const sz = img.getSize();
+      const thumb = Math.max(sz.width, sz.height) > 120 ? img.resize(sz.width >= sz.height ? { width: 120 } : { height: 120 }) : img;
+      previewDataUrl = thumb.toDataURL();
+    }
+  }
+  return {
+    id: uid('att'),
+    name: overrideName || basename(abs),
+    path: abs,
+    mimeType: mimeMap[ext] || 'application/octet-stream',
+    kind,
+    previewDataUrl,
+    sizeBytes: info.size,
+  };
+}
+
+async function listSkills(): Promise<SkillInfo[]> {
+  const result: SkillInfo[] = [];
+  const seen = new Set<string>();
+  const roots: [string, SkillInfo['scope']][] = [
+    [join(store.path, 'skills'), 'project'],
+    [join(app.getPath('userData'), 'skills'), 'user'],
+    [join(resources, 'skills'), 'builtin'],
+  ];
+  for (const [root, scope] of roots) {
     for (const f of await readdir(root, { withFileTypes: true }).catch(() => [])) {
       if (!f.isDirectory()) continue;
       const path = join(root, f.name, 'SKILL.md');
       try {
         const source = await readFile(path, 'utf8');
+        const parsed = parseSkillMarkdown(source, f.name);
+        if (seen.has(parsed.name)) continue;
+        seen.add(parsed.name);
         result.push({
-          name: source.match(/^name:\s*(.+)$/m)?.[1] || f.name,
-          description: source.match(/^description:\s*(.+)$/m)?.[1] || '',
+          name: parsed.name,
+          title: friendlySkillTitle(parsed.name),
+          description: parsed.description,
           path,
+          scope,
+          body: parsed.body,
         });
       } catch {}
     }
   }
   return result;
 }
+
 async function createWindow() {
   win = new BrowserWindow({
     width: 1536,
@@ -495,8 +889,8 @@ async function createWindow() {
     minHeight: 720,
     title: 'CoCraft',
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 19 },
-    backgroundColor: '#181a1d',
+    trafficLightPosition: { x: 14, y: 13 },
+    backgroundColor: '#101218',
     show: false,
     webPreferences: {
       preload: join(here, 'preload.cjs'),
@@ -515,6 +909,7 @@ async function createWindow() {
   if (process.env.COCRAFT_DEV_URL) await win.loadURL(process.env.COCRAFT_DEV_URL);
   else await win.loadFile(join(here, 'renderer/index.html'));
 }
+
 app
   .whenReady()
   .then(async () => {
@@ -522,15 +917,21 @@ app
     await mkdir(root, { recursive: true });
     library = new Library(root);
     settings = new SettingsStore(root);
+    globalVault = new GlobalVault(join(root, 'Library'));
+    await globalVault.init();
     nativeTheme.themeSource = (await settings.get()).theme;
     const list = await library.list();
+    const createInitialProject = () =>
+      process.env.COCRAFT_LEGACY_DEMO === '1'
+        ? createDemo(library, resources)
+        : library.create('未命名创作');
     if (list.length) {
       try {
         store = await library.open(list[0].path);
       } catch {
-        store = await createDemo(library, resources);
+        store = await createInitialProject();
       }
-    } else store = await createDemo(library, resources);
+    } else store = await createInitialProject();
     for (const task of await store.tasks())
       if (task.status === 'running') {
         task.status = 'idle';
@@ -545,8 +946,8 @@ app
     media = new MediaServer(join(here, 'renderer'), renderDir, process.env.COCRAFT_DEV_URL);
     await media.start();
     studioMedia = await studioCatalog(resources);
-    media.register(studioMedia);
-    media.register((await store.project()).assets);
+    media.registerStudio(studioMedia);
+    media.setProjectAssets((await store.project()).assets);
     jobs = new JobService(
       root,
       join(here, 'render-worker.mjs'),
@@ -566,6 +967,8 @@ app
       (s, e) => void changed(s, e),
       generation,
       studioMedia,
+      globalVault,
+      join(root, 'skills'),
     );
     ipcMain.handle('cocraft:call', async (event, method, payload) => {
       if (event.sender.id !== win.webContents.id || event.senderFrame !== win.webContents.mainFrame)
@@ -634,4 +1037,5 @@ app
     dialog.showErrorBox('CoCraft 启动失败', String(e));
     app.quit();
   });
+
 app.on('window-all-closed', () => app.quit());
