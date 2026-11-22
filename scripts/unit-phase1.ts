@@ -887,4 +887,25 @@ assert.ok(
   assert.ok(soloIssues.some((i) => i.id === 'solo-tracks-active'), 'Preflight warns when Solo mode is active');
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 core regression tests (keyframes, easing, auto-duck, J/L detach, track solo)');
+// 9. Milestone 2: PBR 3D lightingPreset + RoughJS deterministic seed + whiteboard-sketch preset
+{
+  const roughMod = (await import('roughjs')).default;
+  const gen = roughMod.generator();
+  const a = gen.toPaths(gen.rectangle(10, 10, 200, 100, { seed: 42, fill: '#d97706', fillStyle: 'hachure' }));
+  const b = gen.toPaths(gen.rectangle(10, 10, 200, 100, { seed: 42, fill: '#d97706', fillStyle: 'hachure' }));
+  assert.ok(a.length >= 2, 'RoughJS produces fill + sketchy stroke paths');
+  assert.deepEqual(a, b, 'Fixed seed produces bit-identical SVG paths across Remotion frames (0 flicker)');
+
+  const { createPresetClip, getPreset } = await import('../src/core/presets');
+  const td = getPreset('teardown-3d');
+  assert.ok(td?.parameters.some((p) => p.key === 'lightingPreset'), 'teardown-3d exposes PBR lightingPreset parameter');
+  const tdClip = createPresetClip('teardown-3d', 0, 30, { lightingPreset: 'dramatic' });
+  assert.equal(tdClip.props.lightingPreset, 'dramatic');
+
+  const wbClip = createPresetClip('whiteboard-sketch', 0, 30, { text: '白板实测' });
+  assert.equal(wbClip.props.presetId, 'whiteboard-sketch');
+  assert.equal(wbClip.props.text, '白板实测');
+  assert.ok(filterPresets('roughjs').some((p) => p.id === 'whiteboard-sketch'), 'whiteboard-sketch searchable by roughjs');
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 core regression tests');

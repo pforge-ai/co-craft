@@ -2,6 +2,7 @@ import { PresetContent } from './Presets';
 import { getPreset, isLightHex, resolveProjectStyle } from '../core/presets';
 import { evaluateKeyframeTrack, resolveClipPropsAtFrame } from '../core/keyframes';
 import { ThreeCanvas, TeardownStage } from './ThreeStage';
+import RoughPrimitives, { rough } from './RoughPrimitives';
 import React, { useMemo } from 'react';
 import * as Remotion from 'remotion';
 import * as JSXRuntime from 'react/jsx-runtime';
@@ -299,6 +300,8 @@ function loadComponent(c: CodeComponent) {
     )
       return { GLTFLoader };
     if (name === '@remotion/three') return { ThreeCanvas, TeardownStage };
+    if (name === 'roughjs') return rough;
+    if (name === 'cocraft/rough') return RoughPrimitives;
     throw new Error(`组件不能加载 ${name}`);
   };
   new Function('require', 'module', 'exports', c.compiled)(require, module, module.exports);

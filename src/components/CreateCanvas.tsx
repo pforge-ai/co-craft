@@ -58,6 +58,16 @@ import {
 import { mediaUrl } from '../composition/Film';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
 import { CanvasQuickLook } from './CanvasQuickLook';
+import { CanvasUtilityControls } from './CanvasUtilityControls';
+import {
+  CanvasWirePillsSvg,
+  CanvasWiresSvg,
+  computeSmartWire,
+  type CanvasPt as Pt,
+  type CanvasWireDrag,
+  type CanvasWireItem,
+  type PortSide,
+} from './CanvasWiresLayer';
 import { PresetPreview } from './PresetControls';
 import { ShotCompositeThumb } from './ShotCompositeThumb';
 import { createPresetClip, getPreset } from '../core/presets';
@@ -148,64 +158,6 @@ interface CreateCanvasProps {
     target?: GenerationTarget;
   }) => void;
   onAskAgentForShot: (clip: Clip, prompt: string) => void;
-}
-
-interface Pt {
-  x: number;
-  y: number;
-}
-
-type PortSide = 'left' | 'right' | 'top' | 'bottom';
-
-function computeSmartWire(
-  fromPos: Pt,
-  fromSz: { w: number; h: number },
-  toPos: Pt,
-  toSz: { w: number; h: number },
-): { x1: number; y1: number; x2: number; y2: number; s1: PortSide; s2: PortSide } {
-  const fc = { x: fromPos.x + fromSz.w / 2, y: fromPos.y + fromSz.h / 2 };
-  const tc = { x: toPos.x + toSz.w / 2, y: toPos.y + toSz.h / 2 };
-  const dx = tc.x - fc.x;
-  const dy = tc.y - fc.y;
-  let s1: PortSide;
-  let s2: PortSide;
-  if (Math.abs(dx) >= Math.abs(dy) * 0.6) {
-    s1 = dx >= 0 ? 'right' : 'left';
-    s2 = dx >= 0 ? 'left' : 'right';
-  } else {
-    s1 = dy >= 0 ? 'bottom' : 'top';
-    s2 = dy >= 0 ? 'top' : 'bottom';
-  }
-  const anchor = (pos: Pt, sz: { w: number; h: number }, side: PortSide): Pt => {
-    if (side === 'right') return { x: pos.x + sz.w + 2, y: pos.y + Math.min(86, sz.h * 0.5) };
-    if (side === 'left') return { x: pos.x - 2, y: pos.y + Math.min(86, sz.h * 0.5) };
-    if (side === 'bottom') return { x: pos.x + sz.w * 0.5, y: pos.y + sz.h + 2 };
-    return { x: pos.x + sz.w * 0.5, y: pos.y - 2 };
-  };
-  const p1 = anchor(fromPos, fromSz, s1);
-  const p2 = anchor(toPos, toSz, s2);
-  return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, s1, s2 };
-}
-
-function bezierPathFor(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  s1: PortSide,
-  s2: PortSide,
-): string {
-  const dist = Math.hypot(x2 - x1, y2 - y1);
-  const cp = Math.max(24, Math.min(110, dist * 0.42));
-  const offset = (x: number, y: number, side: PortSide): Pt => {
-    if (side === 'right') return { x: x + cp, y };
-    if (side === 'left') return { x: x - cp, y };
-    if (side === 'bottom') return { x, y: y + cp };
-    return { x, y: y - cp };
-  };
-  const c1 = offset(x1, y1, s1);
-  const c2 = offset(x2, y2, s2);
-  return `M ${x1} ${y1} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${x2} ${y2}`;
 }
 
 export function CreateCanvas({
@@ -2666,39 +2618,7 @@ export function CreateCanvas({
         ))}
 
         {/* 1px Curved Bezier Relationship Wires (On-Demand Focus: subtle when idle, bright on hover/select) */}
-        <svg className="cc-wires-svg" width="4000" height="3000">
-          {wires.map((w) => {
-            const d = bezierPathFor(w.x1, w.y1, w.x2, w.y2, w.s1, w.s2);
-            const highlighted =
-              w.active ||
-              hoveredNodeKey === w.fromKey ||
-              hoveredNodeKey === w.toKey ||
-              Boolean(wireDrag);
-            return (
-              <g key={w.key} className={`cc-wire-group ${highlighted ? 'highlighted' : ''}`}>
-                <path
-                  d={d}
-                  className={`cc-wire-path ${w.isLineage ? 'lineage' : ''} ${w.active ? 'active' : ''} ${highlighted ? 'highlighted' : ''}`}
-                />
-                <circle cx={w.x1} cy={w.y1} r={3} className="cc-wire-dot" />
-                <circle cx={w.x2} cy={w.y2} r={3} className="cc-wire-dot" />
-              </g>
-            );
-          })}
-          {wireDrag && (
-            <path
-              d={bezierPathFor(
-                wireDrag.x1,
-                wireDrag.y1,
-                wireDrag.x2,
-                wireDrag.y2,
-                wireDrag.side,
-                wireDrag.x2 >= wireDrag.x1 ? 'left' : 'right',
-              )}
-              className="cc-wire-path dragging"
-            />
-          )}
-        </svg>
+        <CanvasWiresSvg wires={wires} hoveredNodeKey={hoveredNodeKey} wireDrag={wireDrag} />
 
         {/* Zone Label Headers (positioned at top: 10px, cleanly separated from row-0 cards at y: 82px) */}
         {totalAssetCount > 0 && (
@@ -4017,165 +3937,30 @@ export function CreateCanvas({
         )}
 
         {/* Clickable Bezier Wire Label Pills (only visible when related node/wire is hovered or selected) */}
-        <svg className="cc-wires-svg cc-wire-pills-layer" width="4000" height="3000">
-          {wires.map((w) => {
-            const mx = (w.x1 + w.x2) / 2;
-            const my = (w.y1 + w.y2) / 2;
-            const pillW = Math.min(180, Math.max(64, w.label.length * 8.5 + 22));
-            const highlighted =
-              w.active ||
-              hoveredNodeKey === w.fromKey ||
-              hoveredNodeKey === w.toKey ||
-              Boolean(wireDrag);
-            return (
-              <g
-                key={w.key}
-                className={`cc-wire-pill ${w.isLineage ? 'lineage-pill' : ''} ${highlighted ? 'highlighted' : ''}`}
-                transform={`translate(${mx}, ${my})`}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (w.kind === 'asset-lineage' && w.targetAssetId) {
-                    const targetAsset = project.assets.find((x) => x.id === w.targetAssetId);
-                    if (!targetAsset) return;
-                    const nextDerived = (targetAsset.derivedFrom || []).filter((d) => {
-                      if (w.sourceVaultId && d.vaultItemId === w.sourceVaultId) return false;
-                      if (w.sourceAssetId && d.assetId === w.sourceAssetId && !w.sourceVaultId) return false;
-                      return true;
-                    });
-                    void onEdit('解除参考关联连线', [
-                      { type: 'updateAssetMeta', assetId: targetAsset.id, changes: { derivedFrom: nextDerived } },
-                    ]);
-                    return;
-                  }
-                  if (w.kind === 'entity-lineage' && w.targetEntId) {
-                    const targetEnt = upstreamEntities.find((x) => x.id === w.targetEntId);
-                    if (!targetEnt) return;
-                    const nextDerived = (targetEnt.derivedFrom || []).filter((d) => {
-                      if (w.sourceVaultId && d.vaultItemId === w.sourceVaultId) return false;
-                      if (w.sourceAssetId && d.assetId === w.sourceAssetId) return false;
-                      return true;
-                    });
-                    void onEdit('解除资产派生连线', [
-                      {
-                        type: 'putVaultItem',
-                        item: {
-                          ...clone(targetEnt),
-                          derivedFrom: nextDerived,
-                          updatedAt: new Date().toISOString(),
-                        },
-                      },
-                    ]);
-                    return;
-                  }
-                  if (w.kind === 'shot-clip' && w.removeClipId) {
-                    const removeClip = sequence.clips.find((c) => c.id === w.removeClipId);
-                    if (!removeClip || removeClip.locked) return;
-                    void onEdit('移出分镜片段连线', [
-                      { type: 'deleteClip', sequenceId: sequence.id, clipId: w.removeClipId },
-                    ]);
-                    return;
-                  }
-                  const clip = sequence.clips.find((c) => c.id === w.clipId);
-                  if (!clip || clip.locked) return;
-                  const nextBindings = (clip.subjectBindings || []).filter((x) => x.entityId !== w.entityId);
-                  const nextSubjectIds = (clip.subjectIds || []).filter((id) => id !== w.entityId);
-                  void onEdit(`解除 ${w.label} 绑定`, [
-                    {
-                      type: 'updateClip',
-                      sequenceId: sequence.id,
-                      clipId: clip.id,
-                      changes: { subjectBindings: nextBindings, subjectIds: nextSubjectIds },
-                    },
-                  ]);
-                }}
-              >
-                <title>点击解除「{w.label}」连线</title>
-                <rect x={-pillW / 2} y={-10} width={pillW} height={20} rx={10} />
-                <text x={0} y={3.5} textAnchor="middle">
-                  {w.label.length > 16 ? `${w.label.slice(0, 15)}…` : w.label}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
+        <CanvasWirePillsSvg
+          wires={wires}
+          hoveredNodeKey={hoveredNodeKey}
+          wireDrag={wireDrag}
+          project={project}
+          sequence={sequence}
+          upstreamEntities={upstreamEntities}
+          onEdit={onEdit}
+        />
       </div>
 
       {/* Bottom-Right TapNow 3-in-1 Utility Capsule + Popover Minimap */}
-      <div className="cc-bottom-right-controls" onPointerDown={(e) => e.stopPropagation()}>
-        {showMinimap && minimapDots.length > 0 && (
-          <div className="cc-minimap" aria-hidden="true">
-            {minimapDots.map((dot) => (
-              <i
-                key={dot.key}
-                className={dot.isShot ? 'shot-dot' : 'ent-dot'}
-                style={{
-                  left: `${dot.left}%`,
-                  top: `${dot.top}%`,
-                }}
-              />
-            ))}
-          </div>
-        )}
-        <div className="cc-utility-pill" role="toolbar" aria-label="画布视图工具">
-          {onToggleRightAgent && (
-            <button
-              type="button"
-              className={rightAgentOpen ? 'active' : ''}
-              title="展开 / 收起右侧 Agent 对话"
-              aria-label="切换 Agent 对话面板"
-              onClick={onToggleRightAgent}
-            >
-              <MessageSquare size={13} />
-            </button>
-          )}
-          <button
-            type="button"
-            className={showMinimap ? 'active' : ''}
-            title="显示 / 隐藏画布小地图"
-            aria-label="切换画布小地图"
-            onClick={() => setShowMinimap((v) => !v)}
-          >
-            <MapIcon size={13} />
-          </button>
-          <span className="cc-zoom-sep" />
-          <button
-            type="button"
-            title="缩小画布"
-            aria-label="缩小画布"
-            disabled={zoom <= 0.45}
-            onClick={() => setZoom((z) => Math.max(0.45, Math.round((z - 0.1) * 100) / 100))}
-          >
-            <ZoomOut size={12} />
-          </button>
-          <button
-            type="button"
-            title="一键整理画布排版（自动消除重叠）"
-            aria-label="整理画布排版"
-            onClick={() => void tidyCanvasNodes()}
-          >
-            <LayoutList size={12} />
-          </button>
-          <button
-            type="button"
-            className="cc-zoom-readout"
-            title="适应全部画布节点（保留手动布局）"
-            onClick={fitCanvasToNodes}
-          >
-            <LayoutGrid size={11} style={{ marginRight: 3 }} />
-            {Math.round(zoom * 100)}%
-          </button>
-          <button
-            type="button"
-            title="放大画布"
-            aria-label="放大画布"
-            disabled={zoom >= 1.5}
-            onClick={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 100) / 100))}
-          >
-            <ZoomIn size={12} />
-          </button>
-        </div>
-      </div>
+      <CanvasUtilityControls
+        showMinimap={showMinimap}
+        onToggleMinimap={() => setShowMinimap((v) => !v)}
+        minimapDots={minimapDots}
+        rightAgentOpen={rightAgentOpen}
+        onToggleRightAgent={onToggleRightAgent}
+        zoom={zoom}
+        onZoomOut={() => setZoom((z) => Math.max(0.45, Math.round((z - 0.1) * 100) / 100))}
+        onZoomIn={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 100) / 100))}
+        onTidy={() => void tidyCanvasNodes()}
+        onFit={fitCanvasToNodes}
+      />
 
       {/* TapNow Bottom-Centered Dock: Omnibar + Independent Circular (+) FAB */}
       {!rightAgentOpen &&

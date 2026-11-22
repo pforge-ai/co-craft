@@ -44,6 +44,8 @@ export async function compileComponent(
       'three/examples/jsm/loaders/GLTFLoader.js',
       'three/addons/loaders/GLTFLoader.js',
       '@remotion/three',
+      'roughjs',
+      'cocraft/rough',
     ],
     logLevel: 'silent',
     plugins: [

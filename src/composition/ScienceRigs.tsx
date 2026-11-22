@@ -1,5 +1,6 @@
 import React from 'react';
 import { Html5Video, Img, OffthreadVideo, getRemotionEnvironment } from 'remotion';
+import { RoughArrow, RoughCircle, RoughLine, RoughRect } from './RoughPrimitives';
 
 const family = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif';
 const mono = '"SFMono-Regular", Consolas, monospace';
@@ -261,15 +262,6 @@ export function TinychartsRig({ width: w, height: h, frame, fps, props: p }: Rig
         }}
       />
 
-      <svg width={0} height={0} style={{ position: 'absolute' }}>
-        <defs>
-          <filter id="cc-sketch- wobble">
-            <feTurbulence type="fractalNoise" baseFrequency="0.03" numOctaves="2" result="noise" seed="3" />
-            <feDisplacementMap in="SourceGraphic" in2="noise" scale={2.6 * u} />
-          </filter>
-        </defs>
-      </svg>
-
       <div style={{ position: 'relative' }}>
         <div style={{ fontFamily: mono, fontSize: 17 * u, color: accent, fontWeight: 700, letterSpacing: 2 * u }}>
           {String(p.subtitle || '规则逻辑与状态推演')}
@@ -277,14 +269,32 @@ export function TinychartsRig({ width: w, height: h, frame, fps, props: p }: Rig
         <div style={{ fontSize: 52 * u, fontWeight: 750, marginTop: 8 * u }}>
           {String(p.text || '编辑锁与快照发布状态机')}
         </div>
+        <svg
+          width={Math.min(w - 152 * u, 420 * u)}
+          height={18 * u}
+          viewBox={`0 0 ${Math.min(w - 152 * u, 420 * u)} ${18 * u}`}
+          style={{ display: 'block', marginTop: 4 * u, overflow: 'visible' }}
+        >
+          <RoughLine
+            seed={11}
+            x1={2 * u}
+            y1={9 * u}
+            x2={Math.min(w - 160 * u, 410 * u)}
+            y2={9 * u}
+            stroke={accent}
+            strokeWidth={3.2 * u}
+            roughness={1.6}
+            progress={easeOut(t / 0.55)}
+          />
+        </svg>
       </div>
 
-      {/* Hand-drawn SVG Statechart */}
+      {/* Deterministic roughjs Hand-Drawn SVG Statechart (zero frame flicker) */}
       <svg
         width={w - 152 * u}
         height={h * 0.54}
         viewBox={`0 0 ${w - 152 * u} ${h * 0.54}`}
-        style={{ position: 'relative', marginTop: 32 * u, overflow: 'visible' }}
+        style={{ position: 'relative', marginTop: 20 * u, overflow: 'visible' }}
       >
         {states.map((st, idx) => {
           const totalW = w - 152 * u;
@@ -296,6 +306,16 @@ export function TinychartsRig({ width: w, height: h, frame, fps, props: p }: Rig
           const isCurrent = Math.round(tokenPos) === idx;
           const isBlockedNode = reject && idx === 2;
           const strokeCol = isBlockedNode && rejectedNow ? '#ef4444' : isCurrent ? accent : ink;
+          const fillCol =
+            isBlockedNode && rejectedNow
+              ? 'rgba(239,68,68,0.16)'
+              : isCurrent
+                ? `${accent}26`
+                : dark
+                  ? '#1e293b'
+                  : '#ffffff';
+          const boxDraw = easeOut((t - idx * 0.14) / 0.5);
+          const arrowDraw = easeOut((t - 0.22 - idx * 0.2) / 0.45);
 
           const nextCx = portrait ? totalW * 0.5 : totalW * (0.17 + (idx + 1) * 0.33);
           const nextCy = portrait ? totalH * (0.18 + (idx + 1) * 0.34) : totalH * 0.48;
@@ -304,23 +324,27 @@ export function TinychartsRig({ width: w, height: h, frame, fps, props: p }: Rig
             <g key={idx}>
               {idx < states.length - 1 && (
                 <g>
-                  <line
-                    x1={portrait ? cx : cx + boxW / 2 + 10 * u}
-                    y1={portrait ? cy + boxH / 2 + 8 * u : cy}
+                  <RoughArrow
+                    seed={400 + idx * 31}
+                    x1={portrait ? cx : cx + boxW / 2 + 12 * u}
+                    y1={portrait ? cy + boxH / 2 + 10 * u : cy}
                     x2={portrait ? nextCx : nextCx - boxW / 2 - 14 * u}
-                    y2={portrait ? nextCy - boxH / 2 - 12 * u : nextCy}
+                    y2={portrait ? nextCy - boxH / 2 - 14 * u : nextCy}
                     stroke={reject && idx === 1 && rejectedNow ? '#ef4444' : ink}
-                    strokeWidth={3.5 * u}
-                    strokeDasharray={reject && idx === 1 ? `${10 * u} ${8 * u}` : undefined}
-                    opacity={0.75}
+                    strokeWidth={3.2 * u}
+                    headSize={16 * u}
+                    roughness={1.4}
+                    strokeLineDash={reject && idx === 1 ? [11 * u, 8 * u] : undefined}
+                    progress={arrowDraw}
+                    opacity={0.85}
                   />
                   {reject && idx === 1 && rejectedNow && (
                     <text
                       x={(cx + nextCx) / 2}
-                      y={(cy + nextCy) / 2 - 18 * u}
+                      y={(cy + nextCy) / 2 - 22 * u}
                       textAnchor="middle"
                       fill="#ef4444"
-                      fontSize={28 * u}
+                      fontSize={26 * u}
                       fontWeight={800}
                     >
                       ✕ 条件拦截
@@ -328,27 +352,20 @@ export function TinychartsRig({ width: w, height: h, frame, fps, props: p }: Rig
                   )}
                 </g>
               )}
-              {/* Double-stroke sketchy marker box */}
-              <rect
+              <RoughRect
+                seed={100 + idx * 37}
                 x={cx - boxW / 2}
                 y={cy - boxH / 2}
                 width={boxW}
                 height={boxH}
-                rx={18 * u}
-                fill={dark ? '#1e293b' : '#ffffff'}
                 stroke={strokeCol}
-                strokeWidth={3.5 * u}
-              />
-              <rect
-                x={cx - boxW / 2 + 4 * u}
-                y={cy - boxH / 2 - 3 * u}
-                width={boxW}
-                height={boxH}
-                rx={18 * u}
-                fill="none"
-                stroke={strokeCol}
-                strokeWidth={1.6 * u}
-                opacity={0.45}
+                strokeWidth={3.2 * u}
+                fill={fillCol}
+                fillStyle={isCurrent || (isBlockedNode && rejectedNow) ? 'hachure' : 'solid'}
+                hachureGap={8 * u}
+                roughness={1.65}
+                bowing={1.35}
+                progress={boxDraw}
               />
               <text
                 x={cx}
@@ -358,6 +375,7 @@ export function TinychartsRig({ width: w, height: h, frame, fps, props: p }: Rig
                 fontSize={29 * u}
                 fontWeight={700}
                 fontFamily={family}
+                opacity={boxDraw}
               >
                 {st}
               </text>
@@ -365,38 +383,249 @@ export function TinychartsRig({ width: w, height: h, frame, fps, props: p }: Rig
           );
         })}
 
-        {/* Traveling State Token */}
+        {/* Hand-drawn Traveling State Token */}
         {(() => {
           const totalW = w - 152 * u;
           const totalH = h * 0.54;
           const tx = portrait ? totalW * 0.5 - 185 * u : totalW * (0.17 + tokenPos * 0.33);
-          const ty = portrait ? totalH * (0.18 + tokenPos * 0.34) : totalH * 0.48 - 82 * u;
+          const ty = portrait ? totalH * (0.18 + tokenPos * 0.34) : totalH * 0.48 - 84 * u;
           const col = rejectedNow ? '#ef4444' : accent;
           return (
             <g>
-              <circle cx={tx} cy={ty} r={16 * u} fill={col} opacity={0.24} />
-              <circle cx={tx} cy={ty} r={9.5 * u} fill={col} />
+              <RoughCircle
+                seed={777}
+                cx={tx}
+                cy={ty}
+                diameter={30 * u}
+                stroke={col}
+                strokeWidth={2.6 * u}
+                fill={col}
+                fillStyle="cross-hatch"
+                hachureGap={5 * u}
+                roughness={1.4}
+                opacity={0.92}
+              />
             </g>
           );
         })()}
       </svg>
 
-      {/* Bottom Guard Note */}
+      {/* Bottom Hand-Drawn Guard Note */}
       <div
         style={{
           position: 'absolute',
-          bottom: 58 * u,
+          bottom: 54 * u,
           left: 76 * u,
-          padding: `${14 * u}px ${24 * u}px`,
-          borderRadius: 14 * u,
-          border: `2px solid ${rejectedNow ? '#ef4444' : accent}`,
-          background: dark ? '#0f172acc' : '#ffffffee',
-          fontSize: 22 * u,
-          fontWeight: 600,
-          color: rejectedNow ? '#ef4444' : ink,
+          display: 'inline-flex',
+          alignItems: 'center',
         }}
       >
-        {String(p.guardNote || '基线版本匹配 → 生成新快照 v+1')}
+        <svg
+          width={Math.min(w - 152 * u, 760 * u)}
+          height={64 * u}
+          viewBox={`0 0 ${Math.min(w - 152 * u, 760 * u)} ${64 * u}`}
+          style={{ position: 'absolute', inset: 0, overflow: 'visible', pointerEvents: 'none' }}
+        >
+          <RoughRect
+            seed={909}
+            x={2 * u}
+            y={2 * u}
+            width={Math.min(w - 156 * u, 752 * u)}
+            height={60 * u}
+            stroke={rejectedNow ? '#ef4444' : accent}
+            strokeWidth={2.6 * u}
+            fill={dark ? '#0f172ad8' : '#fffffff0'}
+            fillStyle="solid"
+            roughness={1.5}
+            progress={easeOut((t - 0.55) / 0.45)}
+          />
+        </svg>
+        <div
+          style={{
+            position: 'relative',
+            padding: `${16 * u}px ${26 * u}px`,
+            fontSize: 22 * u,
+            fontWeight: 650,
+            color: rejectedNow ? '#ef4444' : ink,
+          }}
+        >
+          {String(p.guardNote || '基线版本匹配 → 生成新快照 v+1')}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Deterministic roughjs Hand-Drawn Whiteboard Explainer Card.
+ * Sketchy strokes, hachure fills & animated hand-drawn arrows — 100% seed-locked for Remotion.
+ */
+export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p }: RigRenderContext) {
+  const u = Math.min(w, h) / 1080;
+  const portrait = h > w * 1.1;
+  const t = frame / fps;
+  const dark = p.surface === 'dark';
+  const accent = String(p.accent || '#d97706');
+  const bg = dark ? '#11161f' : '#fdfbf7';
+  const ink = dark ? '#f1f5f9' : '#1e293b';
+  const muted = dark ? '#94a3b8' : '#64748b';
+  const cards = String(p.points || '核心问题|拆解方案|关键结论')
+    .split('|')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const callout = String(p.callout || '手绘标注 · 确定性 seed 渲染，导出零闪烁');
+  const padX = (portrait ? 56 : 82) * u;
+  const padY = (portrait ? 78 : 64) * u;
+  const svgW = w - padX * 2;
+  const svgH = h * (portrait ? 0.58 : 0.54);
+
+  return (
+    <div
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        background: bg,
+        color: ink,
+        fontFamily: family,
+        overflow: 'hidden',
+        padding: `${padY}px ${padX}px`,
+        boxSizing: 'border-box',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+      }}
+    >
+      {/* Paper grid texture */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          backgroundImage: `linear-gradient(${dark ? '#1e293b' : '#e5e0d5'} 1px, transparent 1px), linear-gradient(90deg, ${dark ? '#1e293b' : '#e5e0d5'} 1px, transparent 1px)`,
+          backgroundSize: `${40 * u}px ${40 * u}px`,
+          opacity: dark ? 0.45 : 0.6,
+          pointerEvents: 'none',
+        }}
+      />
+
+      <div style={{ position: 'relative' }}>
+        <div style={{ fontFamily: mono, fontSize: 17 * u, color: accent, fontWeight: 700, letterSpacing: 2.5 * u }}>
+          {String(p.subtitle || 'SKETCH EXPLAINER · WHITEBOARD')}
+        </div>
+        <div style={{ fontSize: (portrait ? 54 : 52) * u, fontWeight: 800, marginTop: 8 * u }}>
+          {String(p.text || '三步看懂核心机制')}
+        </div>
+        <svg width={Math.min(svgW, 460 * u)} height={18 * u} style={{ display: 'block', marginTop: 4 * u, overflow: 'visible' }}>
+          <RoughLine
+            seed={33}
+            x1={2 * u}
+            y1={9 * u}
+            x2={Math.min(svgW - 10 * u, 440 * u)}
+            y2={9 * u}
+            stroke={accent}
+            strokeWidth={3.5 * u}
+            roughness={1.7}
+            progress={easeOut(t / 0.5)}
+          />
+        </svg>
+      </div>
+
+      <svg width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`} style={{ position: 'relative', overflow: 'visible' }}>
+        {cards.map((label, idx) => {
+          const cardDraw = easeOut((t - 0.15 - idx * 0.25) / 0.55);
+          const arrowDraw = easeOut((t - 0.42 - idx * 0.25) / 0.4);
+          const count = Math.max(1, cards.length);
+          const gap = (portrait ? 52 : 64) * u;
+          const cardW = portrait ? svgW * 0.88 : (svgW - gap * (count - 1)) / count;
+          const cardH = portrait ? (svgH - gap * (count - 1)) / count : svgH * 0.66;
+          const x = portrait ? (svgW - cardW) / 2 : idx * (cardW + gap);
+          const y = portrait ? idx * (cardH + gap) : (svgH - cardH) / 2;
+          const isLast = idx === count - 1;
+          return (
+            <g key={idx}>
+              {idx < count - 1 && (
+                <RoughArrow
+                  seed={600 + idx * 41}
+                  x1={portrait ? x + cardW / 2 : x + cardW + 8 * u}
+                  y1={portrait ? y + cardH + 6 * u : y + cardH / 2}
+                  x2={portrait ? x + cardW / 2 : x + cardW + gap - 10 * u}
+                  y2={portrait ? y + cardH + gap - 8 * u : y + cardH / 2}
+                  stroke={accent}
+                  strokeWidth={3.2 * u}
+                  headSize={16 * u}
+                  roughness={1.5}
+                  progress={arrowDraw}
+                />
+              )}
+              <RoughRect
+                seed={200 + idx * 53}
+                x={x}
+                y={y}
+                width={cardW}
+                height={cardH}
+                stroke={isLast ? accent : ink}
+                strokeWidth={3.2 * u}
+                fill={isLast ? `${accent}24` : dark ? '#182131' : '#ffffff'}
+                fillStyle={isLast ? 'hachure' : 'solid'}
+                hachureGap={9 * u}
+                roughness={1.7}
+                bowing={1.3}
+                progress={cardDraw}
+              />
+              <RoughCircle
+                seed={300 + idx * 29}
+                cx={x + 42 * u}
+                cy={y + 42 * u}
+                diameter={44 * u}
+                stroke={accent}
+                strokeWidth={2.5 * u}
+                fill={`${accent}2e`}
+                fillStyle="hachure"
+                hachureGap={5 * u}
+                progress={cardDraw}
+              />
+              <text
+                x={x + 42 * u}
+                y={y + 50 * u}
+                textAnchor="middle"
+                fill={accent}
+                fontFamily={mono}
+                fontSize={22 * u}
+                fontWeight={800}
+                opacity={cardDraw}
+              >
+                {idx + 1}
+              </text>
+              <text
+                x={x + 28 * u}
+                y={y + cardH * 0.62}
+                fill={ink}
+                fontSize={31 * u}
+                fontWeight={750}
+                fontFamily={family}
+                opacity={cardDraw}
+              >
+                {label}
+              </text>
+              <text
+                x={x + 28 * u}
+                y={y + cardH * 0.8}
+                fill={muted}
+                fontFamily={mono}
+                fontSize={16 * u}
+                opacity={cardDraw * 0.9}
+              >
+                STEP 0{idx + 1}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 12 * u, fontSize: 22 * u, fontWeight: 600, color: muted }}>
+        <span style={{ width: 10 * u, height: 10 * u, borderRadius: '50%', background: accent, display: 'inline-block' }} />
+        <span>{callout}</span>
       </div>
     </div>
   );

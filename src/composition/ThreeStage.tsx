@@ -2,14 +2,17 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AbsoluteFill, continueRender, delayRender, useCurrentFrame, useVideoConfig } from 'remotion';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 export type CameraPreset = 'orbit' | 'isometric' | 'dolly-in' | 'top-down' | 'hero-low';
+export type LightingPreset = 'studio' | 'dramatic' | 'soft';
 
 export interface ThreeCanvasProps {
   width?: number;
   height?: number;
   frame?: number;
   fps?: number;
+  lightingPreset?: LightingPreset;
   camera?: { position?: [number, number, number]; fov?: number };
   style?: React.CSSProperties;
   children?: React.ReactNode;
@@ -22,6 +25,29 @@ export interface ThreeCanvasProps {
     time: number;
   }) => void;
   setup?: (scene: THREE.Scene, camera: THREE.PerspectiveCamera) => (() => void) | void;
+}
+
+function attachPbrEnvironment(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  lightingPreset: LightingPreset = 'studio',
+): () => void {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envScene = new RoomEnvironment();
+  const envRT = pmrem.fromScene(envScene, 0.04);
+  scene.environment = envRT.texture;
+  if ('environmentIntensity' in scene) {
+    (scene as THREE.Scene & { environmentIntensity: number }).environmentIntensity =
+      lightingPreset === 'dramatic' ? 0.55 : lightingPreset === 'soft' ? 1.25 : 0.95;
+  }
+  renderer.toneMappingExposure =
+    lightingPreset === 'dramatic' ? 1.04 : lightingPreset === 'soft' ? 1.22 : 1.18;
+  return () => {
+    scene.environment = null;
+    envRT.dispose();
+    envScene.dispose();
+    pmrem.dispose();
+  };
 }
 
 function disposeMaterial(mat: THREE.Material) {
@@ -55,6 +81,7 @@ function StandaloneThreeCanvas({
   height,
   frame,
   fps,
+  lightingPreset = 'studio',
   camera: camCfg,
   style,
   setup,
@@ -68,6 +95,7 @@ function StandaloneThreeCanvas({
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     cleanup?: () => void;
+    disposeEnv?: () => void;
   } | null>(null);
 
   // For small card thumbnails, render one deterministic snapshot and immediately release the WebGL context
@@ -95,9 +123,10 @@ function StandaloneThreeCanvas({
     renderer.setSize(width, height, false);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.18;
 
     const scene = new THREE.Scene();
+    const disposeEnv = attachPbrEnvironment(renderer, scene, lightingPreset);
     const camera = new THREE.PerspectiveCamera(camCfg?.fov || 40, width / height, 0.1, 100);
     const pos = camCfg?.position || [4.2, 3.0, 5.2];
     camera.position.set(pos[0], pos[1], pos[2]);
@@ -111,9 +140,10 @@ function StandaloneThreeCanvas({
     } catch {}
     cleanup?.();
     disposeObject3D(scene);
+    disposeEnv();
     renderer.dispose();
     renderer.forceContextLoss();
-  }, [isSmallStaticThumb, width, height, frame, fps, setup, onFrame]);
+  }, [isSmallStaticThumb, width, height, frame, fps, lightingPreset, setup, onFrame]);
 
   useLayoutEffect(() => {
     if (isSmallStaticThumb) return;
@@ -134,25 +164,27 @@ function StandaloneThreeCanvas({
     renderer.setSize(width, height, false);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.18;
 
     const scene = new THREE.Scene();
+    const disposeEnv = attachPbrEnvironment(renderer, scene, lightingPreset);
     const camera = new THREE.PerspectiveCamera(camCfg?.fov || 40, width / height, 0.1, 100);
     const pos = camCfg?.position || [4.2, 3.0, 5.2];
     camera.position.set(pos[0], pos[1], pos[2]);
     camera.lookAt(0, 0, 0);
 
     const cleanup = setup ? setup(scene, camera) || undefined : undefined;
-    ctxRef.current = { renderer, scene, camera, cleanup };
+    ctxRef.current = { renderer, scene, camera, cleanup, disposeEnv };
 
     return () => {
       cleanup?.();
       disposeObject3D(scene);
+      disposeEnv();
       renderer.dispose();
       renderer.forceContextLoss();
       ctxRef.current = null;
     };
-  }, [isSmallStaticThumb, width, height, setup]);
+  }, [isSmallStaticThumb, width, height, lightingPreset, setup]);
 
   useLayoutEffect(() => {
     if (isSmallStaticThumb) return;
@@ -440,6 +472,7 @@ export interface TeardownStageProps {
   title?: string;
   subtitle?: string;
   sceneType?: string;
+  lightingPreset?: string;
   cameraPreset?: string;
   cameraYaw?: number;
   cameraPitch?: number;
@@ -461,6 +494,7 @@ function TeardownStageBody({
   title = '三维精密结构拆解',
   subtitle = '三维空间结构展示',
   sceneType = 'turbine',
+  lightingPreset = 'studio',
   cameraPreset = 'orbit',
   cameraYaw = 0,
   cameraPitch = 0,
@@ -477,6 +511,8 @@ function TeardownStageBody({
   width,
   height,
 }: Required<Pick<TeardownStageProps, 'frame' | 'fps' | 'width' | 'height'>> & TeardownStageProps) {
+  const resolvedLighting: LightingPreset =
+    lightingPreset === 'dramatic' || lightingPreset === 'soft' ? lightingPreset : 'studio';
   const isLight = surface === 'light';
   const isPortrait = height > width;
   const t = frame / fps;
@@ -542,14 +578,30 @@ function TeardownStageBody({
 
   const setup = React.useCallback(
     (scene: THREE.Scene) => {
-      const amb = new THREE.AmbientLight('#dbeafe', 0.85);
-      const key = new THREE.DirectionalLight('#ffffff', 2.4);
-      key.position.set(6, 8, 6);
-      const rim = new THREE.DirectionalLight(accent || '#3b82f6', 1.6);
-      rim.position.set(-6, 3, -5);
-      const fill = new THREE.PointLight(secondary || '#14b8a6', 1.4, 18);
-      fill.position.set(0, -3, 4);
+      const isDramatic = resolvedLighting === 'dramatic';
+      const isSoft = resolvedLighting === 'soft';
+      const amb = new THREE.AmbientLight('#dbeafe', isDramatic ? 0.32 : isSoft ? 1.05 : 0.55);
+      const key = new THREE.DirectionalLight('#ffffff', isDramatic ? 3.2 : isSoft ? 1.8 : 2.35);
+      key.position.set(isDramatic ? 8 : 6, 8, isDramatic ? 4 : 6);
+      const rim = new THREE.DirectionalLight(accent || '#3b82f6', isDramatic ? 2.6 : isSoft ? 1.0 : 1.75);
+      rim.position.set(-6, 3.5, -5.5);
+      const fill = new THREE.PointLight(secondary || '#14b8a6', isDramatic ? 1.1 : 1.5, 20);
+      fill.position.set(0, -3, 4.5);
       scene.add(amb, key, rim, fill);
+
+      // Subtle metallic floor ring beneath the subject to ground reflections
+      const floorRing = new THREE.Mesh(
+        new THREE.RingGeometry(2.1, 2.18, 64),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color(accent || '#3b82f6'),
+          transparent: true,
+          opacity: isLight ? 0.22 : 0.28,
+          side: THREE.DoubleSide,
+        }),
+      );
+      floorRing.rotation.x = -Math.PI / 2;
+      floorRing.position.y = -1.64;
+      scene.add(floorRing);
 
       const grid = new THREE.GridHelper(
         14,
@@ -559,7 +611,7 @@ function TeardownStageBody({
       );
       grid.position.y = -1.65;
       (grid.material as THREE.Material).transparent = true;
-      (grid.material as THREE.Material).opacity = isLight ? 0.36 : 0.28;
+      (grid.material as THREE.Material).opacity = isLight ? 0.34 : 0.24;
       scene.add(grid);
 
       if (loadedGltf) {
@@ -589,7 +641,7 @@ function TeardownStageBody({
         rigRef.current = { parts: built.parts, packets: built.packets };
       }
     },
-    [sceneType, accent, secondary, loadedGltf, isLight],
+    [sceneType, accent, secondary, loadedGltf, isLight, resolvedLighting],
   );
 
   const onFrame = React.useCallback(
@@ -642,7 +694,15 @@ function TeardownStageBody({
         overflow: 'hidden',
       }}
     >
-      <ThreeCanvas frame={frame} fps={fps} width={width} height={height} setup={setup} onFrame={onFrame} />
+      <ThreeCanvas
+        frame={frame}
+        fps={fps}
+        width={width}
+        height={height}
+        lightingPreset={resolvedLighting}
+        setup={setup}
+        onFrame={onFrame}
+      />
 
       {/* Editorial Technical HUD Overlay */}
       <div

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Crosshair, Lock, Move, RotateCcw } from 'lucide-react';
+import { evaluateKeyframeTrack, upsertClipKeyframe } from '../core/keyframes';
 import { pointerDrag } from '../lib/pointerDrag';
 import { getPreset } from '../core/presets';
 import type { Clip, EditOperation, Project, Sequence } from '../core/types';
@@ -213,12 +214,14 @@ export function StageOverlay({
   }
 
   const muted = new Set(sequence.mutedTracks || []);
+  const solo = new Set(sequence.soloTracks || []);
   const trackOrder = { visual: 0, audio: 1, overlay: 2, caption: 3 };
   const visibleAtFrame = sequence.clips
     .filter(
       (c) =>
         c.kind !== 'audio' &&
         !muted.has(c.track) &&
+        (solo.size === 0 || solo.has(c.track)) &&
         frame >= c.start &&
         frame < c.start + c.duration,
     )
@@ -289,11 +292,16 @@ export function StageOverlay({
     if (clip.locked) return;
     const clipAsset = clip.assetId ? project?.assets.find((a) => a.id === clip.assetId) : undefined;
     const orbit3D = clip.props.presetId === 'teardown-3d' || clipAsset?.kind === 'model-3d';
+    const localFrame = Math.max(0, Math.min(Math.max(0, clip.duration - 1), frame - clip.start));
     const startClientX = e.clientX;
     const startClientY = e.clientY;
     if (orbit3D) {
-      const origYaw = Number(clip.props.cameraYaw || 0);
-      const origPitch = Number(clip.props.cameraPitch || 0);
+      const origYaw = Math.round(
+        evaluateKeyframeTrack(clip.keyframes?.cameraYaw, localFrame, Number(clip.props.cameraYaw || 0)),
+      );
+      const origPitch = Math.round(
+        evaluateKeyframeTrack(clip.keyframes?.cameraPitch, localFrame, Number(clip.props.cameraPitch || 0)),
+      );
       let nextYaw = origYaw;
       let nextPitch = origPitch;
       let moved = false;
@@ -307,27 +315,35 @@ export function StageOverlay({
           nextYaw = Math.max(-180, Math.min(180, wrapYaw));
           nextPitch = Math.max(-60, Math.min(60, Math.round(origPitch + (cy - startClientY) * 0.35)));
           setLiveOrbit({ clipId: clip.id, yaw: nextYaw, pitch: nextPitch });
+          onLiveTransform?.({ clipId: clip.id, props: { cameraYaw: nextYaw, cameraPitch: nextPitch } });
         },
         () => {
           setLiveOrbit(null);
           if (moved && (nextYaw !== origYaw || nextPitch !== origPitch)) {
+            let nextKf = clip.keyframes;
+            if (nextKf?.cameraYaw?.length) nextKf = upsertClipKeyframe(nextKf, 'cameraYaw', localFrame, nextYaw);
+            if (nextKf?.cameraPitch?.length) nextKf = upsertClipKeyframe(nextKf, 'cameraPitch', localFrame, nextPitch);
+            const changes: Partial<Clip> = { props: { cameraYaw: nextYaw, cameraPitch: nextPitch } };
+            if (nextKf !== clip.keyframes) changes.keyframes = nextKf;
             onEdit(`旋转三维视角「${clip.name}」`, [
               {
                 type: 'updateClip',
                 sequenceId: sequence.id,
                 clipId: clip.id,
-                changes: { props: { cameraYaw: nextYaw, cameraPitch: nextPitch } },
+                changes,
               },
             ]);
+          } else {
+            onLiveTransform?.(null);
           }
         },
         'grabbing',
       );
       return;
     }
-    const origX = Number(clip.props.x || 0);
-    const origY = Number(clip.props.y || 0);
-    const origScale = Number(clip.props.scale || 1);
+    const origX = Math.round(evaluateKeyframeTrack(clip.keyframes?.x, localFrame, Number(clip.props.x || 0)));
+    const origY = Math.round(evaluateKeyframeTrack(clip.keyframes?.y, localFrame, Number(clip.props.y || 0)));
+    const origScale = evaluateKeyframeTrack(clip.keyframes?.scale, localFrame, Number(clip.props.scale || 1));
     let nextX = origX;
     let nextY = origY;
     let moved = false;
@@ -352,12 +368,17 @@ export function StageOverlay({
       () => {
         setLiveTransform(null);
         if (moved && (nextX !== origX || nextY !== origY)) {
+          let nextKf = clip.keyframes;
+          if (nextKf?.x?.length) nextKf = upsertClipKeyframe(nextKf, 'x', localFrame, nextX);
+          if (nextKf?.y?.length) nextKf = upsertClipKeyframe(nextKf, 'y', localFrame, nextY);
+          const changes: Partial<Clip> = { props: { x: nextX, y: nextY } };
+          if (nextKf !== clip.keyframes) changes.keyframes = nextKf;
           onEdit(`移动画面「${clip.name}」`, [
             {
               type: 'updateClip',
               sequenceId: sequence.id,
               clipId: clip.id,
-              changes: { props: { x: nextX, y: nextY } },
+              changes,
             },
           ]);
         } else {
@@ -371,11 +392,12 @@ export function StageOverlay({
   const beginScale = (e: React.PointerEvent<HTMLElement>, clip: Clip, signX: number, signY: number) => {
     e.stopPropagation();
     if (clip.locked) return;
+    const localFrame = Math.max(0, Math.min(Math.max(0, clip.duration - 1), frame - clip.start));
     const startClientX = e.clientX;
     const startClientY = e.clientY;
-    const origX = Number(clip.props.x || 0);
-    const origY = Number(clip.props.y || 0);
-    const origScale = Number(clip.props.scale || 1);
+    const origX = Math.round(evaluateKeyframeTrack(clip.keyframes?.x, localFrame, Number(clip.props.x || 0)));
+    const origY = Math.round(evaluateKeyframeTrack(clip.keyframes?.y, localFrame, Number(clip.props.y || 0)));
+    const origScale = evaluateKeyframeTrack(clip.keyframes?.scale, localFrame, Number(clip.props.scale || 1));
     let nextScale = origScale;
     cleanupRef.current?.();
     cleanupRef.current = pointerDrag(
@@ -400,12 +422,16 @@ export function StageOverlay({
       () => {
         setLiveTransform(null);
         if (nextScale !== origScale) {
+          const changes: Partial<Clip> = { props: { scale: nextScale } };
+          if (clip.keyframes?.scale?.length) {
+            changes.keyframes = upsertClipKeyframe(clip.keyframes, 'scale', localFrame, nextScale);
+          }
           onEdit(`缩放画面「${clip.name}」`, [
             {
               type: 'updateClip',
               sequenceId: sequence.id,
               clipId: clip.id,
-              changes: { props: { scale: nextScale } },
+              changes,
             },
           ]);
         } else {

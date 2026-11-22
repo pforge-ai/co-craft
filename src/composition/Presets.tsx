@@ -3,7 +3,7 @@ import { useCurrentFrame, useVideoConfig } from 'remotion';
 import type { Clip, Project } from '../core/types';
 import { getPreset, isLightHex, phaseAtSecond, resolveProjectStyle } from '../core/presets';
 import { TeardownStage } from './ThreeStage';
-import { SeeCodeRig, TinychartsRig, AnatomyRig, ScreenFocusRig } from './ScienceRigs';
+import { SeeCodeRig, TinychartsRig, WhiteboardSketchRig, AnatomyRig, ScreenFocusRig } from './ScienceRigs';
 
 const family = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif';
 const mono = '"SFMono-Regular", Consolas, monospace';
@@ -1475,6 +1475,7 @@ export function PresetFrame({
         title={text}
         subtitle={subtitle}
         sceneType={textOf(p, 'sceneType', 'turbine')}
+        lightingPreset={textOf(p, 'lightingPreset', 'studio')}
         cameraPreset={textOf(p, 'cameraPreset', 'orbit')}
         cameraYaw={Number(p.cameraYaw ?? 0)}
         cameraPitch={Number(p.cameraPitch ?? 0)}
@@ -1496,6 +1497,8 @@ export function PresetFrame({
     content = <SeeCodeRig width={w} height={h} frame={frame} fps={fps} duration={duration} props={p} />;
   } else if (presetId === 'tinycharts-state') {
     content = <TinychartsRig width={w} height={h} frame={frame} fps={fps} duration={duration} props={p} />;
+  } else if (presetId === 'whiteboard-sketch') {
+    content = <WhiteboardSketchRig width={w} height={h} frame={frame} fps={fps} duration={duration} props={p} />;
   } else if (presetId === 'anatomy-telemetry') {
     content = <AnatomyRig width={w} height={h} frame={frame} fps={fps} duration={duration} props={p} />;
   } else if (presetId === 'screen-focus-rig') {
