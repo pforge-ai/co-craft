@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Settings2,
   KeyRound,
@@ -10,6 +10,7 @@ import {
   Plus,
   Trash2,
   Check,
+  ChevronDown,
   ChevronRight,
   ArrowDownToLine,
   RefreshCw,
@@ -23,7 +24,10 @@ import {
   providerPresets,
   compatibleAdapters,
   providerModelSuites,
+  suggestedModelsFor,
+  inferModelFromId,
   DASHSCOPE_VOICES,
+  type CuratedModelOption,
 } from '../core/models';
 import { uid } from '../core/project';
 import { friendlySkillTitle } from '../core/taxonomy';
@@ -78,8 +82,23 @@ export function SettingsDialog({
     [info, setInfo] = useState(''),
     [saving, setSaving] = useState(false),
     [checking, setChecking] = useState(false);
-  const [discovered, setDiscovered] = useState<{ id: string; name: string }[]>([]),
+  const [discoveredByProvider, setDiscoveredByProvider] = useState<Record<string, { id: string; name: string }[]>>({}),
     [filter, setFilter] = useState('');
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const modelEditorRef = useRef<HTMLDivElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
+  const discovered = providerId ? discoveredByProvider[providerId] || [] : [];
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setModelPickerOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [modelPickerOpen]);
   const [selectedSkillKey, setSelectedSkillKey] = useState<string>(skills[0]?.name || '');
   const [skillEditor, setSkillEditor] = useState<{
     mode: 'new' | 'edit';
@@ -137,34 +156,41 @@ export function SettingsDialog({
     field('providers', [...draft.providers, p]);
     setProviderId(p.id);
     setInfo('');
-    setDiscovered([]);
   };
-  const addModel = (id = '') => {
+  const addModel = (id = '', targetProviderId?: string) => {
     const p =
-      draft.providers.find((p) => p.id === providerId && p.protocol !== 'system') ||
-      draft.providers.find((p) => p.protocol !== 'system');
+      (targetProviderId ? draft.providers.find((x) => x.id === targetProviderId && x.protocol !== 'system') : undefined) ||
+      draft.providers.find((x) => x.id === (model?.providerId || providerId) && x.protocol !== 'system') ||
+      draft.providers.find((x) => x.protocol !== 'system');
     if (!p) {
       setTab('providers');
       setInfo('先添加一个提供商连接，再添加它提供的模型。');
       return;
     }
+    const inferred = id
+      ? inferModelFromId(id, p.protocol)
+      : { name: '新模型', modelId: '', capabilities: ['agent'] as ModelUse[], adapter: 'chat' as const, parameters: {} };
     const m: ModelDefinition = {
       id: uid('model'),
       providerId: p.id,
-      name: id || '新模型',
-      modelId: id,
-      capabilities: ['agent'],
-      adapter: 'chat',
-      parameters: {},
+      ...inferred,
     };
-    setDraft((d) => ({
-      ...d,
-      models: [...d.models, m],
-      defaults: d.defaults.agent ? d.defaults : { ...d.defaults, agent: m.id },
-    }));
+    setDraft((d) => {
+      const defaults = { ...d.defaults };
+      for (const use of m.capabilities) {
+        if (!defaults[use] || (use === 'speech' && defaults[use] === 'system-speech')) {
+          defaults[use] = m.id;
+        }
+      }
+      return { ...d, models: [...d.models, m], defaults };
+    });
     setModelId(m.id);
     setTab('models');
     setInfo('');
+    if (!id) {
+      setModelPickerOpen(true);
+      requestAnimationFrame(() => modelEditorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    }
   };
   const applyProviderSuite = (p: ProviderConnection) => {
     const suite = providerModelSuites[p.protocol];
@@ -210,23 +236,52 @@ export function SettingsDialog({
         : `「${p.name}」推荐模型套件已存在并完成默认用途校验。`,
     );
   };
-  const discover = async () => {
-    if (!provider) return;
+  const discover = async (targetProvider?: ProviderConnection, openPicker = false) => {
+    const target = targetProvider || provider;
+    if (!target) return;
     setChecking(true);
     setError('');
     setInfo('');
     try {
       const result = await window.cocraft.call<{ models: { id: string; name: string }[]; message: string }>(
         'providers.inspect',
-        { provider },
+        { provider: target },
       );
-      setDiscovered(result.models);
+      setDiscoveredByProvider((prev) => ({ ...prev, [target.id]: result.models }));
+      if (openPicker) setModelPickerOpen(true);
       setInfo(result.message);
     } catch (e) {
       setError(String(e).replace(/^Error:.*?Error: /, ''));
     } finally {
       setChecking(false);
     }
+  };
+  const applyPickedModelId = (pickedId: string, curated?: CuratedModelOption) => {
+    if (!model) return;
+    const p = draft.providers.find((x) => x.id === model.providerId);
+    const trimmed = pickedId.trim();
+    const inferred = curated || (p ? inferModelFromId(trimmed, p.protocol) : undefined);
+    const shouldReplaceName =
+      !model.name.trim() ||
+      model.name === '新模型' ||
+      model.name === model.modelId ||
+      suggestedModelsFor(p?.protocol).some((s) => s.name === model.name);
+    const changes: Partial<ModelDefinition> = {
+      modelId: trimmed,
+      ...(shouldReplaceName && inferred ? { name: inferred.name } : {}),
+    };
+    if (curated) {
+      changes.adapter = curated.adapter;
+      changes.capabilities = [...curated.capabilities];
+      if (curated.parameters) changes.parameters = { ...curated.parameters, ...model.parameters };
+    } else if (inferred && !model.modelId) {
+      // Auto-select adapter & capabilities when filling a fresh empty model entry
+      changes.adapter = inferred.adapter;
+      changes.capabilities = [...inferred.capabilities];
+      if (inferred.parameters) changes.parameters = { ...inferred.parameters };
+    }
+    updateModel(changes);
+    setModelPickerOpen(false);
   };
   const save = async () => {
     setSaving(true);
@@ -487,7 +542,6 @@ export function SettingsDialog({
                       className={providerId === p.id ? 'selected' : ''}
                       onClick={() => {
                         setProviderId(p.id);
-                        setDiscovered([]);
                         setInfo('');
                       }}
                     >
@@ -587,7 +641,7 @@ export function SettingsDialog({
                     此连接无需密钥（例如本地模型）
                   </label>
                   <div className="editor-actions">
-                    <button className="button" disabled={checking || !provider.baseUrl} onClick={discover}>
+                    <button className="button" disabled={checking || !provider.baseUrl} onClick={() => void discover(provider)}>
                       {checking ? <Spinner /> : <RefreshCw size={14} />}检测连接 / 获取模型
                     </button>
                     {providerModelSuites[provider.protocol] && (
@@ -620,7 +674,7 @@ export function SettingsDialog({
                         .filter((m) => m.id.toLowerCase().includes(filter.toLowerCase()))
                         .slice(0, 40)
                         .map((m) => (
-                          <button key={m.id} onClick={() => addModel(m.id)}>
+                          <button key={m.id} onClick={() => addModel(m.id, provider.id)}>
                             <span>{m.id}</span>
                             <Plus size={14} />
                           </button>
@@ -635,17 +689,38 @@ export function SettingsDialog({
             <>
               <div className="section-toolbar">
                 <span>{draft.models.length} 个模型</span>
-                <button className="button" onClick={() => addModel()}>
-                  <Plus size={14} />
-                  添加模型
-                </button>
+                <div className="skill-toolbar-actions">
+                  {(() => {
+                    const activeProv =
+                      draft.providers.find((p) => p.id === model?.providerId && p.protocol !== 'system') ||
+                      draft.providers.find((p) => p.protocol !== 'system');
+                    return activeProv ? (
+                      <button
+                        type="button"
+                        className="button subtle"
+                        disabled={checking || !activeProv.baseUrl}
+                        onClick={() => void discover(activeProv, true)}
+                      >
+                        {checking ? <Spinner /> : <RefreshCw size={13} />}
+                        拉取在线模型
+                      </button>
+                    ) : null;
+                  })()}
+                  <button type="button" className="button" onClick={() => addModel()}>
+                    <Plus size={14} />
+                    手动新增模型
+                  </button>
+                </div>
               </div>
               <div className="connection-list">
                 {draft.models.map((m) => (
                   <button
                     key={m.id}
                     className={modelId === m.id ? 'selected' : ''}
-                    onClick={() => setModelId(m.id)}
+                    onClick={() => {
+                      setModelId(m.id);
+                      setModelPickerOpen(false);
+                    }}
                   >
                     <span className="provider-monogram model">
                       <Boxes size={17} />
@@ -653,7 +728,7 @@ export function SettingsDialog({
                     <div>
                       <b>{m.name}</b>
                       <small>
-                        {draft.providers.find((p) => p.id === m.providerId)?.name} · {m.modelId}
+                        {draft.providers.find((p) => p.id === m.providerId)?.name} · {m.modelId || '待选择或输入模型 ID'}
                       </small>
                     </div>
                     <div className="capability-tags">
@@ -664,8 +739,23 @@ export function SettingsDialog({
                   </button>
                 ))}
               </div>
-              {model && model.adapter !== 'system-speech' && (
-                <div className="settings-editor">
+              {model && model.adapter !== 'system-speech' && (() => {
+                const activeProv = draft.providers.find((p) => p.id === model.providerId);
+                const liveList = activeProv ? discoveredByProvider[activeProv.id] || [] : [];
+                const curatedForAdapter = suggestedModelsFor(activeProv?.protocol, model.adapter);
+                const curatedAll = suggestedModelsFor(activeProv?.protocol);
+                const q = model.modelId.trim().toLowerCase();
+                const filteredLive = liveList.filter((x) => !q || x.id.toLowerCase().includes(q));
+                const filteredCurated = curatedForAdapter.filter(
+                  (x) => !q || x.modelId.toLowerCase().includes(q) || x.name.toLowerCase().includes(q),
+                );
+                const exactKnown =
+                  !q ||
+                  liveList.some((x) => x.id.toLowerCase() === q) ||
+                  curatedAll.some((x) => x.modelId.toLowerCase() === q);
+
+                return (
+                <div className="settings-editor" ref={modelEditorRef}>
                   <div className="editor-heading">
                     <h3>模型详情</h3>
                     <button
@@ -718,15 +808,131 @@ export function SettingsDialog({
                           ))}
                       </select>
                     </label>
-                    <label className="field full">
-                      <span>模型 ID</span>
-                      <input
-                        aria-label="模型 ID"
-                        value={model.modelId}
-                        onChange={(e) => updateModel({ modelId: e.target.value })}
-                        placeholder="提供商定义的模型 ID 或接入点 ID"
-                      />
-                    </label>
+                    <div className="field full" ref={modelPickerRef}>
+                      <div className="model-id-label-row">
+                        <span>模型 ID</span>
+                        <em>可直接选择推荐/在线模型，或自由输入自定义 ID</em>
+                      </div>
+                      <div className="model-id-combo">
+                        <input
+                          aria-label="模型 ID"
+                          value={model.modelId}
+                          onFocus={() => setModelPickerOpen(true)}
+                          onChange={(e) => {
+                            const nextId = e.target.value;
+                            const shouldSyncName = !model.name.trim() || model.name === '新模型' || model.name === model.modelId;
+                            updateModel({
+                              modelId: nextId,
+                              ...(shouldSyncName && nextId.trim() ? { name: nextId.trim() } : {}),
+                            });
+                            setModelPickerOpen(true);
+                          }}
+                          placeholder="点击选择模型，或手动输入模型 ID（如 qwen-image-2.0-pro）"
+                        />
+                        <button
+                          type="button"
+                          className="button subtle model-id-action"
+                          aria-label="展开模型选择列表"
+                          onClick={() => setModelPickerOpen((v) => !v)}
+                        >
+                          选择 <ChevronDown size={13} />
+                        </button>
+                        {activeProv && (
+                          <button
+                            type="button"
+                            className="button subtle model-id-action"
+                            aria-label="从服务商拉取可用模型"
+                            title={`从「${activeProv.name}」在线拉取可用模型列表`}
+                            disabled={checking || !activeProv.baseUrl}
+                            onClick={() => void discover(activeProv, true)}
+                          >
+                            {checking ? <Spinner /> : <RefreshCw size={13} />}
+                            拉取列表
+                          </button>
+                        )}
+                      </div>
+
+                      {modelPickerOpen && (
+                        <div className="model-picker-popover" role="listbox" aria-label="模型候选列表">
+                          {q && !exactKnown && (
+                            <div className="model-picker-group">
+                              <div className="model-picker-group-head">手动自定义</div>
+                              <button
+                                type="button"
+                                className="model-picker-item custom"
+                                onClick={() => applyPickedModelId(model.modelId)}
+                              >
+                                <Plus size={12} />
+                                <span>使用手动输入的模型 ID：「{model.modelId.trim()}」</span>
+                              </button>
+                            </div>
+                          )}
+
+                          {filteredLive.length > 0 && (
+                            <div className="model-picker-group">
+                              <div className="model-picker-group-head">
+                                服务商在线模型 ({filteredLive.length})
+                              </div>
+                              {filteredLive.slice(0, 36).map((item) => (
+                                <button
+                                  key={`live-${item.id}`}
+                                  type="button"
+                                  className={`model-picker-item ${model.modelId === item.id ? 'selected' : ''}`}
+                                  onClick={() => applyPickedModelId(item.id)}
+                                >
+                                  <span className="mono">{item.id}</span>
+                                  {model.modelId === item.id && <Check size={12} />}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {filteredCurated.length > 0 && (
+                            <div className="model-picker-group">
+                              <div className="model-picker-group-head">
+                                推荐常用模型（匹配当前接口）
+                              </div>
+                              {filteredCurated.map((item) => (
+                                <button
+                                  key={`cur-${item.modelId}`}
+                                  type="button"
+                                  className={`model-picker-item ${model.modelId === item.modelId ? 'selected' : ''}`}
+                                  onClick={() => applyPickedModelId(item.modelId, item)}
+                                >
+                                  <div className="model-picker-meta">
+                                    <b>{item.name}</b>
+                                    <small className="mono">{item.modelId}</small>
+                                  </div>
+                                  {model.modelId === item.modelId ? <Check size={12} /> : <Plus size={12} />}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {!filteredLive.length && !filteredCurated.length && (
+                            <div className="model-picker-empty">
+                              未在预设中找到匹配项，可直接按回车使用手动输入的模型 ID，或点击右侧「拉取列表」查询服务商模型。
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {curatedForAdapter.length > 0 && (
+                        <div className="model-quick-chips" aria-label="快捷选用常用模型">
+                          {curatedForAdapter.slice(0, 6).map((item) => (
+                            <button
+                              key={item.modelId}
+                              type="button"
+                              className={`model-quick-chip ${model.modelId === item.modelId ? 'active' : ''}`}
+                              title={`点击选用 ${item.name} (${item.modelId})`}
+                              onClick={() => applyPickedModelId(item.modelId, item)}
+                            >
+                              {item.modelId}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <label className="field full">
                       <span>接口适配</span>
                       <select
@@ -895,7 +1101,8 @@ export function SettingsDialog({
                     </label>
                   )}
                 </div>
-              )}
+                );
+              })()}
               {model?.adapter === 'system-speech' && (
                 <div className="settings-editor">
                   <h3>本地语音</h3>

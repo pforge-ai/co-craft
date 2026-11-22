@@ -906,6 +906,14 @@ assert.ok(
   assert.equal(wbClip.props.presetId, 'whiteboard-sketch');
   assert.equal(wbClip.props.text, '白板实测');
   assert.ok(filterPresets('roughjs').some((p) => p.id === 'whiteboard-sketch'), 'whiteboard-sketch searchable by roughjs');
+
+  // Curated model picker & smart inference
+  const { suggestedModelsFor, inferModelFromId } = await import('../src/core/models');
+  const dsImgOptions = suggestedModelsFor('dashscope', 'dashscope-image');
+  assert.ok(dsImgOptions.some((m) => m.modelId === 'qwen-image-2.0-pro'), 'DashScope image picker includes qwen-image-2.0-pro');
+  assert.equal(inferModelFromId('wan2.6-t2v', 'dashscope').adapter, 'dashscope-video');
+  assert.equal(inferModelFromId('my-custom-flux-t2i', 'dashscope').adapter, 'dashscope-image');
+  assert.deepEqual(inferModelFromId('custom-private-llm', 'openai').capabilities, ['agent']);
 }
 
 console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 core regression tests');

@@ -80,8 +80,8 @@ export const providerModelSuites: Partial<
         parameters: {},
       },
       {
-        name: '千问 Qwen-Image Plus · 图像生成',
-        modelId: 'qwen-image-plus',
+        name: '千问 Qwen-Image 2.0 Pro · 图像生成',
+        modelId: 'qwen-image-2.0-pro',
         capabilities: ['image'],
         adapter: 'dashscope-image',
         parameters: { size: '1280*720', prompt_extend: true, watermark: false },
@@ -118,13 +118,139 @@ export const providerModelSuites: Partial<
     defaultRoles: {
       agent: 'qwen3.5-plus',
       vision: 'qwen3.5-plus',
-      image: 'qwen-image-plus',
+      image: 'qwen-image-2.0-pro',
       video: 'wan2.6-t2v',
       speech: 'qwen3-tts-flash',
       transcription: 'qwen3-asr-flash',
     },
   },
 };
+
+export interface CuratedModelOption {
+  modelId: string;
+  name: string;
+  adapter: ModelAdapter;
+  capabilities: ModelUse[];
+  parameters?: Record<string, string | number | boolean>;
+}
+
+export const curatedModelsByProtocol: Record<ProviderConnection['protocol'], CuratedModelOption[]> = {
+  dashscope: [
+    { modelId: 'qwen-image-2.0-pro', name: '千问 Qwen-Image 2.0 Pro', adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720', prompt_extend: true, watermark: false } },
+    { modelId: 'qwen-image-2.0', name: '千问 Qwen-Image 2.0', adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720', prompt_extend: true, watermark: false } },
+    { modelId: 'qwen-image-max', name: '千问 Qwen-Image Max', adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720', prompt_extend: true, watermark: false } },
+    { modelId: 'qwen-image-plus', name: '千问 Qwen-Image Plus', adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720', prompt_extend: true, watermark: false } },
+    { modelId: 'wan2.6-t2i', name: '通义万相 Wan 2.6 · 生图', adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720', prompt_extend: true, watermark: false } },
+    { modelId: 'wanx2.1-t2i-turbo', name: '通义万相 2.1 Turbo · 生图', adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720', prompt_extend: true, watermark: false } },
+    { modelId: 'wan2.6-t2v', name: '通义万相 Wan 2.6 · 文生视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', duration: 5, prompt_extend: true } },
+    { modelId: 'wan2.6-i2v', name: '通义万相 Wan 2.6 · 图生视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', duration: 5, prompt_extend: true } },
+    { modelId: 'wan2.5-t2v-preview', name: '通义万相 Wan 2.5 · 文生视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', duration: 5 } },
+    { modelId: 'qwen3-tts-flash', name: '千问 Qwen3-TTS Flash · 配音', adapter: 'dashscope-speech', capabilities: ['speech'], parameters: { voice: 'Cherry', language_type: 'Chinese' } },
+    { modelId: 'qwen3-asr-flash', name: '千问 Qwen3-ASR Flash · 转录', adapter: 'dashscope-transcription', capabilities: ['transcription'], parameters: { language: 'zh' } },
+    { modelId: 'qwen3.5-plus', name: '千问 Qwen3.5 Plus · 编排与视觉', adapter: 'chat', capabilities: ['agent', 'vision'] },
+    { modelId: 'qwen3-max', name: '千问 Qwen3 Max · 深度编排', adapter: 'chat', capabilities: ['agent'] },
+    { modelId: 'qwen-vl-max', name: '千问 Qwen-VL Max · 视觉理解', adapter: 'chat', capabilities: ['agent', 'vision'] },
+  ],
+  openai: [
+    { modelId: 'gpt-5.4', name: 'GPT-5.4 · 编排与视觉', adapter: 'chat', capabilities: ['agent', 'vision'] },
+    { modelId: 'gpt-4.1', name: 'GPT-4.1 · 编排与视觉', adapter: 'chat', capabilities: ['agent', 'vision'] },
+    { modelId: 'deepseek-chat', name: 'DeepSeek Chat', adapter: 'chat', capabilities: ['agent'] },
+    { modelId: 'deepseek-reasoner', name: 'DeepSeek Reasoner', adapter: 'chat', capabilities: ['agent'] },
+    { modelId: 'gpt-image-1', name: 'GPT Image 1 · 图像生成', adapter: 'openai-image', capabilities: ['image'], parameters: { size: '1536x1024' } },
+    { modelId: 'dall-e-3', name: 'DALL·E 3 · 图像生成', adapter: 'openai-image', capabilities: ['image'], parameters: { size: '1792x1024' } },
+    { modelId: 'gpt-4o-mini-tts', name: 'GPT-4o Mini TTS · 配音', adapter: 'openai-speech', capabilities: ['speech'] },
+    { modelId: 'gpt-4o-transcribe', name: 'GPT-4o Transcribe · 转录', adapter: 'openai-transcription', capabilities: ['transcription'] },
+    { modelId: 'whisper-1', name: 'Whisper-1 · 转录', adapter: 'openai-transcription', capabilities: ['transcription'] },
+    { modelId: 'sora-2', name: 'Sora 2 · 视频生成', adapter: 'openai-video', capabilities: ['video'], parameters: { size: '1280x720', seconds: 5 } },
+  ],
+  anthropic: [
+    { modelId: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5 · 编排与视觉', adapter: 'chat', capabilities: ['agent', 'vision'] },
+    { modelId: 'claude-opus-4-1', name: 'Claude Opus 4.1 · 深度编排', adapter: 'chat', capabilities: ['agent', 'vision'] },
+  ],
+  google: [
+    { modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro · 编排与视觉', adapter: 'chat', capabilities: ['agent', 'vision'] },
+    { modelId: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash · 极速编排', adapter: 'chat', capabilities: ['agent', 'vision'] },
+  ],
+  ark: [
+    { modelId: 'doubao-seed-1-6', name: '豆包 Seed 1.6 · 编排与视觉', adapter: 'chat', capabilities: ['agent', 'vision'] },
+    { modelId: 'doubao-seedream-3-0-t2i', name: '豆包 Seedream 3.0 · 生图', adapter: 'ark-image', capabilities: ['image'] },
+    { modelId: 'doubao-seedance-1-0-pro', name: '豆包 Seedance 1.0 Pro · 视频', adapter: 'ark-video', capabilities: ['video'], parameters: { resolution: '720p', ratio: '16:9', duration: 5 } },
+  ],
+  system: [],
+};
+
+export function suggestedModelsFor(
+  protocol?: ProviderConnection['protocol'],
+  adapter?: ModelAdapter,
+): CuratedModelOption[] {
+  if (!protocol) return [];
+  const list = curatedModelsByProtocol[protocol] || [];
+  if (!adapter) return list;
+  const matched = list.filter((m) => m.adapter === adapter);
+  return matched.length ? matched : list;
+}
+
+export function inferModelFromId(
+  rawId: string,
+  protocol: ProviderConnection['protocol'] = 'openai',
+): Omit<ModelDefinition, 'id' | 'providerId'> {
+  const id = rawId.trim();
+  const curated = (curatedModelsByProtocol[protocol] || []).find(
+    (m) => m.modelId.toLowerCase() === id.toLowerCase(),
+  );
+  if (curated) {
+    return {
+      name: curated.name,
+      modelId: curated.modelId,
+      adapter: curated.adapter,
+      capabilities: [...curated.capabilities],
+      parameters: { ...(curated.parameters || {}) },
+    };
+  }
+  const lower = id.toLowerCase();
+  if (protocol === 'dashscope') {
+    if (/(qwen-image|wanx|t2i|i2i|flux|stable-diffusion)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720' } };
+    }
+    if (/(wan\d|t2v|i2v|video)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', duration: 5 } };
+    }
+    if (/(tts|cosyvoice|sambert)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'dashscope-speech', capabilities: ['speech'], parameters: { voice: 'Cherry', language_type: 'Chinese' } };
+    }
+    if (/(asr|paraformer|sensevoice)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'dashscope-transcription', capabilities: ['transcription'], parameters: { language: 'zh' } };
+    }
+  } else if (protocol === 'ark') {
+    if (/(seedream|image|t2i)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'ark-image', capabilities: ['image'], parameters: {} };
+    }
+    if (/(seedance|video|t2v|i2v)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'ark-video', capabilities: ['video'], parameters: { resolution: '720p', ratio: '16:9', duration: 5 } };
+    }
+  } else if (protocol === 'openai') {
+    if (/(gpt-image|dall-e|image|flux)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'openai-image', capabilities: ['image'], parameters: { size: '1024x1024' } };
+    }
+    if (/(tts|speech)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'openai-speech', capabilities: ['speech'], parameters: {} };
+    }
+    if (/(whisper|transcribe)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'openai-transcription', capabilities: ['transcription'], parameters: {} };
+    }
+    if (/(sora|video)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'openai-video', capabilities: ['video'], parameters: {} };
+    }
+  }
+  const hasVision = /(vl|vision|4o|4\.1|5\.|gemini|claude|seed-1)/i.test(lower);
+  return {
+    name: id || '新模型',
+    modelId: id,
+    adapter: 'chat',
+    capabilities: hasVision ? ['agent', 'vision'] : ['agent'],
+    parameters: {},
+  };
+}
 
 export const localProvider: ProviderConnection = {
   id: 'system',

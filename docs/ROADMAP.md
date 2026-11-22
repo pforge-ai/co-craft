@@ -110,6 +110,7 @@
   - **1. 内置本地 MCP 服务**：新增 [electron/mcp-bridge.ts](../electron/mcp-bridge.ts) 与独立零依赖 stdio 服务端 [scripts/cocraft-mcp.mjs](../scripts/cocraft-mcp.mjs)（22 个工具覆盖工程读写、原子编辑、预设、关键帧、J/L 分离、TSX 编译验画、预览 PNG 帧、预检、MP4 导出、多模态模型生成与内置 Agent 协作）；设置页「通用」新增默认关闭的开关、实时端口状态与一键复制客户端配置；`npm run smoke:mcp` 7/7 通过（含 `0600` 权限、错误 Token 401 拒绝、零 API Key 泄露、真机 PNG 预览与 MP4 导出）。
   - **2. 实模联调发现并修复 DashScope 生图接口回退**：[electron/generation.ts](../electron/generation.ts) 为 `qwen-image-*` 增加 `multimodal-generation` 404 时自动回退 `text2image/image-synthesis` 异步路径的兼容保护。
   - **3. 真实云端模型从零制作短片验收**：通过内置 MCP 在独立新工程中实机调用 **`wan2.6-t2v`**（5.01s 暗房光学棱镜折射视频）、**`qwen3-tts-flash`**（4 段真实中文配音）与 **`deepseek-flash`** 内置 Agent，结合定制编译的闵可夫斯基时空光锥、Three.js PBR 迈克尔逊光学干涉仪、暗曜石 RoughJS 物理三联图、双光圈光子落版尾卡及四段底乐 Auto-Ducking，逐帧视觉复审 5 幕后导出 `36.885s / 1920×1080 / 30fps / 16.88 MB` 真实 H.264/AAC MP4（`light-has-no-time-directors-cut-1080p.mp4`）。
+  - **4. 设置页模型选择与手动新增体验升级**：重构 [src/components/SettingsDialog.tsx](../src/components/SettingsDialog.tsx) 与 [src/core/models.ts](../src/core/models.ts)，将裸文本 `模型 ID` 升级为可搜索下拉选择器 + 行内「拉取在线模型列表」+ 一键推荐模型快捷标签（含 `qwen-image-2.0-pro` / `qwen-image-2.0` / `qwen-image-max` / `wan2.6-t2i` 等各厂商按接口匹配的常用模型）+ 自由输入自定义 ID 并自动推断接口适配与默认能力；打包版 Playwright 交互与视觉截图验收通过。
 
 ---
 
