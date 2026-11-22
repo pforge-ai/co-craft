@@ -1,6 +1,6 @@
 # CoCraft 迭代与重构计划（ROADMAP）
 
-更新日期：2026 年 11 月 22 日（完成 Wave A 安全封口 + Wave B 创作者交付信任、专业 NLE 标准对齐、固定红蓝片端到端回归与联网沙箱修复，打包版 6 套回归全绿）。
+更新日期：2026 年 11 月 22 日（完成 Route C 全部三波稳定与还债计划：Wave A 安全封口 + Wave B 创作者交付信任与专业 NLE 对齐 + Wave C 统一资产引擎、App.tsx 拆分、CSS 去债与 1080×720 布局打磨，打包版 8 套验证全绿）。
 
 遵循小时级可运行、可演示、可验证增量交付约定。每次交付包含实际构建、可复现步骤、自动化与真机验证结果、已知边界和下一项最小目标。
 
@@ -85,6 +85,12 @@
     - **#10 完整导出预检与异常显性化**：`preflightSequence` 补齐空视觉、片头、中段、片尾空黑与静音提示；`Dialogs.tsx` 不再吞没预检异常，提供重试入口。
   - **2. 专业 NLE 真 A/B 交叉叠化转场 & 高频体验打磨（#11/#12/#14/#15/#16/#17/#18/#20/#21/#22）**：`Film.tsx` 为相邻同轨转场渲染出画桥接层（有余量播放真实尾帧并交叉淡出原声，无余量用 `Freeze` 稳住末帧，`dissolve/wipe/slide-left/zoom-in/blur` 全程无黑闪，`fade` 为标准 Dip-to-Black）；`splitOperations` 不再向后半段克隆 `transitionIn`；修复适应画布不清空手动排版、滑杆松手单次提交（防刷爆版本历史）、样式继承与演示样例指标分离、中文无空格 `@` 触发与 IME 护栏、按工程记忆界面位置/播放头、空舞台已有素材一键入轨、时间码点击按帧/秒跳转、命令面板空态与后台作业「本工程 / 全部」筛选。
   - **3. 固定红蓝片端到端回归（`npm run test:redblue`）与打包版 6 套全绿验收**：在 `release/0.4/mac-arm64/CoCraft.app` 上全部跑通 `test:unit`、`smoke`、`smoke:models`、`smoke:agent`（含 `allowNetwork=true` 音频合成与本机回环拦截）、`test:redblue`（实测解码验证红蓝代表帧 `(254,0,0)`/`(1,0,254)`、A/B 叠化中点 `(198,0,55)`、静音 A1 保留 V1 同期声 `-24.7 dB` 与独立静音 V1 无声）、`verify_wave_a.mjs` 与 `test:v04`（`823,447 bytes / 5.01s` MP4）。
+- **v0.5.6 Wave C 前端架构拆分、统一资产搜索、CSS 去债与 `1080×720` 小屏布局（已通过打包版 8 套全量验收 ✅，耗时约 21 分钟）**：
+  - **1. 统一资产搜索与载体分组（Review #13）**：新增共用检索内核 [src/core/catalog.ts](../src/core/catalog.ts)（支持多词 AND、关键词 `keywords`、组件包与载体严格分离），抽离共用 [src/components/PresetControls.tsx](../src/components/PresetControls.tsx)；`AssetExplorer` 补齐关键词检索、实时命中计数条（`命中 N 项`）、零命中空态与一键清空/切全来源/直达「母版库」入口；`ResourceLibrary`（`T` 弹窗）将「摄影与声音」按真实载体明确分为「随附摄影与环境底板」与「随附音效与氛围音」两组，两端检索语义 1:1 对齐；清除 `StoryboardStudio.tsx` 从未传入的死分支 `fullMode`（`725 → 607` 行）。
+  - **2. 巨型 `App.tsx` 模块化拆分（`4,133 → 3,365` 行，-768 行）**：抽离纯逻辑模块 [src/lib/workbenchState.ts](../src/lib/workbenchState.ts)（UI 状态持久化、中文 `@/#//` 触发解析、时间码解析、布局预设定义），以及四个独立 UI 模块 [src/components/AgentPanel.tsx](../src/components/AgentPanel.tsx)、[src/components/JobsPopover.tsx](../src/components/JobsPopover.tsx)、[src/components/CommandPaletteModal.tsx](../src/components/CommandPaletteModal.tsx)、[src/components/TranscriptPanel.tsx](../src/components/TranscriptPanel.tsx)，并补齐 `catalog.ts` 与 `workbenchState.ts` 单元测试。
+  - **3. 3 套工作区布局预设与 `1080×720` 小屏适配（Review #19）**：顶栏面板控制区与 `⌘K` 命令面板均内置 **「看画面 / 精剪 / 协作」** 3 套工作区布局预设；`window.innerWidth <= 1140` 切入剪辑模式默认收起左栏（实测 `1080×720` 中心舞台宽度由 `524px` 提升至 `802px`），同时通过 `@media (max-width: 1220px)` 收紧三栏上限与 `10px` 裁切手柄，三栏全开仍保留 `586px` 舞台宽且零横向溢出。
+  - **4. CSS 去债与权威 `--z-*` 层级标尺**：在 `src/styles.css` `:root` 建立统一 `--z-*` 令牌梯队，将两份样式表全部 **49 处裸数字 `z-index` 归零**；经全仓 AST/正则核查安全清除 228 处 v0.1–v0.3 历史死规则及 60 条阴影重复属性（`src/styles.css` `2,993 → 2,245` 行、`src/workbench.css` `7,033 → 6,518` 行，合计净削减 `1,263` 行；主样式产物收窄至 `145.17 kB / gzip 26.68 kB`）。
+  - **5. 打包版 8 套全量验收结果**：`test:unit`、`smoke`、`smoke:models`、打包版 `smoke:agent`、打包版 `test:redblue`、打包版 `verify_wave_a.mjs`、打包版 `test:v04`（`823,563 bytes / 5.01s` MP4）及 Wave C 专项打包验证（含 `1080×720` 双布局实拍视觉复审，0 console/page errors）全部 100% PASS。
 
 ---
 

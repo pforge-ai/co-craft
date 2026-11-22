@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Code2, Film } from 'lucide-react';
 import { mediaFrameUrl, mediaUrl } from '../composition/Film';
 import { getPreset } from '../core/presets';
-import { PresetPreview } from './ResourceLibrary';
+import { PresetPreview } from './PresetControls';
 import type { CompositeShot } from '../core/storyboard';
 import type { Clip, Project, Sequence } from '../core/types';
 

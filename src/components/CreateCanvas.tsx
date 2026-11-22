@@ -43,7 +43,7 @@ import {
 import { pointerDrag } from '../lib/pointerDrag';
 import { mediaUrl } from '../composition/Film';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
-import { PresetPreview } from './ResourceLibrary';
+import { PresetPreview } from './PresetControls';
 import { ShotCompositeThumb } from './ShotCompositeThumb';
 import { createPresetClip, getPreset } from '../core/presets';
 import {

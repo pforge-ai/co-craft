@@ -21,14 +21,20 @@ import {
 } from 'lucide-react';
 import { mediaUrl } from '../composition/Film';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
-import { PresetPreview } from './ResourceLibrary';
+import { PresetPreview } from './PresetControls';
 import {
-  BUILT_IN_TRANSITIONS,
   createPresetClip,
   isLightHex,
-  presetCatalog,
   resolveProjectStyle,
 } from '../core/presets';
+import {
+  filterPresets,
+  filterProjectComponents,
+  filterStudioMediaByKind,
+  filterTransitions,
+  filterVaultItems,
+  matchCatalogText,
+} from '../core/catalog';
 import {
   instantiateCompoundVaultItemOperations,
   inferDefaultAudioAttachMode,
@@ -78,6 +84,7 @@ interface AssetExplorerProps {
   onAddStudioMedia: (studioId: string) => Promise<void>;
   onAddTransition: (type: TransitionType) => Promise<void>;
   onAddRefsToChat?: (refs: ChatContextRef[]) => void;
+  onOpenTemplateLibrary?: () => void;
 }
 
 const CATEGORIES: { id: AssetCategory; label: string; icon: typeof Film }[] = [
@@ -117,6 +124,7 @@ export const AssetExplorer = React.memo(function AssetExplorer({
   onAddStudioMedia,
   onAddTransition,
   onAddRefsToChat,
+  onOpenTemplateLibrary,
 }: AssetExplorerProps) {
   const currentPlayhead = () => getPlayheadFrame?.() ?? playheadFrame;
   const [localCategory, setLocalCategory] = useState<AssetCategory>('media');
@@ -141,8 +149,6 @@ export const AssetExplorer = React.memo(function AssetExplorer({
   };
 
   const q = query.trim().toLowerCase();
-  const match = (name: string, extra = '') =>
-    !q || name.toLowerCase().includes(q) || extra.toLowerCase().includes(q);
 
   const projectVault = useMemo(
     () => (project.vault || []).filter((v) => !v.styleTokens && !v.brand),
@@ -329,48 +335,80 @@ export const AssetExplorer = React.memo(function AssetExplorer({
   const showPersonal = !hasScopeTabs || libScope === 'all' || libScope === 'personal';
   const showOfficial = !hasScopeTabs || libScope === 'all' || libScope === 'official';
 
-  // Filtered collections per CapCut category
+  // Filtered collections per category (shared src/core/catalog.ts matcher — Review #13)
   const visualAssets = project.assets.filter(
-    (a) => a.kind !== 'audio' && match(a.name, (a.tags || []).join(' ')),
+    (a) => a.kind !== 'audio' && matchCatalogText(query, a.name, a.tags, a.kind),
   );
-  const subjectEntities = projectVault.filter(
-    (v) =>
-      !v.rig?.componentId &&
-      v.entityKind !== 'text' &&
-      match(v.name, `${v.promptAnchor || ''} ${(v.tags || []).join(' ')}`),
+  const subjectEntities = filterVaultItems(
+    projectVault,
+    query,
+    (v) => !v.rig?.componentId && v.entityKind !== 'text',
   );
-  const personalMediaItems = personalLibrary.filter(
+  const personalMediaItems = filterVaultItems(
+    personalLibrary,
+    query,
     (g) =>
       !g.styleTokens &&
       !g.brand &&
       g.assetKind !== 'audio' &&
       g.entityKind !== 'component' &&
-      g.entityKind !== 'three' &&
-      match(g.name, `${g.description || ''} ${g.promptAnchor || ''} ${(g.tags || []).join(' ')}`),
+      g.entityKind !== 'three',
   );
-  const officialVisualMedia = studioMedia.filter(
-    (sm) => sm.kind !== 'audio' && match(sm.name, sm.tags?.join(' ') || ''),
+  const studioFiltered = useMemo(
+    () => filterStudioMediaByKind(studioMedia, query),
+    [studioMedia, query],
+  );
+  const officialVisualMedia = studioFiltered.visual;
+
+  const projectAudio = project.assets.filter(
+    (a) => a.kind === 'audio' && matchCatalogText(query, a.name, a.tags, '音频 配音 audio'),
+  );
+  const personalAudio = filterVaultItems(
+    personalLibrary,
+    query,
+    (g) => g.assetKind === 'audio' || g.entityKind === 'audio',
+  );
+  const officialAudio = studioFiltered.audio;
+
+  const showPlainTitle = matchCatalogText(query, '默认标题 主标题 基础文本 title 字幕');
+  const showPlainCaption = matchCatalogText(query, '对白字幕 屏幕底部字幕条 基础字幕 caption');
+  const textPresets = useMemo(
+    () => filterPresets(query, { categories: ['titles', 'captions'] }),
+    [query],
+  );
+  const transitions = useMemo(() => filterTransitions(query), [query]);
+  const officialCompPresets = useMemo(
+    () => filterPresets(query, { categories: ['graphics', 'stages', 'backgrounds'] }),
+    [query],
+  );
+  const projectComps = useMemo(
+    () => filterProjectComponents(project.components, query),
+    [project.components, query],
+  );
+  const personalComps = filterVaultItems(
+    personalLibrary,
+    query,
+    (g) => g.entityKind === 'component' || g.entityKind === 'three',
   );
 
-  const projectAudio = project.assets.filter((a) => a.kind === 'audio' && match(a.name));
-  const personalAudio = personalLibrary.filter(
-    (g) => (g.assetKind === 'audio' || g.entityKind === 'audio') && match(g.name, g.description || ''),
-  );
-  const officialAudio = studioMedia.filter((sm) => sm.kind === 'audio' && match(sm.name));
+  const visibleHitCount =
+    category === 'media'
+      ? (showProject ? visualAssets.length + subjectEntities.length : 0) +
+        (showPersonal ? personalMediaItems.length : 0) +
+        (showOfficial ? officialVisualMedia.length : 0)
+      : category === 'audio'
+        ? (showProject ? projectAudio.length : 0) +
+          (showPersonal ? personalAudio.length : 0) +
+          (showOfficial ? officialAudio.length : 0)
+        : category === 'text'
+          ? (showPlainTitle ? 1 : 0) + (showPlainCaption ? 1 : 0) + (showOfficial ? textPresets.length : 0)
+          : category === 'transition'
+            ? transitions.length
+            : (showProject ? projectComps.length : 0) +
+              (showPersonal ? personalComps.length : 0) +
+              (showOfficial ? officialCompPresets.length : 0);
 
-  const textPresets = presetCatalog.filter(
-    (pr) => (pr.category === 'titles' || pr.category === 'captions') && match(pr.name, pr.description),
-  );
-  const transitions = BUILT_IN_TRANSITIONS.filter((t) => match(t.name, t.description));
-  const officialCompPresets = presetCatalog.filter(
-    (pr) =>
-      (pr.category === 'graphics' || pr.category === 'stages' || pr.category === 'backgrounds') &&
-      match(pr.name, pr.description),
-  );
-  const projectComps = project.components.filter((c) => match(c.name));
-  const personalComps = personalLibrary.filter(
-    (g) => (g.entityKind === 'component' || g.entityKind === 'three') && match(g.name, g.description || ''),
-  );
+  const isEmptySearch = Boolean(q) && visibleHitCount === 0;
 
   return (
     <aside className="asset-explorer capcut-explorer" aria-label="素材与效果库">
@@ -427,6 +465,16 @@ export const AssetExplorer = React.memo(function AssetExplorer({
             <Plus size={13} />
           </button>
         )}
+        {(category === 'text' || category === 'component') && onOpenTemplateLibrary && (
+          <button
+            type="button"
+            className="ae-import-btn"
+            title="打开完整动态母版与预览库 (快捷键 T)"
+            onClick={onOpenTemplateLibrary}
+          >
+            母版库
+          </button>
+        )}
       </div>
 
       {/* Secondary Library Source Filter (Figma Style: shown only when browsing multi-source categories) */}
@@ -444,6 +492,23 @@ export const AssetExplorer = React.memo(function AssetExplorer({
               {s.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Search result summary bar (Review #13) */}
+      {q && !isEmptySearch && (
+        <div className="ae-search-meta" role="status">
+          <span>命中 {visibleHitCount} 项</span>
+          <div className="ae-search-meta-acts">
+            {hasScopeTabs && libScope !== 'all' && (
+              <button type="button" onClick={() => setLibScope('all')}>
+                看全部来源
+              </button>
+            )}
+            <button type="button" onClick={() => setQuery('')}>
+              清空
+            </button>
+          </div>
         </div>
       )}
 
@@ -504,6 +569,35 @@ export const AssetExplorer = React.memo(function AssetExplorer({
           if (e.target === e.currentTarget) setSelectedKeys([]);
         }}
       >
+        {isEmptySearch ? (
+          <div className="ae-search-empty" role="status">
+            <Search size={18} />
+            <b>没有找到匹配「{query.trim()}」的内容</b>
+            <p>
+              当前在「{CATEGORIES.find((x) => x.id === category)?.label}
+              {hasScopeTabs && libScope !== 'all'
+                ? ` · ${SCOPES.find((x) => x.id === libScope)?.label}`
+                : ''}
+              」中无命中条目。
+            </p>
+            <div className="ae-empty-acts">
+              <button type="button" className="button tiny subtle" onClick={() => setQuery('')}>
+                清空搜索
+              </button>
+              {hasScopeTabs && libScope !== 'all' && (
+                <button type="button" className="button tiny subtle" onClick={() => setLibScope('all')}>
+                  切换至全部来源
+                </button>
+              )}
+              {onOpenTemplateLibrary && (
+                <button type="button" className="button tiny subtle" onClick={onOpenTemplateLibrary}>
+                  打开动态母版库
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
         {/* 1. MEDIA */}
         {category === 'media' && (
           <>
@@ -995,50 +1089,54 @@ export const AssetExplorer = React.memo(function AssetExplorer({
             <section className="ae-group">
               <div className="ae-group-title">
                 <span>基础文本与花字</span>
-                <small>{textPresets.length + 2}</small>
+                <small>{(showPlainTitle ? 1 : 0) + (showPlainCaption ? 1 : 0) + textPresets.length}</small>
               </div>
               <div className="ae-card-grid">
-                <div className="ae-card">
-                  <div className="ae-card-thumb ae-text-sample" onClick={() => insertPlainText('title')}>
-                    <span className="ae-sample-title">默认主标题</span>
-                    <span className="ae-card-tag official">基础</span>
-                    <button
-                      type="button"
-                      className="ae-card-add"
-                      title="添加默认标题"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        insertPlainText('title');
-                      }}
-                    >
-                      <Plus size={12} />
-                    </button>
+                {showPlainTitle && (
+                  <div className="ae-card">
+                    <div className="ae-card-thumb ae-text-sample" onClick={() => insertPlainText('title')}>
+                      <span className="ae-sample-title">默认主标题</span>
+                      <span className="ae-card-tag official">基础</span>
+                      <button
+                        type="button"
+                        className="ae-card-add"
+                        title="添加默认标题"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          insertPlainText('title');
+                        }}
+                      >
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                    <div className="ae-card-foot">
+                      <b>默认标题</b>
+                    </div>
                   </div>
-                  <div className="ae-card-foot">
-                    <b>默认标题</b>
-                  </div>
-                </div>
+                )}
 
-                <div className="ae-card">
-                  <div className="ae-card-thumb ae-text-sample" onClick={() => insertPlainText('caption')}>
-                    <span className="ae-sample-caption">屏幕底部字幕条</span>
-                    <span className="ae-card-tag official">基础</span>
-                    <button
-                      type="button"
-                      className="ae-card-add"
-                      title="添加对白字幕"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        insertPlainText('caption');
-                      }}
-                    >
-                      <Plus size={12} />
-                    </button>
+                {showPlainCaption && (
+                  <div className="ae-card">
+                    <div className="ae-card-thumb ae-text-sample" onClick={() => insertPlainText('caption')}>
+                      <span className="ae-sample-caption">屏幕底部字幕条</span>
+                      <span className="ae-card-tag official">基础</span>
+                      <button
+                        type="button"
+                        className="ae-card-add"
+                        title="添加对白字幕"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          insertPlainText('caption');
+                        }}
+                      >
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                    <div className="ae-card-foot">
+                      <b>对白字幕</b>
+                    </div>
                   </div>
-                  <div className="ae-card-foot">
-                    <b>对白字幕</b>
-                  </div>
-                </div>
+                )}
 
                 {showOfficial &&
                   textPresets.map((pr) => (
@@ -1280,6 +1378,8 @@ export const AssetExplorer = React.memo(function AssetExplorer({
                 </div>
               </section>
             )}
+          </>
+        )}
           </>
         )}
       </div>

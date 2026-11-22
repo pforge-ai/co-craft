@@ -13,12 +13,26 @@ import { buildMentionCandidates, friendlySkillTitle, type MentionCandidate } fro
 import { collectShotClipsForCompound, computeCompositeShots } from './core/storyboard';
 import { selectedModel } from './core/models';
 import { BUILT_IN_TRANSITIONS, createPresetClip } from './core/presets';
-import { AgentThread, TOOL_LABELS } from './components/AgentThread';
+import { AgentPanel } from './components/AgentPanel';
+import { JobsPopover } from './components/JobsPopover';
+import { CommandPaletteModal } from './components/CommandPaletteModal';
+import { TranscriptPanel } from './components/TranscriptPanel';
+import {
+  WORKSPACE_LAYOUT_PRESETS,
+  dateLabel,
+  detectActiveLayoutPreset,
+  errorText,
+  parseTimecodeInput,
+  readProjectUi,
+  writeProjectUi,
+  type WorkspaceLayoutPresetId,
+} from './lib/workbenchState';
 import { Markdown } from './components/Markdown';
 import {
   PanelLeft,
   PanelBottom,
   PanelRight,
+  LayoutGrid,
   Search,
   Plus,
   ChevronDown,
@@ -30,7 +44,6 @@ import {
   Layers,
   Settings as SettingsIcon,
   ArrowUpRight,
-  ArrowUp,
   Upload,
   Play,
   Pause,
@@ -53,23 +66,17 @@ import {
   ZoomOut,
   Clock3,
   Check,
-  CheckCheck,
   X,
-  MoreHorizontal,
   FileText,
   GitBranch,
   Command,
   SlidersHorizontal,
-  Square,
   RotateCcw,
   AlertCircle,
   AlertTriangle,
   Crosshair,
   Camera,
   BookmarkPlus,
-  Paperclip,
-  Brain,
-  Image as ImageIcon,
 } from 'lucide-react';
 import type {
   BootData,
@@ -127,70 +134,7 @@ type Dialog =
   | 'sequence'
   | null;
 
-interface SavedProjectUi {
-  appMode?: 'create' | 'edit';
-  sequenceId?: string;
-  frame?: number;
-  showNav?: boolean;
-  showBottom?: boolean;
-  showRight?: boolean;
-}
-
-function readProjectUi(projectId: string): SavedProjectUi | null {
-  try {
-    const raw = localStorage.getItem(`cocraft:ui:${projectId}`);
-    return raw ? (JSON.parse(raw) as SavedProjectUi) : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeProjectUi(projectId: string, state: SavedProjectUi) {
-  try {
-    localStorage.setItem(`cocraft:ui:${projectId}`, JSON.stringify(state));
-  } catch {}
-}
-
-/** Triggers @ / # / / immediately after Chinese or punctuation too, while ignoring email/URL substrings (Review #16). */
-function matchMentionTrigger(text: string): string | null {
-  const m = text.match(/(?:^|[^a-zA-Z0-9._-])([@#/][^\s@#/]*)$/);
-  return m ? m[1] : null;
-}
-
-/** Parses frame number (`70`, `70f`), seconds (`2.5s`), `MM:SS.cc`, or `MM:SS:FF` into integer frame (Review #20). */
-function parseTimecodeInput(raw: string, fps: number): number | null {
-  const s = raw.trim();
-  if (!s) return null;
-  if (/^\d+f?$/i.test(s)) return Math.max(0, parseInt(s, 10));
-  if (/^\d+(?:\.\d+)?s$/i.test(s)) return Math.max(0, Math.round(parseFloat(s) * fps));
-  const mmssff = s.match(/^(\d+):(\d{1,2}):(\d{1,2})$/);
-  if (mmssff) {
-    return Math.max(0, (Number(mmssff[1]) * 60 + Number(mmssff[2])) * fps + Number(mmssff[3]));
-  }
-  const mmsscc = s.match(/^(\d+):(\d{1,2})(?:\.(\d{1,3}))?$/);
-  if (mmsscc) {
-    const frac = mmsscc[3] ? Number(`0.${mmsscc[3]}`) : 0;
-    return Math.max(0, Math.round((Number(mmsscc[1]) * 60 + Number(mmsscc[2]) + frac) * fps));
-  }
-  const num = Number(s);
-  return Number.isFinite(num) && num >= 0 ? Math.round(num * fps) : null;
-}
-
 const api = <T,>(method: string, payload?: unknown) => window.cocraft.call<T>(method, payload);
-const errorText = (e: unknown) =>
-  String(e)
-    .replace(/^Error: Error invoking remote method 'cocraft:call': Error: /, '')
-    .replace(/^Error: /, '');
-const dateLabel = (s: string) =>
-  new Date(s).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-const formatCompactTokens = (n: number) =>
-  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-const THINKING_OPTIONS: { id: ThinkingLevelChoice; label: string; hint: string }[] = [
-  { id: 'off', label: '关闭', hint: '最快响应，直接执行' },
-  { id: 'low', label: '低', hint: '轻量快速推理' },
-  { id: 'medium', label: '中', hint: '均衡理解与规划' },
-  { id: 'high', label: '高', hint: '深度拆解复杂工程' },
-];
 
 const PlayheadTimecode = React.memo(function PlayheadTimecode({
   clock,
@@ -231,6 +175,7 @@ export function App() {
     [showStageFork, setShowStageFork] = useState(false),
     [stageForkName, setStageForkName] = useState(''),
     [projectMenuOpen, setProjectMenuOpen] = useState(false),
+    [layoutMenuOpen, setLayoutMenuOpen] = useState(false),
     [view, setView] = useState('timeline'),
     [right, setRight] = useState('inspector'),
     [showNav, setShowNav] = useState(false),
@@ -249,7 +194,6 @@ export function App() {
     [pinMode, setPinMode] = useState(false),
     [stagePin, setStagePin] = useState<{ x: number; y: number; frame: number } | undefined>(),
     [strictScope, setStrictScope] = useState(false),
-    [workbenchMode, setWorkbenchMode] = useState<'stage' | 'storyboard'>('stage'),
     [personalLibrary, setPersonalLibrary] = useState<VaultItem[]>([]),
     [assetCategory, setAssetCategory] = useState<AssetCategory>('media'),
     [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select'),
@@ -281,8 +225,7 @@ export function App() {
     [modelOverride, setModelOverride] = useState(''),
     [resultJob, setResultJob] = useState<Job | undefined>(),
     [resultClip, setResultClip] = useState(''),
-    [seqFormat, setSeqFormat] = useState('9:16'),
-    [assetQuery, setAssetQuery] = useState('');
+    [seqFormat, setSeqFormat] = useState('9:16');
 
   const sending = useRef(false);
   const clipboardClip = useRef<Clip | null>(null);
@@ -641,16 +584,23 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!openComposerMenu) return;
+    if (!openComposerMenu && !layoutMenuOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement)?.closest('.agent-session-wrap, .composer-popover-anchor')) {
+      if (
+        openComposerMenu &&
+        !(e.target as HTMLElement)?.closest('.agent-session-wrap, .composer-popover-anchor')
+      ) {
         setOpenComposerMenu(null);
+      }
+      if (layoutMenuOpen && !(e.target as HTMLElement)?.closest('.layout-preset-anchor')) {
+        setLayoutMenuOpen(false);
       }
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         setOpenComposerMenu(null);
+        setLayoutMenuOpen(false);
       }
     };
     window.addEventListener('mousedown', onDown);
@@ -659,7 +609,7 @@ export function App() {
       window.removeEventListener('mousedown', onDown);
       window.removeEventListener('keydown', onEsc);
     };
-  }, [openComposerMenu]);
+  }, [openComposerMenu, layoutMenuOpen]);
 
   useEffect(() => {
     if (!settings) return;
@@ -715,13 +665,28 @@ export function App() {
     }
   }, [project?.revision, project?.id, sequenceId]);
 
+  const applyLayoutPreset = (presetId: WorkspaceLayoutPresetId) => {
+    const preset = WORKSPACE_LAYOUT_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    setShowBrief(false);
+    setAppMode('edit');
+    setShowNav(preset.showNav);
+    setShowBottom(preset.showBottom);
+    setShowRight(preset.showRight);
+    if (preset.rightTab) setRight(preset.rightTab);
+    setLayoutMenuOpen(false);
+    notify(`已切换布局：${preset.name}`);
+  };
+
   const switchMode = (nextMode: 'create' | 'edit') => {
     if (nextMode === 'create') pause();
     setShowBrief(false);
     setAppMode(nextMode);
     if (nextMode === 'edit') {
       setShowBottom(true);
-      setShowNav(true);
+      // On compact laptop viewports (e.g. 1080x720), keep left explorer collapsed by default
+      // so the stage + timeline keep generous breathing room (Review #19).
+      setShowNav(window.innerWidth > 1140);
       setShowRight(true);
       if (task?.status !== 'running') setRight('inspector');
     } else {
@@ -1363,6 +1328,12 @@ export function App() {
       key: '',
       action: () => void api('project.reveal'),
     },
+    ...WORKSPACE_LAYOUT_PRESETS.map((preset) => ({
+      name: `布局：${preset.name}`,
+      detail: preset.description,
+      key: '',
+      action: () => applyLayoutPreset(preset.id),
+    })),
     {
       name: '切换剪辑聚焦',
       detail: '收起 / 展开两侧面板',
@@ -2066,6 +2037,49 @@ export function App() {
             >
               <PanelRight size={14} />
             </button>
+            {appMode === 'edit' && (
+              <div className="layout-preset-anchor">
+                <button
+                  type="button"
+                  className={`ide-pane-btn ${layoutMenuOpen ? 'active' : ''}`}
+                  aria-label="切换工作区布局预设"
+                  aria-expanded={layoutMenuOpen}
+                  title="快速切换布局预设（看画面 / 精剪 / 协作）"
+                  onClick={() => setLayoutMenuOpen((v) => !v)}
+                >
+                  <LayoutGrid size={13} />
+                </button>
+                {layoutMenuOpen && (
+                  <div className="layout-preset-popover" role="menu" aria-label="工作区布局预设">
+                    {WORKSPACE_LAYOUT_PRESETS.map((preset) => {
+                      const activePreset = detectActiveLayoutPreset({
+                        showNav,
+                        showBottom,
+                        showRight,
+                        rightTab: right,
+                      });
+                      const isActive = activePreset === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={isActive}
+                          className={isActive ? 'active' : ''}
+                          onClick={() => applyLayoutPreset(preset.id)}
+                        >
+                          <span className="layout-preset-check">{isActive && <Check size={12} />}</span>
+                          <span className="layout-preset-copy">
+                            <b>{preset.name}</b>
+                            <small>{preset.description}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <IconButton label="快速命令与搜索 ⌘K" onClick={() => openDialog('command')}>
@@ -2110,6 +2124,7 @@ export function App() {
             onAddTransition={addTransitionCb}
             onAddStudioMedia={addStudioCb}
             onAddRefsToChat={addRefsToChat}
+            onOpenTemplateLibrary={() => setDialog('templates')}
           />
           <div
             className="vertical-resizer left-resizer"
@@ -2665,190 +2680,27 @@ export function App() {
                 />
               )}
               {view === 'transcript' && (
-                <div className="transcript-panel">
-                  <div className="sub-toolbar">
-                    <span>
-                      {sequence.clips.filter((c) => c.kind === 'caption').length} 条字幕
-                      {transcribedAssets.length > 0 ? ` · ${transcribedAssets.length} 份已缓存源文稿` : ''} ·
-                      点击时间跳转，编辑文字后自动保存
-                    </span>
-                    <input
-                      className="script-search-input"
-                      aria-label="检索文稿与字幕"
-                      placeholder="搜索词句…"
-                      value={scriptQuery}
-                      onChange={(e) => setScriptQuery(e.target.value)}
-                    />
-                    <button
-                      className="button tiny"
-                      onClick={() =>
-                        void work('导入字幕', async () => {
-                          const e = await api<ProjectEnvelope | null>('captions.import', { sequenceId });
-                          if (e) accept(e);
-                        })
-                      }
-                    >
-                      <Upload size={12} /> 导入 SRT
-                    </button>
-                    <button
-                      className="button tiny"
-                      onClick={() => openStudio('transcription', clip?.assetId)}
-                    >
-                      <AudioLines size={12} />
-                      转录素材
-                    </button>
-                    <button
-                      className="button tiny"
-                      onClick={() => void api('captions.export', { sequenceId })}
-                    >
-                      导出 SRT
-                    </button>
-                  </div>
-                  {transcribedAssets.map((a) => {
-                    const matchedSegs = (a.transcript?.segments || []).filter(
-                      (seg) => !scriptQuery.trim() || seg.text.toLowerCase().includes(scriptQuery.trim().toLowerCase()),
-                    );
-                    return (
-                      <details className="source-transcript-card" key={a.id} open={Boolean(scriptQuery.trim())}>
-                        <summary>
-                          <AudioLines size={13} />
-                          <b>源素材转录：{a.name}</b>
-                          <small>{a.transcript?.segments.length || 0} 个时间段</small>
-                          <button
-                            type="button"
-                            className="button tiny"
-                            style={{ marginLeft: 'auto' }}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const caps = transcriptToCaptionClips(sequence, a);
-                              if (!caps.length) return;
-                              void edit(
-                                `由「${a.name}」转录生成字幕`,
-                                caps.map((c) => ({ type: 'addClip', sequenceId, clip: c })),
-                              );
-                            }}
-                          >
-                            + 铺入时间线字幕
-                          </button>
-                        </summary>
-                        {matchedSegs.length > 0 ? (
-                          <div className="transcript-segments-list">
-                            {matchedSegs.map((seg, idx) => (
-                              <div className="transcript-seg-row" key={idx}>
-                                <span>{seg.start.toFixed(1)}s</span>
-                                <p>{seg.text}</p>
-                                <button
-                                  type="button"
-                                  className="text-button"
-                                  onClick={() => {
-                                    const fps = sequence.fps;
-                                    const srcIn = Math.max(0, Math.floor(seg.start * fps));
-                                    const dur = Math.max(8, Math.round((seg.end - seg.start) * fps));
-                                    const tail = Math.max(
-                                      frame,
-                                      ...sequence.clips
-                                        .filter((x) => x.track === (a.kind === 'audio' ? 'audio' : 'visual'))
-                                        .map((x) => x.start + x.duration),
-                                      0,
-                                    );
-                                    const mediaClip = {
-                                      ...newClip(a.kind === 'audio' ? 'audio' : 'video', tail, a.id),
-                                      name: seg.text.slice(0, 18) || a.name,
-                                      sourceIn: srcIn,
-                                      duration: dur,
-                                    };
-                                    const capClip = {
-                                      ...newClip('caption', tail),
-                                      name: seg.text.slice(0, 18) || '字幕',
-                                      duration: dur,
-                                      props: {
-                                        text: seg.text,
-                                        fontSize: 44,
-                                        color: '#ffffff',
-                                        position: 'bottom' as const,
-                                        background: '#00000085',
-                                        animation: 'none' as const,
-                                      },
-                                    };
-                                    void edit('插入文稿切片', [
-                                      { type: 'addClip', sequenceId, clip: mediaClip },
-                                      { type: 'addClip', sequenceId, clip: capClip },
-                                    ]);
-                                  }}
-                                >
-                                  + 切片入轨
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p>{a.transcript?.text}</p>
-                        )}
-                      </details>
-                    );
-                  })}
-                  {sequence.clips
-                    .filter(
-                      (c) =>
-                        c.kind === 'caption' &&
-                        (!scriptQuery.trim() ||
-                          String(c.props.text || '')
-                            .toLowerCase()
-                            .includes(scriptQuery.trim().toLowerCase())),
-                    )
-                    .sort((a, b) => a.start - b.start)
-                    .map((c) => (
-                      <div
-                        className={`transcript-row ${frame >= c.start && frame < c.start + c.duration ? 'current' : ''}`}
-                        key={c.id}
-                      >
-                        <button
-                          onClick={() => {
-                            seek(c.start);
-                            selectClip(c.id);
-                          }}
-                        >
-                          {timecode(c.start, sequence.fps)}
-                        </button>
-                        <input
-                          aria-label={`字幕 ${c.name}`}
-                          defaultValue={String(c.props.text || '')}
-                          disabled={c.locked}
-                          onBlur={(e) => {
-                            if (e.target.value !== c.props.text)
-                              void edit('修改字幕', [
-                                {
-                                  type: 'updateClip',
-                                  sequenceId,
-                                  clipId: c.id,
-                                  changes: { props: { text: e.target.value } },
-                                },
-                              ]);
-                          }}
-                        />
-                        <IconButton
-                          label={`删除字幕 ${c.name}`}
-                          disabled={c.locked}
-                          onClick={() =>
-                            void edit('删除字幕', [{ type: 'deleteClip', sequenceId, clipId: c.id }])
-                          }
-                        >
-                          <X size={12} />
-                        </IconButton>
-                      </div>
-                    ))}
-                  {!sequence.clips.some((c) => c.kind === 'caption') && transcribedAssets.length === 0 && (
-                    <div className="panel-empty">
-                      <FileText size={23} />
-                      <p>把对白与画面连接起来。</p>
-                      <span>导入 SRT 字幕，或对音视频素材发起转录。</span>
-                      <button className="button tiny" onClick={() => void addCaption()}>
-                        <Plus size={12} /> 添加字幕
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <TranscriptPanel
+                  sequence={sequence}
+                  sequenceId={sequenceId}
+                  frame={frame}
+                  selectedClip={clip}
+                  transcribedAssets={transcribedAssets}
+                  scriptQuery={scriptQuery}
+                  onScriptQueryChange={setScriptQuery}
+                  onImportSrt={() =>
+                    void work('导入字幕', async () => {
+                      const e = await api<ProjectEnvelope | null>('captions.import', { sequenceId });
+                      if (e) accept(e);
+                    })
+                  }
+                  onTranscribe={(assetId) => openStudio('transcription', assetId)}
+                  onExportSrt={() => void api('captions.export', { sequenceId })}
+                  onAddCaption={() => void addCaption()}
+                  onSeek={seek}
+                  onSelectClip={selectClip}
+                  onEdit={editVoidCb}
+                />
               )}
               {view === 'storyboard' && (
                 <StoryboardStudio
@@ -2959,525 +2811,82 @@ export function App() {
               onCode={openCodeCb}
             />
           ) : (
-            <div className="agent-panel">
-              <div className="agent-task-heading">
-                <div className="agent-session-wrap" style={{ minWidth: 0, flex: 1 }}>
-                  <div className="agent-session-row">
-                    <button
-                      type="button"
-                      className="agent-session-trigger"
-                      aria-label="切换对话会话"
-                      aria-expanded={openComposerMenu === 'session'}
-                      onClick={() =>
-                        setOpenComposerMenu((m) => (m === 'session' ? null : 'session'))
-                      }
-                    >
-                      <span className="agent-session-title">{task?.name || '新会话'}</span>
-                      <ChevronDown size={12} />
-                    </button>
-                  </div>
-                  {openComposerMenu === 'session' && (
-                    <div className="agent-session-popover" role="menu" aria-label="对话会话列表">
-                      <button
-                        type="button"
-                        className="session-pop-new"
-                        onClick={() => {
-                          setOpenComposerMenu(null);
-                          openDialog('new-task');
-                        }}
-                      >
-                        <Plus size={12} />
-                        <span>新建对话</span>
-                      </button>
-                      {env.tasks.length > 0 && <div className="session-pop-sep" />}
-                      <div className="session-pop-list">
-                        {env.tasks.map((t) => {
-                          const isCurrent = t.id === task?.id;
-                          const seqLabel =
-                            project.sequences.find((s) => s.id === t.sequenceId)?.name || sequence.name;
-                          const isRun = t.status === 'running';
-                          return (
-                            <div
-                              key={t.id}
-                              className={`session-pop-item ${isCurrent ? 'active' : ''}`}
-                            >
-                              <button
-                                type="button"
-                                className="session-pop-main"
-                                onClick={() => {
-                                  setOpenComposerMenu(null);
-                                  setTaskId(t.id);
-                                  if (t.sequenceId !== sequenceId) changeSequence(t.sequenceId);
-                                }}
-                              >
-                                <span className="session-pop-check">
-                                  {isRun ? (
-                                    <Spinner />
-                                  ) : isCurrent ? (
-                                    <Check size={12} />
-                                  ) : null}
-                                </span>
-                                <span className="session-pop-meta">
-                                  <b>{t.name}</b>
-                                  <small>
-                                    {seqLabel}
-                                    {t.usage && t.usage.totalTokens > 0
-                                      ? ` · ${formatCompactTokens(t.usage.totalTokens)} tok`
-                                      : ''}
-                                  </small>
-                                </span>
-                              </button>
-                              <div className="session-pop-actions">
-                                <button
-                                  type="button"
-                                  aria-label={`重命名会话 ${t.name}`}
-                                  title="重命名"
-                                  onClick={(ev) => {
-                                    ev.stopPropagation();
-                                    setOpenComposerMenu(null);
-                                    setTaskId(t.id);
-                                    setFormName(t.name);
-                                    setDialog('rename-task');
-                                  }}
-                                >
-                                  <MoreHorizontal size={12} />
-                                </button>
-                                <button
-                                  type="button"
-                                  aria-label={`删除会话 ${t.name}`}
-                                  title="删除"
-                                  onClick={(ev) => {
-                                    ev.stopPropagation();
-                                    setOpenComposerMenu(null);
-                                    void work('删除会话', async () => {
-                                      const next = await api<ProjectEnvelope>('tasks.delete', { id: t.id });
-                                      accept(next);
-                                      if (taskId === t.id) setTaskId(next.tasks[0]?.id || '');
-                                    });
-                                  }}
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  <small className="agent-task-submeta">
-                    <GitBranch size={11} />
-                    <span>{sequence.name}</span>
-                    <span>·</span>
-                    <span>
-                      {task?.status === 'running'
-                        ? '正在工作'
-                        : task?.id && task.id === connectingTask
-                          ? '正在连接模型…'
-                          : '就绪'}
-                    </span>
-                    {task?.usage && task.usage.totalTokens > 0 && (
-                      <>
-                        <span>·</span>
-                        <span>{formatCompactTokens(task.usage.totalTokens)} tok</span>
-                      </>
-                    )}
-                  </small>
-                </div>
-                <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                  <IconButton label="新建 Agent 任务" onClick={() => openDialog('new-task')}>
-                    <Plus size={14} />
-                  </IconButton>
-                  {(task?.status === 'running' || (!!task?.id && task.id === connectingTask)) && (
-                    <button className="button tiny stop" onClick={() => void api('agent.stop', { taskId })}>
-                      <Square size={10} fill="currentColor" /> 停止
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="agent-scroll">
-                {(!task || task.messages.length === 0) && !stream[taskId] && !thinkingStream[taskId] && (
-                  <div className="agent-welcome">
-                    <div className="welcome-mark">
-                      <Mark />
-                    </div>
-                    <h2>想生产什么资产或镜头？</h2>
-                    <p>输入 @ 引用角色状态与媒体、# 按自定义标签筛选、/ 选用剪辑规范或新建分支试剪。</p>
-                    <div className="prompt-suggestions">
-                      {[
-                        [
-                          '新建分支大胆试剪',
-                          '/新建分支试剪 在不影响主干的前提下，帮我重新编排一版节奏更紧凑的剪辑方案。',
-                        ],
-                        [
-                          '生产一段动态逻辑图解',
-                          '为当前成片主题制作一段清晰可改字的分步逻辑与数据对比动态组件，并放入时间线。',
-                        ],
-                        [
-                          '整理项目资产与标签',
-                          '查看当前项目资产，按内容用途打上清晰的结构化标签并整理镜头顺序。',
-                        ],
-                      ].map(([title, text]) => (
-                        <button
-                          key={title}
-                          onClick={() => {
-                            setPrompt(text);
-                            promptRef.current?.focus();
-                          }}
-                        >
-                          {title}
-                          <ArrowUpRight size={12} />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <AgentThread
-                  messages={task?.messages || []}
-                  liveText={stream[taskId] || ''}
-                  liveThinking={thinkingStream[taskId] || ''}
-                  isRunning={task?.status === 'running'}
-                  dateLabel={dateLabel}
-                  onSeekTimecode={(sec) => {
-                    pause();
-                    seek(Math.round(sec * sequence.fps));
-                  }}
-                />
-                {task?.status === 'running' && (
-                  <div className="agent-working">
-                    <Spinner />
-                    <span>{TOOL_LABELS[toolState[taskId]] || toolState[taskId] || '正在思考与创作…'}</span>
-                  </div>
-                )}
-                <div ref={messagesEnd} />
-              </div>
-              <div className="composer-wrap">
-                {!chatConnected && (
-                  <button
-                    className="connect-hint"
-                    onClick={() => openSettings(chatModel ? 'providers' : 'defaults')}
-                  >
-                    <span className="muted-dot" /> 连接模型，开启 Agent 创作 <ArrowUpRight size={11} />
-                  </button>
-                )}
-                <div
-                  className="composer"
-                  onDragOver={(e) => {
-                    if (e.dataTransfer?.types?.includes('Files')) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }
-                  }}
-                  onDrop={handleComposerDrop}
-                >
-                  {(scope || stagePin || chatRefs.length > 0 || activeComposerSkills.length > 0) && (
-                    <div className="scope-bar">
-                      {activeComposerSkills.map((sk) => (
-                        <div key={sk} className="scope-chip skill">
-                          <span>/{friendlySkillTitle(sk)}</span>
-                          <button
-                            type="button"
-                            aria-label={`移除规范 ${friendlySkillTitle(sk)}`}
-                            onClick={() =>
-                              setActiveComposerSkills((prev) => prev.filter((x) => x !== sk))
-                            }
-                          >
-                            <X size={10} />
-                          </button>
-                        </div>
-                      ))}
-                      {scope && (
-                        <div className="scope-chip">
-                          <Film size={11} />
-                          <span>{scope.name}</span>
-                          <button
-                            type="button"
-                            className={`scope-strict-toggle ${strictScope ? 'active' : ''}`}
-                            title="开启后强制要求 Agent 只允许修改此片段"
-                            onClick={() => setStrictScope((v) => !v)}
-                          >
-                            {strictScope ? '仅改此处' : '参考'}
-                          </button>
-                          <button aria-label="移除片段引用" onClick={() => setScope(null)}>
-                            <X size={10} />
-                          </button>
-                        </div>
-                      )}
-                      {stagePin && (
-                        <div className="scope-chip pin">
-                          <Crosshair size={11} />
-                          <span>
-                            坐标 ({stagePin.x}%, {stagePin.y}%)
-                          </span>
-                          <button aria-label="移除画面坐标" onClick={() => setStagePin(undefined)}>
-                            <X size={10} />
-                          </button>
-                        </div>
-                      )}
-                      {chatRefs.map((cr) => (
-                        <div key={cr.key} className="scope-chip">
-                          <span>@{cr.label}</span>
-                          <button aria-label={`移除引用 ${cr.label}`} onClick={() => removeChatRef(cr.key)}>
-                            <X size={10} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {composerAttachments.length > 0 && (
-                    <div className="composer-attachments" aria-label="已附带文件">
-                      {composerAttachments.map((att) => (
-                        <div key={att.id} className={`composer-att-chip ${att.kind}`}>
-                          {att.previewDataUrl ? (
-                            <img src={att.previewDataUrl} alt={att.name} className="composer-att-thumb" />
-                          ) : (
-                            <span className="composer-att-icon">
-                              {att.kind === 'video' ? (
-                                <Film size={12} />
-                              ) : att.kind === 'audio' ? (
-                                <AudioLines size={12} />
-                              ) : att.kind === 'image' ? (
-                                <ImageIcon size={12} />
-                              ) : (
-                                <FileText size={12} />
-                              )}
-                            </span>
-                          )}
-                          <span className="composer-att-name" title={att.path}>
-                            {att.name}
-                          </span>
-                          <button
-                            type="button"
-                            aria-label={`移除附件 ${att.name}`}
-                            onClick={() =>
-                              setComposerAttachments((prev) => prev.filter((x) => x.id !== att.id))
-                            }
-                          >
-                            <X size={10} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {(() => {
-                    const tokenPrefix = matchMentionTrigger(prompt);
-                    if (!tokenPrefix) return null;
-                    const trigger = tokenPrefix[0] as '@' | '#' | '/';
-                    const keyword = tokenPrefix.slice(1).toLowerCase();
-                    const candidates = buildMentionCandidates(project, sequence, boot.skills)
-                      .filter(
-                        (c) =>
-                          c.trigger === trigger &&
-                          (!keyword ||
-                            c.label.toLowerCase().includes(keyword) ||
-                            c.token.toLowerCase().includes(keyword)),
-                      )
-                      .slice(0, 8);
-                    if (!candidates.length) return null;
-                    const safeIdx = Math.min(mentionIndex, candidates.length - 1);
-                    return (
-                      <div className="mention-popover" role="listbox" aria-label="引用建议">
-                        {candidates.map((cand, cIdx) => (
-                          <button
-                            key={cand.token}
-                            type="button"
-                            role="option"
-                            aria-selected={cIdx === safeIdx}
-                            className={cIdx === safeIdx ? 'active' : ''}
-                            onMouseDown={(ev) => {
-                              ev.preventDefault();
-                              applyMentionCandidate(cand);
-                            }}
-                          >
-                            <b>{cand.label}</b>
-                            <small>{cand.sublabel}</small>
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })()}
-                  <textarea
-                    ref={promptRef}
-                    aria-label="给 Agent 的指令"
-                    placeholder={
-                      task?.status === 'running'
-                        ? '补充方向，随时打断…'
-                        : '描述画面或修改（输入 @ 引用、/ 选规范，可粘贴/拖放图片）…'
-                    }
-                    value={prompt}
-                    onPaste={handleComposerPaste}
-                    onChange={(e) => {
-                      setPrompt(e.target.value);
-                      setMentionIndex(0);
-                    }}
-                    onKeyDown={(e) => {
-                      const composing = e.nativeEvent.isComposing || (e as unknown as { keyCode?: number }).keyCode === 229;
-                      const tokenPrefix = matchMentionTrigger(prompt);
-                      if (tokenPrefix && !composing) {
-                        const trigger = tokenPrefix[0] as '@' | '#' | '/';
-                        const keyword = tokenPrefix.slice(1).toLowerCase();
-                        const candidates = buildMentionCandidates(project, sequence, boot.skills)
-                          .filter(
-                            (c) =>
-                              c.trigger === trigger &&
-                              (!keyword ||
-                                c.label.toLowerCase().includes(keyword) ||
-                                c.token.toLowerCase().includes(keyword)),
-                          )
-                          .slice(0, 8);
-                        if (candidates.length > 0) {
-                          if (e.key === 'ArrowDown') {
-                            e.preventDefault();
-                            setMentionIndex((i) => (i + 1) % candidates.length);
-                            return;
-                          }
-                          if (e.key === 'ArrowUp') {
-                            e.preventDefault();
-                            setMentionIndex((i) => (i - 1 + candidates.length) % candidates.length);
-                            return;
-                          }
-                          if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                            e.preventDefault();
-                            const picked = candidates[Math.min(mentionIndex, candidates.length - 1)];
-                            applyMentionCandidate(picked);
-                            return;
-                          }
-                        }
-                      }
-                      if (e.key === 'Enter' && !e.shiftKey && !composing) {
-                        e.preventDefault();
-                        void send();
-                      }
-                    }}
-                  />
-                  <div className="composer-bottom">
-                    <div className="composer-tools-left">
-                      <button
-                        type="button"
-                        className="composer-icon-btn"
-                        aria-label="添加附件"
-                        title="添加参考图片、音视频或文稿 (支持直接粘贴截图与拖放文件)"
-                        onClick={() => void attachFilesToComposer()}
-                      >
-                        <Paperclip size={13} />
-                      </button>
-
-                      <div className="composer-popover-anchor">
-                        <button
-                          type="button"
-                          className="composer-pill-btn"
-                          aria-label="会话模型"
-                          aria-expanded={openComposerMenu === 'model'}
-                          disabled={
-                            task?.status === 'running' || (!!task?.id && task.id === connectingTask)
-                          }
-                          onClick={() =>
-                            setOpenComposerMenu((m) => (m === 'model' ? null : 'model'))
-                          }
-                        >
-                          <span className={chatConnected ? 'connected-dot' : 'muted-dot'} />
-                          <span className="composer-pill-label">{chatModel?.name || '选择模型'}</span>
-                          <ChevronDown size={11} />
-                        </button>
-                        {openComposerMenu === 'model' && (
-                          <div className="composer-popover" role="menu" aria-label="选择会话模型">
-                            {agentModels.map((m) => {
-                              const pName =
-                                settings.providers.find((p) => p.id === m.providerId)?.name || '';
-                              const active = chatModel?.id === m.id;
-                              return (
-                                <button
-                                  key={m.id}
-                                  type="button"
-                                  className={active ? 'active' : ''}
-                                  onClick={() => selectAgentModel(m.id)}
-                                >
-                                  <span className="pop-check">{active && <Check size={12} />}</span>
-                                  <span className="pop-text">
-                                    <b>{m.name}</b>
-                                    {pName && <small>{pName}</small>}
-                                  </span>
-                                </button>
-                              );
-                            })}
-                            {agentModels.length > 0 && <div className="pop-sep" />}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenComposerMenu(null);
-                                openSettings('models');
-                              }}
-                            >
-                              <span className="pop-check" />
-                              <span className="pop-text">
-                                <b>管理模型…</b>
-                              </span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="composer-popover-anchor">
-                        <button
-                          type="button"
-                          className="composer-pill-btn"
-                          aria-label="思考深度"
-                          title="调节模型推理 / 思考深度"
-                          aria-expanded={openComposerMenu === 'thinking'}
-                          disabled={
-                            task?.status === 'running' || (!!task?.id && task.id === connectingTask)
-                          }
-                          onClick={() =>
-                            setOpenComposerMenu((m) => (m === 'thinking' ? null : 'thinking'))
-                          }
-                        >
-                          <Brain size={12} />
-                          <span className="composer-pill-label">
-                            {THINKING_OPTIONS.find((o) => o.id === thinkingLevel)?.label || '关闭'}
-                          </span>
-                          <ChevronDown size={11} />
-                        </button>
-                        {openComposerMenu === 'thinking' && (
-                          <div className="composer-popover align-right" role="menu" aria-label="选择思考深度">
-                            {THINKING_OPTIONS.map((opt) => {
-                              const active = thinkingLevel === opt.id;
-                              return (
-                                <button
-                                  key={opt.id}
-                                  type="button"
-                                  className={active ? 'active' : ''}
-                                  onClick={() => {
-                                    setThinkingLevel(opt.id);
-                                    localStorage.setItem('cc-thinking-level', opt.id);
-                                    setOpenComposerMenu(null);
-                                  }}
-                                >
-                                  <span className="pop-check">{active && <Check size={12} />}</span>
-                                  <span className="pop-text">
-                                    <b>{opt.label}</b>
-                                    <small>{opt.hint}</small>
-                                  </span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      className="send-button"
-                      aria-label="发送给 Agent"
-                      disabled={!prompt.trim() && composerAttachments.length === 0}
-                      onClick={() => void send()}
-                    >
-                      <ArrowUp size={15} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <AgentPanel
+              project={project}
+              sequence={sequence}
+              sequenceId={sequenceId}
+              tasks={env.tasks}
+              task={task}
+              taskId={taskId}
+              connectingTask={connectingTask}
+              skills={boot.skills}
+              settings={settings}
+              agentModels={agentModels}
+              chatModel={chatModel}
+              chatConnected={chatConnected}
+              thinkingLevel={thinkingLevel}
+              streamText={stream[taskId] || ''}
+              thinkingStreamText={thinkingStream[taskId] || ''}
+              toolStatus={toolState[taskId] || ''}
+              prompt={prompt}
+              promptRef={promptRef}
+              messagesEndRef={messagesEnd}
+              mentionIndex={mentionIndex}
+              openComposerMenu={openComposerMenu}
+              scope={scope}
+              strictScope={strictScope}
+              stagePin={stagePin}
+              chatRefs={chatRefs}
+              activeComposerSkills={activeComposerSkills}
+              composerAttachments={composerAttachments}
+              onSetOpenComposerMenu={setOpenComposerMenu}
+              onNewTask={() => openDialog('new-task')}
+              onSelectTask={(t) => {
+                setTaskId(t.id);
+                if (t.sequenceId !== sequenceId) changeSequence(t.sequenceId);
+              }}
+              onRenameTask={(t) => {
+                setTaskId(t.id);
+                setFormName(t.name);
+                setDialog('rename-task');
+              }}
+              onDeleteTask={(t) => {
+                void work('删除会话', async () => {
+                  const next = await api<ProjectEnvelope>('tasks.delete', { id: t.id });
+                  accept(next);
+                  if (taskId === t.id) setTaskId(next.tasks[0]?.id || '');
+                });
+              }}
+              onStopAgent={() => void api('agent.stop', { taskId })}
+              onSetPrompt={setPrompt}
+              onSetMentionIndex={setMentionIndex}
+              onApplyMentionCandidate={applyMentionCandidate}
+              onSeekTimecode={(sec) => {
+                pause();
+                seek(Math.round(sec * sequence.fps));
+              }}
+              onOpenSettings={openSettings}
+              onComposerDrop={handleComposerDrop}
+              onComposerPaste={handleComposerPaste}
+              onRemoveComposerSkill={(sk) =>
+                setActiveComposerSkills((prev) => prev.filter((x) => x !== sk))
+              }
+              onToggleStrictScope={() => setStrictScope((v) => !v)}
+              onClearScope={() => setScope(null)}
+              onClearStagePin={() => setStagePin(undefined)}
+              onRemoveChatRef={removeChatRef}
+              onRemoveAttachment={(id) =>
+                setComposerAttachments((prev) => prev.filter((x) => x.id !== id))
+              }
+              onAttachFiles={() => void attachFilesToComposer()}
+              onSelectModel={selectAgentModel}
+              onSelectThinkingLevel={(level) => {
+                setThinkingLevel(level);
+                localStorage.setItem('cc-thinking-level', level);
+                setOpenComposerMenu(null);
+              }}
+              onSend={() => void send()}
+            />
           )}
         </aside>
       )}
@@ -3532,174 +2941,49 @@ export function App() {
           </button>
         </div>
       )}
-      {jobsOpen && (() => {
-        const visibleJobs =
-          jobsScope === 'project'
-            ? jobs.filter(
-                (j) =>
-                  (!j.projectId && !j.projectPath) ||
-                  j.projectId === project.id ||
-                  j.projectPath === env.path,
-              )
-            : jobs;
-        return (
-          <div className="jobs-popover">
-            <header>
-              <b>后台作业</b>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div className="jobs-scope-seg" role="group" aria-label="作业筛选">
-                  <button
-                    type="button"
-                    className={jobsScope === 'project' ? 'active' : ''}
-                    onClick={() => setJobsScope('project')}
-                  >
-                    本工程
-                  </button>
-                  <button
-                    type="button"
-                    className={jobsScope === 'all' ? 'active' : ''}
-                    onClick={() => setJobsScope('all')}
-                  >
-                    全部 ({jobs.length})
-                  </button>
-                </div>
-                {jobs.some((j) => j.status !== 'running' && j.status !== 'queued') && (
-                  <button
-                    className="text-button"
-                    onClick={() => void api<Job[]>('jobs.clear').then(setJobs)}
-                  >
-                    清理已完成
-                  </button>
-                )}
-                <IconButton label="关闭后台作业" onClick={() => setJobsOpen(false)}>
-                  <X size={14} />
-                </IconButton>
-              </div>
-            </header>
-            {visibleJobs.length === 0 ? (
-              <div className="jobs-empty">
-                {jobsScope === 'project' && jobs.length > 0
-                  ? '当前工程暂无后台作业，可切换「全部」查看其他工程记录。'
-                  : '导出、生成和分析作业会在这里显示。'}
-              </div>
-            ) : (
-              visibleJobs.slice(0, 14).map((j) => {
-                const isSameProject =
-                  (!j.projectId && j.projectPath === env.path) || j.projectId === project.id;
-                const attachedTarget =
-                  j.status === 'completed' && j.target && j.targetAttachment?.applied && isSameProject;
-                return (
-                  <div className="job-item" key={j.id}>
-                    <div className="job-top">
-                      {j.status === 'running' ? (
-                        <Spinner />
-                      ) : j.status === 'completed' ? (
-                        <CheckCheck size={15} />
-                      ) : (
-                        <AlertCircle size={15} />
-                      )}
-                      <b>{j.name}</b>
-                      <span>{j.status === 'running' ? Math.round(j.progress * 100) + '%' : ''}</span>
-                    </div>
-                    {(j.projectName || j.branchName) && (
-                      <div className="job-meta-pill">
-                        {j.projectName || '当前工程'}
-                        {j.branchName ? ` · ${j.branchName}` : ''}
-                      </div>
-                    )}
-                    <p>
-                      {j.error ||
-                        (j.targetAttachment?.applied
-                          ? '已完成 · 已自动挂载为镜头未激活候选'
-                          : j.targetAttachment?.reason || j.stage)}
-                    </p>
-                    {j.status === 'running' && (
-                      <div className="job-progress">
-                        <i style={{ width: `${j.progress * 100}%` }} />
-                      </div>
-                    )}
-                    <div className="job-actions">
-                      {j.status === 'completed' && j.output && j.type === 'export' && (
-                        <>
-                          <button onClick={() => void api('file.open', { jobId: j.id })}>
-                            {j.output?.toLowerCase().endsWith('.png') ? '打开画面' : '打开成片'}{' '}
-                            <ArrowUpRight size={11} />
-                          </button>
-                          <button onClick={() => void api('file.reveal', { jobId: j.id })}>
-                            在 Finder 中显示
-                          </button>
-                        </>
-                      )}
-                      {j.status === 'completed' && j.result?.text && (
-                        <button
-                          onClick={() => {
-                            setResultJob(j);
-                            setResultClip(
-                              sequence.clips.find(
-                                (c) => c.id === selected && !!c.assetId && c.assetId === j.inputAssetId,
-                              )?.id || '',
-                            );
-                            setJobsOpen(false);
-                            setDialog('job-result');
-                          }}
-                        >
-                          查看结果 <ArrowUpRight size={11} />
-                        </button>
-                      )}
-                      {attachedTarget && j.target && (
-                        <button
-                          onClick={() => {
-                            if (j.target!.sequenceId !== sequenceId) changeSequence(j.target!.sequenceId);
-                            const targetSeq = project.sequences.find((s) => s.id === j.target!.sequenceId);
-                            const targetClip = targetSeq?.clips.find((c) => c.id === j.target!.clipId);
-                            if (targetClip) {
-                              selectClip(targetClip.id);
-                              seek(targetClip.start);
-                            }
-                            setView('storyboard');
-                            setShowBottom(true);
-                            setJobsOpen(false);
-                          }}
-                        >
-                          查看镜头候选 <ArrowUpRight size={11} />
-                        </button>
-                      )}
-                      {j.status === 'completed' &&
-                        j.result?.asset &&
-                        !attachedTarget &&
-                        isSameProject &&
-                        project.assets.some((a) => a.id === j.result?.asset?.id) && (
-                          <button
-                            onClick={() =>
-                              void work('添加素材', async () => {
-                                await addAsset(j.result!.asset!.id);
-                                setJobsOpen(false);
-                              })
-                            }
-                          >
-                            添加到时间线
-                          </button>
-                        )}
-                      {(j.status === 'failed' || j.status === 'cancelled') &&
-                        (j.remote || j.result?.asset) &&
-                        !['failed', 'expired', 'canceled', 'cancelled'].includes(j.remote?.status || '') && (
-                          <button
-                            onClick={() => void work('继续查询', () => api('generation.resume', { id: j.id }))}
-                          >
-                            {j.result?.asset ? '恢复素材入库' : '继续查询原作业'}
-                          </button>
-                        )}
-                      {j.status === 'running' && (
-                        <button onClick={() => void api('jobs.cancel', { id: j.id })}>取消</button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        );
-      })()}
+      {jobsOpen && (
+        <JobsPopover
+          jobs={jobs}
+          jobsScope={jobsScope}
+          project={project}
+          projectPath={env.path}
+          sequence={sequence}
+          sequenceId={sequenceId}
+          selectedClipId={selected}
+          onChangeScope={setJobsScope}
+          onClearCompleted={() => void api<Job[]>('jobs.clear').then(setJobs)}
+          onClose={() => setJobsOpen(false)}
+          onOpenFile={(jobId) => void api('file.open', { jobId })}
+          onRevealFile={(jobId) => void api('file.reveal', { jobId })}
+          onInspectResult={(job, matchedClipId) => {
+            setResultJob(job);
+            setResultClip(matchedClipId);
+            setJobsOpen(false);
+            setDialog('job-result');
+          }}
+          onJumpToCandidate={(job) => {
+            if (!job.target) return;
+            if (job.target.sequenceId !== sequenceId) changeSequence(job.target.sequenceId);
+            const targetSeq = project.sequences.find((s) => s.id === job.target!.sequenceId);
+            const targetClip = targetSeq?.clips.find((c) => c.id === job.target!.clipId);
+            if (targetClip) {
+              selectClip(targetClip.id);
+              seek(targetClip.start);
+            }
+            setView('storyboard');
+            setShowBottom(true);
+            setJobsOpen(false);
+          }}
+          onAddAssetToTimeline={(assetId) =>
+            void work('添加素材', async () => {
+              await addAsset(assetId);
+              setJobsOpen(false);
+            })
+          }
+          onResumeJob={(jobId) => void work('继续查询', () => api('generation.resume', { id: jobId }))}
+          onCancelJob={(jobId) => void api('jobs.cancel', { id: jobId })}
+        />
+      )}
       {dialog === 'settings' && (
         <SettingsDialog
           projectDefaults={project.modelDefaults}
@@ -3858,66 +3142,14 @@ export function App() {
         </Modal>
       )}
       {dialog === 'command' && (
-        <Modal title="你想做什么？" onClose={() => setDialog(null)}>
-          <div className="command-input">
-            <Search size={17} />
-            <input
-              autoFocus
-              aria-label="搜索命令"
-              placeholder="搜索命令、素材或成片…"
-              value={command}
-              onChange={(e) => {
-                setCommand(e.target.value);
-                setCmdIndex(0);
-              }}
-              onKeyDown={(e) => {
-                if (!filteredCommands.length) return;
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault();
-                  setCmdIndex((i) => (i + 1) % filteredCommands.length);
-                } else if (e.key === 'ArrowUp') {
-                  e.preventDefault();
-                  setCmdIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
-                } else if (e.key === 'Enter') {
-                  e.preventDefault();
-                  const picked = filteredCommands[Math.min(cmdIndex, filteredCommands.length - 1)];
-                  if (picked) {
-                    setDialog(null);
-                    picked.run();
-                  }
-                }
-              }}
-            />
-            <kbd>ESC</kbd>
-          </div>
-          <div className="command-results" role="listbox">
-            {filteredCommands.length === 0 ? (
-              <div className="command-empty">
-                没有匹配「{command}」的命令。可尝试搜索：导出、分支、字幕、设置、素材、时间线或切换画布。
-              </div>
-            ) : (
-              filteredCommands.map((item, idx) => (
-                <button
-                  key={item.id}
-                  role="option"
-                  aria-selected={idx === cmdIndex}
-                  className={idx === cmdIndex ? 'active' : ''}
-                  onMouseEnter={() => setCmdIndex(idx)}
-                  onClick={() => {
-                    setDialog(null);
-                    item.run();
-                  }}
-                >
-                  <span>
-                    {item.name}
-                    <small>{item.detail}</small>
-                  </span>
-                  <kbd>{item.key === '+' ? <Plus size={14} /> : item.key || <ArrowUpRight size={13} />}</kbd>
-                </button>
-              ))
-            )}
-          </div>
-        </Modal>
+        <CommandPaletteModal
+          query={command}
+          activeIndex={cmdIndex}
+          items={filteredCommands}
+          onQueryChange={setCommand}
+          onActiveIndexChange={setCmdIndex}
+          onClose={() => setDialog(null)}
+        />
       )}
       {dialog === 'versions' && (
         <Modal

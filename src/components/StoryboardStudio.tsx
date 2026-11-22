@@ -8,8 +8,6 @@ import {
   Sparkles,
   UserCheck,
   Lock,
-  Play,
-  GitBranch,
   FileText,
   X,
 } from 'lucide-react';
@@ -41,14 +39,11 @@ interface StoryboardStudioProps {
   sequence: Sequence;
   selectedClipId: string | null;
   previewOrigin: string;
-  fullMode?: boolean;
   onSelectClip: (id: string) => void;
   onSeek: (frame: number) => void;
   onEdit: (name: string, ops: EditOperation[]) => Promise<void>;
-  onChangeSequence?: (seqId: string) => void;
   onAskAgentForShot?: (clip: Clip, prompt: string) => void;
   onOpenGenerationForShot?: (prompt: string, referenceAssetId?: string, target?: GenerationTarget) => void;
-  onSwitchToStage?: () => void;
 }
 
 export function StoryboardStudio({
@@ -56,20 +51,15 @@ export function StoryboardStudio({
   sequence,
   selectedClipId,
   previewOrigin,
-  fullMode = false,
   onSelectClip,
   onSeek,
   onEdit,
-  onChangeSequence,
   onAskAgentForShot,
   onOpenGenerationForShot,
-  onSwitchToStage,
 }: StoryboardStudioProps) {
   const [takeMenuFor, setTakeMenuFor] = useState<string | null>(null);
   const [showOutlineDrawer, setShowOutlineDrawer] = useState(false);
   const [outlineDraft, setOutlineDraft] = useState('');
-  const [showForkDrawer, setShowForkDrawer] = useState(false);
-  const [forkName, setForkName] = useState('');
 
   const compositeShots = useMemo(() => computeCompositeShots(sequence), [sequence]);
 
@@ -186,121 +176,27 @@ export function StoryboardStudio({
   }
 
   return (
-    <div className={`storyboard-studio ${fullMode ? 'full' : 'compact'}`}>
-      {!fullMode && (
-        <div className="sb-compact-actions">
-          <span>
-            共 {compositeShots.length} 个分镜 · {(durationOf(sequence) / sequence.fps).toFixed(1)}s
-          </span>
-          <div className="sb-compact-btns">
-            <button type="button" className="button tiny subtle" onClick={() => setShowOutlineDrawer((v) => !v)}>
-              <FileText size={12} /> 拆镜
-            </button>
-            <button type="button" className="button tiny subtle" onClick={() => void appendNewShot()}>
-              <Plus size={12} /> 新增空白镜
-            </button>
-            <button
-              type="button"
-              className="button tiny primary"
-              onClick={() => void appendNewShot('seecode-architecture')}
-            >
-              <Plus size={12} /> 图解镜
-            </button>
-          </div>
+    <div className="storyboard-studio compact">
+      <div className="sb-compact-actions">
+        <span>
+          共 {compositeShots.length} 个分镜 · {(durationOf(sequence) / sequence.fps).toFixed(1)}s
+        </span>
+        <div className="sb-compact-btns">
+          <button type="button" className="button tiny subtle" onClick={() => setShowOutlineDrawer((v) => !v)}>
+            <FileText size={12} /> 拆镜
+          </button>
+          <button type="button" className="button tiny subtle" onClick={() => void appendNewShot()}>
+            <Plus size={12} /> 新增空白镜
+          </button>
+          <button
+            type="button"
+            className="button tiny primary"
+            onClick={() => void appendNewShot('seecode-architecture')}
+          >
+            <Plus size={12} /> 图解镜
+          </button>
         </div>
-      )}
-      {fullMode && (
-        <header className="storyboard-studio-head">
-          <div>
-            <div className="sb-head-title-row">
-              <h3>分镜与候选编排台</h3>
-              {/* Film Branch Switcher & Fork */}
-              <div className="branch-bar">
-                <GitBranch size={13} />
-                <select
-                  aria-label="切换成片剪辑分支"
-                  value={sequence.id}
-                  onChange={(e) => onChangeSequence?.(e.target.value)}
-                >
-                  {project.sequences.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.isMainBranch ? '主干 · ' : '分支 · '}
-                      {s.name}
-                      {s.forkedAtRevision !== undefined ? ` (源自 v${s.forkedAtRevision})` : ''}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="button tiny subtle"
-                  onClick={() => setShowForkDrawer((v) => !v)}
-                >
-                  + 派生实验分支
-                </button>
-              </div>
-            </div>
-            <p>
-              一镜一卡：共 {compositeShots.length} 个合成镜头 · 总长{' '}
-              {(durationOf(sequence) / sequence.fps).toFixed(1)}s ·
-              支持镜内编辑旁白、绑定主体特定状态分支并对比多个候选画面。
-            </p>
-          </div>
-
-          <div className="storyboard-studio-actions">
-            <button
-              type="button"
-              className="button tiny subtle"
-              onClick={() => setShowOutlineDrawer((v) => !v)}
-            >
-              <FileText size={13} /> 从文稿拆解分镜
-            </button>
-            <button type="button" className="button tiny subtle" onClick={() => void appendNewShot()}>
-              <Plus size={13} /> 新增空白镜
-            </button>
-            <button
-              type="button"
-              className="button tiny primary"
-              onClick={() => void appendNewShot('seecode-architecture')}
-            >
-              <Plus size={13} /> 新增动态图解镜
-            </button>
-          </div>
-        </header>
-      )}
-
-      {/* Fork Film Branch Inline Drawer */}
-      {fullMode && showForkDrawer && (
-        <form
-          className="sb-inline-drawer"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            const newId = uid('seq');
-            const name = forkName.trim() || `${sequence.name}-实验版`;
-            await onEdit(`从「${sequence.name}」派生分支「${name}」`, [
-              { type: 'forkSequenceBranch', sourceSequenceId: sequence.id, newSequenceId: newId, branchName: name },
-            ]);
-            setForkName('');
-            setShowForkDrawer(false);
-            onChangeSequence?.(newId);
-          }}
-        >
-          <GitBranch size={14} />
-          <span>从当前「{sequence.name} (v{project.revision})」派生平行剪辑分支（原分支不受任何影响）：</span>
-          <input
-            autoFocus
-            aria-label="新分支名称"
-            placeholder="例如：30s 快节奏版 / 倒叙开场尝试"
-            value={forkName}
-            onChange={(e) => setForkName(e.target.value)}
-          />
-          <button type="submit" className="button tiny primary">
-            创建并切换分支
-          </button>
-          <button type="button" className="icon-button tiny" onClick={() => setShowForkDrawer(false)}>
-            <X size={13} />
-          </button>
-        </form>
-      )}
+      </div>
 
       {/* Script Outline -> Shots Drawer */}
       {showOutlineDrawer && (
@@ -395,20 +291,6 @@ export function StoryboardStudio({
                     <span className="shot-lock-pill" title="已锁定版本保护">
                       <Lock size={11} />
                     </span>
-                  )}
-                  {fullMode && onSwitchToStage && (
-                    <button
-                      type="button"
-                      className="shot-stage-jump"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectClip(c.id);
-                        onSeek(shot.start + Math.min(shot.duration - 1, Math.round(sequence.fps * 0.5)));
-                        onSwitchToStage();
-                      }}
-                    >
-                      <Play size={11} /> 舞台精调
-                    </button>
                   )}
                 </div>
 

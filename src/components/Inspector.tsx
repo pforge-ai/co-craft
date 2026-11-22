@@ -28,7 +28,7 @@ import type { Clip, Sequence, Project, EditOperation, TransitionType } from '../
 import { uid, clone } from '../core/project';
 import { mediaUrl } from '../composition/Film';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
-import { PresetControls, ParameterControls } from './ResourceLibrary';
+import { PresetControls, ParameterControls } from './PresetControls';
 import { BUILT_IN_TRANSITIONS, getPreset } from '../core/presets';
 import { pointerDrag } from '../lib/pointerDrag';
 import { IconButton } from './ui';

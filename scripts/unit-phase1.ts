@@ -17,7 +17,18 @@ import {
   uid,
 } from '../src/core/project';
 import { ProjectStore } from '../electron/store';
-import type { CodeComponent } from '../src/core/types';
+import type { Asset, CodeComponent } from '../src/core/types';
+import {
+  filterPresets,
+  filterStudioMediaByKind,
+  filterTransitions,
+  matchCatalogText,
+} from '../src/core/catalog';
+import {
+  detectActiveLayoutPreset,
+  matchMentionTrigger,
+  parseTimecodeInput,
+} from '../src/lib/workbenchState';
 
 console.log('Running Phase 1 Core & Store Unit Suite...');
 
@@ -605,4 +616,60 @@ assert.ok(
   assert.equal(vis60.transitionIn.durationFrames, 30, 'transitionIn 15f@30fps scales to 30f@60fps');
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B core regression tests (timecode, SRT, ripple, strict scope, lock-safe relink, numeric breakdown, per-line SRT, unified storyboard, shot audio, spanning watermark, trailing preflight, transitions & cross-FPS compounds)');
+// 7. Wave C: Shared catalog search engine (Review #13) + Workbench helpers (Reviews #16/#19/#20)
+{
+  // 7a. Multi-token & keyword matching across AssetExplorer & ResourceLibrary
+  assert.equal(matchCatalogText('', 'anything'), true);
+  assert.equal(matchCatalogText('声学 示波器', '声场 · 相位实验', ['声学', '示波器']), true);
+  assert.equal(matchCatalogText('声学 不存在词', '声场 · 相位实验', ['声学', '示波器']), false);
+
+  const byKeyword = filterPresets('示波器');
+  assert.ok(byKeyword.some((p) => p.id === 'phase-study'), 'filterPresets matches preset keywords');
+  assert.equal(filterPresets('__不存在的关键词_xyz__').length, 0, 'Empty search returns 0 presets');
+
+  // Carrier separation on studio media (images vs audio never mixed)
+  const mockStudio: Asset[] = [
+    { id: 's-photo', name: '有轨电车', kind: 'image', path: '/a.jpg', duration: 0, createdAt: '' },
+    { id: 's-sfx', name: '卡片轻巧弹出', kind: 'audio', path: '/b.wav', duration: 0.3, createdAt: '' },
+  ];
+  const splitAll = filterStudioMediaByKind(mockStudio, '');
+  assert.equal(splitAll.visual.length, 1);
+  assert.equal(splitAll.audio.length, 1);
+  assert.equal(splitAll.visual[0].id, 's-photo');
+  assert.equal(splitAll.audio[0].id, 's-sfx');
+  const splitAudioOnly = filterStudioMediaByKind(mockStudio, '音效');
+  assert.equal(splitAudioOnly.visual.length, 0);
+  assert.equal(splitAudioOnly.audio.length, 1);
+
+  assert.ok(filterTransitions('叠化').length >= 1, 'filterTransitions matches Chinese transition name');
+  assert.equal(filterTransitions('__nonexistent__').length, 0);
+
+  // 7b. Chinese @ trigger without space (Review #16) while ignoring email addresses
+  assert.equal(matchMentionTrigger('给这个镜头加@林夏'), '@林夏');
+  assert.equal(matchMentionTrigger('用/新建分支'), '/新建分支');
+  assert.equal(matchMentionTrigger('contact foo@bar.com'), null);
+
+  // 7c. Timecode parser (Review #20)
+  assert.equal(parseTimecodeInput('70', 30), 70);
+  assert.equal(parseTimecodeInput('70f', 30), 70);
+  assert.equal(parseTimecodeInput('2.5s', 30), 75);
+  assert.equal(parseTimecodeInput('01:02:15', 30), 1875);
+  assert.equal(parseTimecodeInput('00:02.5', 30), 75);
+  assert.equal(parseTimecodeInput('invalid', 30), null);
+
+  // 7d. Workspace layout preset detection (Review #19)
+  assert.equal(
+    detectActiveLayoutPreset({ showNav: false, showBottom: true, showRight: false, rightTab: 'inspector' }),
+    'focus',
+  );
+  assert.equal(
+    detectActiveLayoutPreset({ showNav: true, showBottom: true, showRight: true, rightTab: 'inspector' }),
+    'edit',
+  );
+  assert.equal(
+    detectActiveLayoutPreset({ showNav: false, showBottom: true, showRight: true, rightTab: 'agent' }),
+    'collab',
+  );
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C core regression tests (timecode, SRT, ripple, strict scope, lock-safe relink, numeric breakdown, per-line SRT, unified storyboard, shot audio, spanning watermark, trailing preflight, transitions, cross-FPS compounds, unified catalog & workbench state)');

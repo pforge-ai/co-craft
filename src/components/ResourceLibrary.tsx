@@ -20,253 +20,24 @@ import {
   presetCategories,
   getPreset,
   normalizePresetProps,
-  type PresetParameter,
 } from '../core/presets';
+import {
+  filterPresets,
+  filterProjectComponents,
+  filterStudioMediaByKind,
+} from '../core/catalog';
 import { newClip, newProject } from '../core/project';
-import { PresetFrame } from '../composition/Presets';
 import type { Asset, CodeComponent } from '../core/types';
+import {
+  ParameterControls,
+  PresetControls,
+  PresetPreview,
+  posterFrame,
+  type ParameterValue,
+} from './PresetControls';
 import './ResourceLibrary.css';
 
-const posterFrame = (duration: number) => Math.min(duration - 1, Math.round(Math.min(72, duration * 0.48)));
-const thumbnailCrop: Record<string, { x: number; y: number; zoom: number }> = {
-  'lower-third': { x: 0.34, y: 0.82, zoom: 1.65 },
-  'glass-caption': { x: 0.5, y: 0.84, zoom: 1.6 },
-  'kinetic-caption': { x: 0.5, y: 0.83, zoom: 1.55 },
-  'focus-callout': { x: 0.56, y: 0.37, zoom: 1.33 },
-};
-export function PresetPreview({
-  presetId,
-  values,
-  portrait = false,
-  playing = false,
-  thumbnail = false,
-  backdrop,
-  className = '',
-}: {
-  presetId: string;
-  values?: Record<string, unknown>;
-  portrait?: boolean;
-  playing?: boolean;
-  thumbnail?: boolean;
-  backdrop?: string;
-  className?: string;
-}) {
-  const element = useRef<HTMLDivElement>(null),
-    preset = getPreset(presetId)!;
-  const duration = Math.max(1, Math.round(preset.durationSeconds * 30)),
-    initial = posterFrame(duration);
-  const [width, setWidth] = useState(0),
-    [frame, setFrame] = useState(initial),
-    current = useRef(initial);
-  useEffect(() => {
-    const el = element.current;
-    if (!el) return;
-    setWidth(el.clientWidth);
-    const observer = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-  useEffect(() => {
-    current.current = initial;
-    setFrame(initial);
-  }, [presetId, initial]);
-  useEffect(() => {
-    if (!playing) {
-      if (thumbnail) {
-        current.current = initial;
-        setFrame(initial);
-      }
-      return;
-    }
-    let token = 0;
-    const begin = performance.now(),
-      offset = thumbnail ? 0 : current.current;
-    const tick = (now: number) => {
-      const next = (offset + Math.floor((now - begin) * 0.03)) % duration;
-      if (next !== current.current) {
-        current.current = next;
-        setFrame(next);
-      }
-      token = requestAnimationFrame(tick);
-    };
-    token = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(token);
-  }, [playing, thumbnail, presetId, duration, initial]);
-  const cw = portrait ? 675 : 1200,
-    ch = portrait ? 1200 : 675;
-  const crop = thumbnail ? thumbnailCrop[presetId] : undefined;
-  const showsPhoto = backdrop && (values?.surface ?? preset.defaultProps.surface) === 'transparent';
-  return (
-    <div
-      ref={element}
-      className={`preset-preview ${portrait ? 'portrait' : 'landscape'} ${className}`}
-      style={{ aspectRatio: `${cw}/${ch}` }}
-      aria-label={`${preset.name}动态预览`}
-    >
-      {width > 0 && (
-        <div
-          className="preset-preview-stage"
-          style={{ width: cw, height: ch, transform: `scale(${width / cw})` }}
-        >
-          {showsPhoto && (
-            <img
-              src={backdrop}
-              alt=""
-              style={{ width: cw, height: ch, objectFit: 'cover', filter: 'brightness(.72)' }}
-            />
-          )}
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              transformOrigin: '0 0',
-              transform: crop
-                ? `translate(${cw * (0.5 - crop.zoom * crop.x)}px, ${ch * (0.5 - crop.zoom * crop.y)}px) scale(${crop.zoom})`
-                : undefined,
-            }}
-          >
-            <PresetFrame
-              presetId={presetId}
-              frame={frame}
-              fps={30}
-              duration={duration}
-              width={cw}
-              height={ch}
-              props={values}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-type ParameterValue = string | number | boolean;
-function ParameterField({
-  parameter,
-  value,
-  onChange,
-  commitOnBlur = false,
-  disabled = false,
-}: {
-  parameter: PresetParameter;
-  value: unknown;
-  onChange: (key: string, value: ParameterValue) => void;
-  commitOnBlur?: boolean;
-  disabled?: boolean;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const raw = String(value ?? ''),
-    display = draft ?? raw,
-    t = parameter.type;
-  const parse = (s: string): ParameterValue | null => {
-    if (t !== 'number') return s;
-    if (s.trim() === '' || !Number.isFinite(Number(s))) return null;
-    return Math.max(parameter.min ?? -Infinity, Math.min(parameter.max ?? Infinity, Number(s)));
-  };
-  const change = (s: string) => {
-    if (commitOnBlur || t === 'number') setDraft(s);
-    const parsed = parse(s);
-    if ((!commitOnBlur || t === 'select') && parsed !== null && String(parsed) !== raw)
-      onChange(parameter.key, parsed);
-    if (t === 'select') setDraft(null);
-  };
-  const blur = (s: string) => {
-    const parsed = parse(s);
-    if (draft !== null && parsed !== null && String(parsed) !== raw) onChange(parameter.key, parsed);
-    setDraft(null);
-  };
-  const attributes = {
-    disabled,
-    'aria-label': parameter.label,
-    value: display,
-    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-      change(e.currentTarget.value),
-    onBlur: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-      blur(e.currentTarget.value),
-  };
-  return (
-    <label className={`preset-field ${t === 'color' ? 'color-field' : ''}`}>
-      <span>{parameter.label}</span>
-      {t === 'boolean' ? (
-        <input
-          disabled={disabled}
-          type="checkbox"
-          checked={value === true}
-          aria-label={parameter.label}
-          onChange={(e) => onChange(parameter.key, e.currentTarget.checked)}
-        />
-      ) : t === 'select' ? (
-        <select {...attributes}>
-          {parameter.options?.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      ) : t === 'text' ? (
-        <textarea {...attributes} rows={parameter.key === 'text' ? 2 : 1} maxLength={500} />
-      ) : (
-        <div className="preset-value">
-          <input {...attributes} type={t} min={parameter.min} max={parameter.max} step={parameter.step} />
-          {t === 'color' && <span>{display.toUpperCase()}</span>}
-        </div>
-      )}
-    </label>
-  );
-}
-export function ParameterControls({
-  parameters,
-  values,
-  onChange,
-  commitOnBlur = false,
-  disabled = false,
-}: {
-  parameters: PresetParameter[];
-  values: Record<string, unknown>;
-  onChange: (key: string, value: ParameterValue) => void;
-  commitOnBlur?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="preset-controls">
-      {parameters.map((parameter) => (
-        <ParameterField
-          key={parameter.key}
-          parameter={parameter}
-          value={values[parameter.key]}
-          onChange={onChange}
-          commitOnBlur={commitOnBlur}
-          disabled={disabled}
-        />
-      ))}
-    </div>
-  );
-}
-export function PresetControls({
-  presetId,
-  values,
-  onChange,
-  commitOnBlur = false,
-  disabled = false,
-}: {
-  presetId: string;
-  values: Record<string, unknown>;
-  onChange: (key: string, value: ParameterValue) => void;
-  commitOnBlur?: boolean;
-  disabled?: boolean;
-}) {
-  const preset = getPreset(presetId);
-  return preset ? (
-    <ParameterControls
-      parameters={preset.parameters}
-      values={{ ...preset.defaultProps, ...values }}
-      onChange={onChange}
-      commitOnBlur={commitOnBlur}
-      disabled={disabled}
-    />
-  ) : null;
-}
+export { ParameterControls, PresetControls, PresetPreview, type ParameterValue };
 
 // Transport only. Downloaded modules never execute in the workbench React tree.
 function ComponentPreview({
@@ -457,22 +228,17 @@ export function ResourceLibrary({
   const isComponent = category === 'components',
     isStock = category === 'stock',
     q = query.trim().toLocaleLowerCase();
-  const items = presetCatalog.filter(
-    (p) =>
-      (category === 'all' ||
-        category === p.category ||
-        (category === 'favorites' && favorites.includes(p.id))) &&
-      [p.name, p.description, ...p.keywords, p.id].join(' ').toLocaleLowerCase().includes(q),
+  const items = useMemo(
+    () => filterPresets(query, { category, favoriteIds: favorites }),
+    [query, category, favorites],
   );
-  const projectItems = components.filter((c) =>
-    [c.name, c.pack?.name, c.pack?.author].join(' ').toLocaleLowerCase().includes(q),
+  const projectItems = useMemo(() => filterProjectComponents(components, query), [components, query]);
+  const stockGroups = useMemo(() => filterStudioMediaByKind(stockMedia, query), [stockMedia, query]);
+  const stockItems = useMemo(
+    () => [...stockGroups.visual, ...stockGroups.audio],
+    [stockGroups],
   );
-  const stockItems = stockMedia.filter((a) =>
-    [a.name, a.kind === 'audio' ? '声音 音频 音乐 音效' : '图片 摄影', a.source?.provider]
-      .join(' ')
-      .toLocaleLowerCase()
-      .includes(q),
-  );
+  const activeHitCount = isStock ? stockItems.length : isComponent ? projectItems.length : items.length;
   const stock = stockItems.find((a) => a.id === stockId) ?? stockItems[0];
   const preset = items.find((p) => p.id === selected) ?? items[0],
     component = projectItems.find((c) => c.id === componentId) ?? projectItems[0];
@@ -591,7 +357,7 @@ export function ResourceLibrary({
       </nav>
       <section className="resource-browser">
         <div className="resource-browser-head">
-          <div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
             <h3>
               {isStock
                 ? '摄影与声音'
@@ -601,12 +367,17 @@ export function ResourceLibrary({
                     ? '收藏的素材'
                     : presetCategories.find((c) => c.id === category)?.name}
             </h3>
+            {q && (
+              <span className="resource-hit-badge" role="status">
+                命中 {activeHitCount} 项
+              </span>
+            )}
           </div>
           <label className="resource-search">
             <Search size={14} />
             <input
               aria-label="搜索素材库"
-              placeholder="搜索名称、用途…"
+              placeholder="搜索名称、用途、关键词…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -614,23 +385,59 @@ export function ResourceLibrary({
         </div>
         <div className="resource-browser-scroll">
           {isStock && stockItems.length > 0 ? (
-            <div className="resource-grid">
-              {stockItems.map((a) => (
-                <button
-                  className={`resource-card stock-card ${a.id === stock?.id ? 'selected' : ''}`}
-                  key={a.id}
-                  onClick={() => setStockId(a.id)}
-                  aria-pressed={a.id === stock?.id}
-                >
-                  <div className="stock-thumb">
-                    {a.kind === 'audio' ? <StockWave asset={a} /> : <img alt={a.name} src={media(a, true)} />}
+            <div className="resource-stock-sections">
+              {stockGroups.visual.length > 0 && (
+                <section className="resource-stock-group">
+                  <div className="resource-stock-group-head">
+                    <span>随附摄影与环境底板</span>
+                    <small>{stockGroups.visual.length}</small>
                   </div>
-                  <div className="resource-card-caption">
-                    <b>{a.name}</b>
-                    <small>{a.kind === 'audio' ? `${a.duration.toFixed(1)}s` : '摄影'}</small>
+                  <div className="resource-grid">
+                    {stockGroups.visual.map((a) => (
+                      <button
+                        className={`resource-card stock-card ${a.id === stock?.id ? 'selected' : ''}`}
+                        key={a.id}
+                        onClick={() => setStockId(a.id)}
+                        aria-pressed={a.id === stock?.id}
+                      >
+                        <div className="stock-thumb">
+                          <img alt={a.name} src={media(a, true)} />
+                        </div>
+                        <div className="resource-card-caption">
+                          <b>{a.name}</b>
+                          <small>摄影底板</small>
+                        </div>
+                      </button>
+                    ))}
                   </div>
-                </button>
-              ))}
+                </section>
+              )}
+              {stockGroups.audio.length > 0 && (
+                <section className="resource-stock-group">
+                  <div className="resource-stock-group-head">
+                    <span>随附音效与氛围音</span>
+                    <small>{stockGroups.audio.length}</small>
+                  </div>
+                  <div className="resource-grid">
+                    {stockGroups.audio.map((a) => (
+                      <button
+                        className={`resource-card stock-card ${a.id === stock?.id ? 'selected' : ''}`}
+                        key={a.id}
+                        onClick={() => setStockId(a.id)}
+                        aria-pressed={a.id === stock?.id}
+                      >
+                        <div className="stock-thumb">
+                          <StockWave asset={a} />
+                        </div>
+                        <div className="resource-card-caption">
+                          <b>{a.name}</b>
+                          <small>{a.duration.toFixed(1)}s · 音频</small>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           ) : isComponent && projectItems.length > 0 ? (
             <div className="component-library-list">
@@ -651,7 +458,7 @@ export function ResourceLibrary({
                 </button>
               ))}
             </div>
-          ) : !isComponent && items.length > 0 ? (
+          ) : !isComponent && !isStock && items.length > 0 ? (
             <div className="resource-grid">
               {items.map((item) => (
                 <button
@@ -683,23 +490,30 @@ export function ResourceLibrary({
               {isComponent ? <Code2 size={24} /> : <Search size={24} />}
               <b>
                 {q
-                  ? '没有匹配的素材'
+                  ? `没有找到匹配「${query.trim()}」的素材`
                   : isStock
                     ? '当前没有随附媒体'
                     : isComponent
                       ? '项目中还没有代码组件'
                       : '还没有收藏素材'}
               </b>
-              <button
-                className="button subtle"
-                onClick={() =>
-                  onGenerate(
-                    `为当前工程创作${query || '一段可编辑的画面包装'}。按照片头与字幕包装规范，结合工程的叙事与画幅选择方案，完成后查看实际预览帧。`,
-                  )
-                }
-              >
-                让 Agent 创作 <ArrowUpRight size={13} />
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                {q && (
+                  <button className="button subtle" onClick={() => setQuery('')}>
+                    清空搜索
+                  </button>
+                )}
+                <button
+                  className="button subtle"
+                  onClick={() =>
+                    onGenerate(
+                      `为当前工程创作${query || '一段可编辑的画面包装'}。按照片头与字幕包装规范，结合工程的叙事与画幅选择方案，完成后查看实际预览帧。`,
+                    )
+                  }
+                >
+                  让 Agent 创作 <ArrowUpRight size={13} />
+                </button>
+              </div>
             </div>
           )}
         </div>
