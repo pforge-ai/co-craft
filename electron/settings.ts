@@ -30,6 +30,7 @@ export const defaults: Settings = {
   glass: true,
   allowShell: false,
   allowNetwork: false,
+  mcpBridgeEnabled: false,
 };
 export class SettingsStore {
   private queue: Promise<unknown> = Promise.resolve();
@@ -193,7 +194,7 @@ export class SettingsStore {
   save(input: Partial<Settings>) {
     const work = this.queue.then(async () => {
       const raw = await this.raw();
-      for (const key of ['theme', 'glass', 'allowShell', 'allowNetwork'] as const)
+      for (const key of ['theme', 'glass', 'allowShell', 'allowNetwork', 'mcpBridgeEnabled'] as const)
         if (input[key] !== undefined) raw[key] = input[key];
       const encrypt = async (s: string) => {
         if (!(await safeStorage.isAsyncEncryptionAvailable()))

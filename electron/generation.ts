@@ -825,28 +825,56 @@ export class GenerationService {
       } else {
         const sizeVal = dashscopeSize(req.size || p.size);
         if (/^qwen-image/i.test(model.modelId)) {
-          dsRes = await jsonRequest(
-            provider,
-            'services/aigc/multimodal-generation/generation',
-            {
-              model: model.modelId,
-              input: {
-                messages: [
-                  {
-                    role: 'user',
-                    content: [...(dataUri ? [{ image: dataUri }] : []), { text: req.prompt }],
+          try {
+            dsRes = await jsonRequest(
+              provider,
+              'services/aigc/multimodal-generation/generation',
+              {
+                model: model.modelId,
+                input: {
+                  messages: [
+                    {
+                      role: 'user',
+                      content: [...(dataUri ? [{ image: dataUri }] : []), { text: req.prompt }],
+                    },
+                  ],
+                },
+                parameters: {
+                  ...parameters(p, ['seed', 'watermark', 'prompt_extend', 'negative_prompt']),
+                  n: 1,
+                  ...(!reference && sizeVal ? { size: sizeVal } : {}),
+                },
+              },
+              signal,
+              true,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            // qwen-image-plus / qwen-image on some DashScope endpoints serve under text2image/image-synthesis (async)
+            if (!reference && /(404|Model not exist|InvalidParameter)/i.test(msg)) {
+              dsRes = await jsonRequest(
+                provider,
+                'services/aigc/text2image/image-synthesis',
+                {
+                  model: model.modelId,
+                  input: {
+                    prompt: req.prompt,
+                    ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
                   },
-                ],
-              },
-              parameters: {
-                ...parameters(p, ['seed', 'watermark', 'prompt_extend', 'negative_prompt']),
-                n: 1,
-                ...(!reference && sizeVal ? { size: sizeVal } : {}),
-              },
-            },
-            signal,
-            true,
-          );
+                  parameters: {
+                    ...parameters(p, ['seed', 'watermark', 'prompt_extend']),
+                    n: 1,
+                    ...(sizeVal ? { size: sizeVal } : {}),
+                  },
+                },
+                signal,
+                true,
+                { 'X-DashScope-Async': 'enable' },
+              );
+            } else {
+              throw err;
+            }
+          }
         } else if (/^wanx/i.test(model.modelId)) {
           dsRes = await jsonRequest(
             provider,

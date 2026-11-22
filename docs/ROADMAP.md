@@ -1,6 +1,6 @@
 # CoCraft 迭代与重构计划（ROADMAP）
 
-更新日期：2026 年 11 月 22 日（完成 Route C 全部三波稳定与还债计划：Wave A 安全封口 + Wave B 创作者交付信任与专业 NLE 对齐 + Wave C 统一资产引擎、App.tsx 拆分、CSS 去债与 1080×720 布局打磨，打包版 8 套验证全绿）。
+更新日期：2026 年 11 月 22 日（完成专业 NLE 关键帧与音画分离、PBR 3D + RoughJS 确定性手绘引擎升级、内置受控本地 MCP 服务端，并通过 MCP 驱动真实云端模型 `wan2.6-t2v + qwen3-tts-flash + deepseek-flash` 从零制作导出 1080p 导演剪辑版短片《光，没有时间》）。
 
 遵循小时级可运行、可演示、可验证增量交付约定。每次交付包含实际构建、可复现步骤、自动化与真机验证结果、已知边界和下一项最小目标。
 
@@ -96,18 +96,32 @@
   - **2. 根治卡片叠压、锚点悬空、元数据失准与分区冲突**：新增纯布局与格式模块 [src/lib/canvasLayout.ts](../src/lib/canvasLayout.ts)，自动排格严格避让已保存位置与折叠卡叠（并自动拆解历史叠压坐标），精准匹配 `162px` 卡片渲染高度消除底端连线白点悬空，图片显示 `SVG`/`宽×高` 而非误标 `8.0s`、剥离重复时长与后缀，首行起始纵坐标留足 `104px` 让首行分组标题不再吞并「画布资产」分区栏；右下角新增一键「整理画布排版（Tidy Up）」。
   - **3. 画布与资产仓库解耦、分组双击改名/折叠卡叠与 `Space` 灯箱快看**：`Project` 新增可撤销持久化字段 `canvasHiddenNodeIds`、`CanvasGroup` 新增 `collapsed`，支持按「全部 / 在用 / 仅画面」筛选、单选/多选「移出画布（保留工程资产）」与一键放回；分组支持双击内联改名与一键折叠为三图拼接紧凑卡叠；新增 [src/components/CanvasQuickLook.tsx](../src/components/CanvasQuickLook.tsx)，选中卡片轻按 `Space` 或双击画面即开大图/视频/音频波形快看并支持 `← →` 切换。
   - **4. 打包版全量验收**：`test:unit`、画布 B 方案 7 项打包专项验证（含静默态/折叠卡叠/`Space` 灯箱实拍复审，0 console/page errors）、Wave A、Wave C、`test:v04`（`824,029 bytes / 5.01s` MP4）与 `test:redblue` 全部 PASS。
+- **v0.5.8 Milestone 1 — 专业 NLE 关键帧缓动、人声自动闪避、J/L Cut 音画分离与轨道独奏（已通过打包版真机 MP4 解码验收 ✅，耗时约 24 分钟）**：
+  - **1. 帧级关键帧引擎（[src/core/keyframes.ts](../src/core/keyframes.ts)）**：支持 `x / y / scale / rotation / opacity / volume / cameraYaw / cameraPitch / explode` 9 类属性与 `linear / ease-in / ease-out / ease-in-out / hold` 5 种缓动曲线，刀片分割自动在切口插值保连续，复合资产跨帧率等比缩放。
+  - **2. 属性栏与时间线全链路交互**：新增 [src/components/KeyframeSection.tsx](../src/components/KeyframeSection.tsx)（订阅 `PlayheadClock` 零卡顿、`◀ F<n> ▶` 跳帧步进、SVG 实时曲线预览、一键 `慢推镜 / 缓拉镜 / 横移 / 淡入淡出` 与 `人声闪避 Auto-Duck`），时间线渲染可点击跳转与左右拖拽改时的 `.clip-kf-diamond` 菱形关键帧，属性栏调节已有关键帧属性自动在当前帧写入关键帧。
+  - **3. J/L Cut 音画分离与轨道独奏 (`S`)**：`detachAudioFromClipOperations` 一键静音 V1 视频原声并在 A1 生成帧对齐 `timeline` 独立音频片段（同步迁移 `volume` 关键帧，支持属性栏与 `⌘K` 触发）；轨道头新增 `S` 独奏开关（非独奏轨灰显，导出预检主动提示 `solo-tracks-active`），并将 `.track-labels` 扩宽至 `146px` 消除标签截断。
+  - **4. 打包版真机 MP4 解码验收**：实机渲染 MP4 经 `ffmpeg` 逐帧核验 `F0 RGB(17,22,28) -> F45 RGB(32,103,252)` 淡入关键帧动画及 `BGM pre=-29dB -> duck=-38.5dB (-9.5dB) -> recover=-29dB` 真实人声闪避降幅，5/5 全绿。
+- **v0.5.9 Milestone 2 — Three.js PBR `RoomEnvironment` 棚光、实时 3D 舞台运镜、RoughJS 手绘引擎与画布解耦（已通过打包版视觉验收 ✅，耗时约 20 分钟）**：
+  - **1. Three.js PBR 影棚环境光与精密建模**：[src/composition/ThreeStage.tsx](../src/composition/ThreeStage.tsx) 接入 `PMREMGenerator + RoomEnvironment` IBL 环境反射与 `studio / dramatic / soft` 三档布光预设，卸载严格释放 `envRT / envScene / pmrem` 零 WebGL 泄漏，并升级同轴光学组件为高分段金属环与高折射晶体玻璃材质、避免背面遮挡与底栏字幕撞车。
+  - **2. 实时 3D 舞台交互运镜联动关键帧**：修复 [src/components/StageOverlay.tsx](../src/components/StageOverlay.tsx) 拖拽 3D 视角时未推送 `onLiveTransform` 导致画面不跟手的问题，同步接入 `soloTracks` 过滤与已有关键帧自动更新。
+  - **3. RoughJS 确定性手绘白板引擎**：新增 [src/composition/RoughPrimitives.tsx](../src/composition/RoughPrimitives.tsx)（固定 `seed` 导出零帧闪烁 + `progress` 逐笔绘制动画），通过 `electron/code.ts` 与 `Film.tsx` 开放 `cocraft/rough` 与 `roughjs` 给用户/Agent TSX 组件；重写 `tinycharts-state` 替换损坏 SVG 滤镜并新增 `whiteboard-sketch` 预设（含底部字幕安全区）。
+  - **4. `CreateCanvas.tsx` 渐进解耦**：抽离 [src/components/CanvasWiresLayer.tsx](../src/components/CanvasWiresLayer.tsx) 与 [src/components/CanvasUtilityControls.tsx](../src/components/CanvasUtilityControls.tsx)，零回归通过画布与 Wave C 打包验收。
+- **v0.6.0 Milestone 3 — 内置受控本地 MCP 服务端、DashScope 生图回退热修与真实云端模型短片《光，没有时间》导演剪辑版验收（已通过打包版与真机实模验收 ✅，耗时约 35 分钟）**：
+  - **1. 内置本地 MCP 服务**：新增 [electron/mcp-bridge.ts](../electron/mcp-bridge.ts) 与独立零依赖 stdio 服务端 [scripts/cocraft-mcp.mjs](../scripts/cocraft-mcp.mjs)（22 个工具覆盖工程读写、原子编辑、预设、关键帧、J/L 分离、TSX 编译验画、预览 PNG 帧、预检、MP4 导出、多模态模型生成与内置 Agent 协作）；设置页「通用」新增默认关闭的开关、实时端口状态与一键复制客户端配置；`npm run smoke:mcp` 7/7 通过（含 `0600` 权限、错误 Token 401 拒绝、零 API Key 泄露、真机 PNG 预览与 MP4 导出）。
+  - **2. 实模联调发现并修复 DashScope 生图接口回退**：[electron/generation.ts](../electron/generation.ts) 为 `qwen-image-*` 增加 `multimodal-generation` 404 时自动回退 `text2image/image-synthesis` 异步路径的兼容保护。
+  - **3. 真实云端模型从零制作短片验收**：通过内置 MCP 在独立新工程中实机调用 **`wan2.6-t2v`**（5.01s 暗房光学棱镜折射视频）、**`qwen3-tts-flash`**（4 段真实中文配音）与 **`deepseek-flash`** 内置 Agent，结合定制编译的闵可夫斯基时空光锥、Three.js PBR 迈克尔逊光学干涉仪、暗曜石 RoughJS 物理三联图、双光圈光子落版尾卡及四段底乐 Auto-Ducking，逐帧视觉复审 5 幕后导出 `36.885s / 1920×1080 / 30fps / 16.88 MB` 真实 H.264/AAC MP4（`light-has-no-time-directors-cut-1080p.mp4`）。
 
 ---
 
-## Alpha 用户演示与真实模型回片
+## Alpha 与实机真实模型回片记录
 
-- 11 月 18 日，用本机 0.4.0 打包应用手动选择 `wan2.6-i2v`，将内置电车参考图提交给阿里百炼。远端作业成功，CoCraft 下载并登记了 1280×720、30 fps、约 5 秒的 H.264/AAC 素材。通过后台作业面板添加到时间线后，实机播放并核对了 150 帧片段。此次实测覆盖图生视频。[回执摘要](../artifacts/alpha-intro/source/video-job.json) · [生成结果](../artifacts/alpha-intro/media/wan.mp4)
-- `城市清晨` 的同一脚本在创造画布拆为三镜后进入剪辑工作台；实录验证了字幕编辑、项目 Skill 的保存、试剪分支独立换序、跨项目个人库引入与 MP4 导出。[实录与片源](../artifacts/alpha-intro/README.md)
+- **11 月 22 日 · 《光，没有时间 · 相对论短片》（导演剪辑版，经内置 MCP 实模制作）**：在打包版 `CoCraft.app` 上通过本地 MCP 驱动 `wan2.6-t2v` 真实文生视频、`qwen3-tts-flash` 四段真实配音、`deepseek-flash` 内置 Agent 与四套自定义 Remotion/Three.js/RoughJS 组件，完成 5 幕 36.9s 1080p H.264/AAC 成片导出与 5 帧视觉复审。
+- **11 月 18 日 · Alpha 用户回片**：用本机 0.4.0 打包应用手动选择 `wan2.6-i2v` 生成 1280×720 / 5s H.264/AAC 素材并完成 `城市清晨` 全流程实录。[回执摘要](../artifacts/alpha-intro/source/video-job.json) · [生成结果](../artifacts/alpha-intro/media/wan.mp4) · [实录与片源](../artifacts/alpha-intro/README.md)
 
-## 下一阶段演进方向（路线 C · Wave C 最小目标）
+## 下一阶段最小目标
 
-1. **Wave C · 前端架构与 CSS 减债**：合并 `AssetExplorer` 与 `ResourceLibrary` 共享目录索引引擎、拆分 `src/App.tsx`、收敛 `styles.css` + `workbench.css` 重叠/死代码与统一 `--z-*` 层级令牌，优化 `1080×720` 笔记本视口布局预设。
-2. **待稳定化完成后再推进（暂缓）**：PBR `RoomEnvironment` 环境反射、`roughjs` 矢量手绘与关键帧曲线编辑器。
+1. **多轨自由增删与关键帧时间线曲线展开抽屉**：支持在时间线片段下方就地展开关键帧值曲线（贝塞尔手柄微调），以及从固定四轨演进到自由命名增删的多层视音频轨。
+2. **安装包分发与 `CreateCanvas.tsx` 持续拆解**：提供 `.dmg` 一键打包脚本，并继续将 `CreateCanvas.tsx` 剩余节点卡片/弹窗拆分为独立模块。
 
 ---
 
@@ -136,18 +150,6 @@
 | **3A. Three.js（`@remotion/three`）3D 舞台与 `.glb/.gltf` 资产支持** | 集成 `three`，实现帧级确定性 `ThreeStage.tsx`（同时支持实时预览、预设缩略卡、自定义代码组件与无头导出）及 `.glb/.gltf` 模型导入、包围盒归一化与质心径向爆炸拆解 | **已验收**（自定义 Three.js 组件编译验画 + H.264 MP4 实测导出通过） |
 | **3B. 「8 合 4」内置创造 Skill 与精选演示装置库** | 落地 `cocraft-seecode`、`cocraft-tinycharts`、`cocraft-anatomy`、`cocraft-teardown-3d` 四大内置 `SKILL.md` 及对应内置可调舞台装置 + `ScreenFocusRig` 录屏平滑推拉聚焦窗；支持全局与项目级外部 `SKILL.md` 发现 | **已验收**（`v03-full-check.mjs` 与 `v03-three-stage.png` 验证通过） |
 | **3C. 3D 机位预演反哺生成（Previs-to-Video）与 Recipe 复用** | 舞台顶栏内置「捕获当前帧为构图参考真值」（`stage.captureReference`），一键将任意 3D 机位或合成画面定格为项目主体参考图资产，直接用于后续分镜图像/视频生成 | **已验收**（`stage.captureReference` 实测渲染入库通过） |
-
----
-
-## Alpha 用户演示与真实模型回片
-
-- 11 月 18 日，用本机 0.4.0 打包应用手动选择 `wan2.6-i2v`，将内置电车参考图提交给阿里百炼。远端作业成功，CoCraft 下载并登记了 1280×720、30 fps、约 5 秒的 H.264/AAC 素材。通过后台作业面板添加到时间线后，实机播放并核对了 150 帧片段。此次实测覆盖图生视频。[回执摘要](../artifacts/alpha-intro/source/video-job.json) · [生成结果](../artifacts/alpha-intro/media/wan.mp4)
-- `城市清晨` 的同一脚本在创造画布拆为三镜后进入剪辑工作台；实录验证了字幕编辑、项目 Skill 的保存、试剪分支独立换序、跨项目个人库引入与 MP4 导出。[实录与片源](../artifacts/alpha-intro/README.md)
-
-## 下一阶段演进方向（v0.4 最小目标）
-
-1. **交互式 3D 轨道球操控器（Orbit Gizmo）与关键帧曲线编辑器**：在暂停态预览舞台上直接鼠标拖拽旋转 Three.js 3D 相机视角并写入关键帧曲线。
-2. **多轨自由增删与 J/L Cut 音画分离微调**：从固定四类语义轨道演进到可自由命名增删的多层视音频轨道与独立音频交叉过渡手柄。
 
 ---
 

@@ -18,6 +18,8 @@
     "test:ui": "node scripts/functional-check-v2.mjs",
     "smoke:agent": "node scripts/agent-smoke.mjs",
     "smoke:models": "node scripts/generation-smoke.mjs",
+    "smoke:mcp": "node scripts/mcp-smoke.mjs",
+    "mcp": "node scripts/cocraft-mcp.mjs",
     "check:materials": "node scripts/material-check.mjs"
   },
   "dependencies": {
@@ -75,6 +77,13 @@
       {
         "from": "dist/render-bundle",
         "to": "render-bundle"
+      },
+      {
+        "from": "scripts",
+        "to": "mcp",
+        "filter": [
+          "cocraft-mcp.mjs"
+        ]
       },
       {
         "from": "node_modules/@remotion/compositor-darwin-arm64",

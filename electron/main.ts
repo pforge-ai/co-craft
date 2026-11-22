@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeTheme, nativeImage } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, dialog, Menu, shell, nativeTheme, nativeImage } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname, resolve, basename } from 'node:path';
 import { mkdir, readFile, writeFile, readdir, rm, stat, rename } from 'node:fs/promises';
@@ -15,15 +15,19 @@ import { createDemo } from './demo';
 import { importMedia } from './media';
 import { compileComponent } from './code';
 import { GlobalVault } from './vault';
+import { McpBridgeServer } from './mcp-bridge';
 import {
   newClip,
   uid,
   clone,
   applyOperations,
+  detachAudioFromClipOperations,
   parseSRTText,
   preflightSequence,
   inferDefaultAudioAttachMode,
 } from '../src/core/project';
+import { createPresetClip, presetCatalog } from '../src/core/presets';
+import { buildAudioDuckingKeyframes, buildKenBurnsKeyframes } from '../src/core/keyframes';
 import { friendlySkillTitle } from '../src/core/taxonomy';
 import type {
   Asset,
@@ -59,7 +63,8 @@ let win: BrowserWindow,
   jobs: JobService,
   generation: GenerationService,
   agents: AgentHost,
-  globalVault: GlobalVault;
+  globalVault: GlobalVault,
+  mcpBridge: McpBridgeServer;
 
 const sanitizeFileName = (raw: string, fallback = 'export') =>
   String(raw || fallback)
@@ -617,8 +622,20 @@ async function handle(method: string, arg: any = {}) {
     case 'settings.save': {
       const s = await settings.save(arg);
       nativeTheme.themeSource = s.theme;
+      if (s.mcpBridgeEnabled) {
+        await mcpBridge.start().catch((err) => console.error('启动本地 MCP 服务失败', err));
+      } else {
+        await mcpBridge.stop().catch(() => {});
+      }
       emit('settings', s);
       return s;
+    }
+    case 'mcp.status':
+      return { ...mcpBridge.status(), clientConfigJson: mcpBridge.clientConfigJson() };
+    case 'mcp.copyConfig': {
+      const json = mcpBridge.clientConfigJson();
+      clipboard.writeText(json);
+      return { copied: true, clientConfigJson: json };
     }
     case 'export.preflight': {
       const p = await store.project();
@@ -1034,6 +1051,484 @@ async function createWindow() {
   else await win.loadFile(join(here, 'renderer/index.html'));
 }
 
+async function handleMcpAction(action: string, params: Record<string, unknown>): Promise<unknown> {
+  const target = store;
+  switch (action) {
+    case 'status': {
+      const p = await target.project();
+      return {
+        appVersion: app.getVersion(),
+        mcpBridge: mcpBridge.status(),
+        activeProject: {
+          id: p.id,
+          name: p.name,
+          path: target.path,
+          revision: p.revision,
+          sequences: p.sequences.map((s) => ({
+            id: s.id,
+            name: s.name,
+            width: s.width,
+            height: s.height,
+            fps: s.fps,
+            clipCount: s.clips.length,
+            durationFrames: Math.max(0, ...s.clips.map((c) => c.start + c.duration)),
+          })),
+          assetCount: p.assets.length,
+          componentCount: p.components.length,
+        },
+        runningJobs: jobs.jobs.filter((j) => j.status === 'running' || j.status === 'queued').length,
+      };
+    }
+    case 'projects.list':
+      return await library.list();
+    case 'projects.create': {
+      const name = String(params.name || 'MCP 创作工程').trim();
+      store = await library.create(name);
+      const envelope = await store.envelope();
+      await changed(store, envelope);
+      return {
+        id: envelope.project.id,
+        name: envelope.project.name,
+        path: store.path,
+        revision: envelope.project.revision,
+        sequenceId: envelope.project.sequences[0]?.id,
+      };
+    }
+    case 'projects.open': {
+      const rawPath = String(params.path || '').trim();
+      if (!rawPath) throw new Error('请提供要打开的工程路径 path');
+      store = await library.open(extname(rawPath) === '.json' ? dirname(rawPath) : rawPath);
+      const envelope = await store.envelope();
+      await changed(store, envelope);
+      return {
+        id: envelope.project.id,
+        name: envelope.project.name,
+        path: store.path,
+        revision: envelope.project.revision,
+        sequenceId: envelope.project.sequences[0]?.id,
+      };
+    }
+    case 'project.read': {
+      const p = await target.project();
+      return {
+        ...p,
+        projectPath: target.path,
+      };
+    }
+    case 'project.edit': {
+      const baseRevision = Number(params.baseRevision);
+      if (!Number.isFinite(baseRevision)) throw new Error('baseRevision 必须是数字');
+      const name = String(params.name || 'MCP 编辑').trim();
+      const operations = Array.isArray(params.operations) ? (params.operations as EditOperation[]) : [];
+      if (!operations.length) throw new Error('operations 不能为空');
+      for (const op of operations) {
+        if (op.type === 'addAsset' || op.type === 'relinkAsset') {
+          throw new Error('请使用 media.import 或 studio.prepare 导入素材，禁止直接构造本地路径');
+        }
+      }
+      if (operations.some((op) => op.type === 'putComponent')) {
+        await jobs.validateComponents(applyOperations(await target.project(), operations, 'agent'), operations);
+      }
+      const envelope = await target.edit({ baseRevision, name, operations, author: 'agent' });
+      await changed(target, envelope);
+      return {
+        revision: envelope.project.revision,
+        sequenceCount: envelope.project.sequences.length,
+        clipCount: envelope.project.sequences[0]?.clips.length ?? 0,
+      };
+    }
+    case 'project.undo': {
+      const envelope = await target.undo();
+      await changed(target, envelope);
+      return { revision: envelope.project.revision };
+    }
+    case 'project.redo': {
+      const envelope = await target.redo();
+      await changed(target, envelope);
+      return { revision: envelope.project.revision };
+    }
+    case 'models.list': {
+      // Security: strictly emit sanitized connection metadata — NEVER raw API keys or credentials.
+      const s = await settings.get();
+      const p = await target.project();
+      const providerById = new Map(s.providers.map((pr) => [pr.id, pr]));
+      return {
+        defaults: s.defaults,
+        projectDefaults: p.modelDefaults || {},
+        models: s.models.map((m) => {
+          const prov = providerById.get(m.providerId);
+          return {
+            id: m.id,
+            name: m.name,
+            modelId: m.modelId,
+            capabilities: m.capabilities,
+            adapter: m.adapter,
+            providerId: m.providerId,
+            providerName: prov?.name || '',
+            protocol: prov?.protocol || '',
+            ready: Boolean(prov && (prov.hasApiKey || !prov.requiresKey)),
+          };
+        }),
+      };
+    }
+    case 'presets.list': {
+      const cat = typeof params.category === 'string' ? params.category : undefined;
+      return presetCatalog
+        .filter((p) => !cat || cat === 'all' || p.category === cat)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          category: p.category,
+          kind: p.kind,
+          durationSeconds: p.durationSeconds,
+          description: p.description,
+          defaultProps: p.defaultProps,
+          parameters: p.parameters,
+        }));
+    }
+    case 'presets.addClip': {
+      const p = await target.project();
+      const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+      const seq = p.sequences.find((s) => s.id === seqId);
+      if (!seq) throw new Error('成片序列不存在');
+      const presetId = String(params.presetId || '').trim();
+      const start = Math.max(0, Math.round(Number(params.start ?? 0)));
+      const overrides =
+        params.props && typeof params.props === 'object' && !Array.isArray(params.props)
+          ? (params.props as Record<string, unknown>)
+          : {};
+      const clip = createPresetClip(presetId, start, seq.fps, overrides, p);
+      if (params.duration !== undefined) {
+        clip.duration = Math.max(1, Math.round(Number(params.duration)));
+      }
+      if (typeof params.name === 'string' && params.name.trim()) clip.name = params.name.trim();
+      if (typeof params.track === 'string' && ['visual', 'overlay', 'caption', 'audio'].includes(params.track)) {
+        clip.track = params.track as typeof clip.track;
+      }
+      if (params.transitionIn && typeof params.transitionIn === 'object') {
+        clip.transitionIn = params.transitionIn as typeof clip.transitionIn;
+      }
+      if (params.keyframes && typeof params.keyframes === 'object') {
+        clip.keyframes = params.keyframes as typeof clip.keyframes;
+      }
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `MCP 添加预设「${clip.name}」`,
+        operations: [{ type: 'addClip', sequenceId: seq.id, clip }],
+        author: 'agent',
+      });
+      await changed(target, envelope);
+      return { revision: envelope.project.revision, clip };
+    }
+    case 'studio.list': {
+      const kind = typeof params.kind === 'string' ? params.kind : undefined;
+      return studioMedia
+        .filter((a) => !kind || a.kind === kind)
+        .map((a) => ({
+          id: a.id,
+          name: a.name,
+          kind: a.kind,
+          duration: a.duration,
+          width: a.width,
+          height: a.height,
+          license: a.source?.license,
+        }));
+    }
+    case 'studio.prepare': {
+      const p = await target.project();
+      const id = String(params.id || '').trim();
+      const seqId =
+        typeof params.sequenceId === 'string' && params.sequenceId
+          ? params.sequenceId
+          : p.sequences[0]?.id || '';
+      const at = params.at !== undefined ? Math.max(0, Math.round(Number(params.at))) : 0;
+      const res = await addStudioAsset(target, studioMedia, id, seqId, at, p.id);
+      await changed(target, res.envelope);
+      const seq = res.envelope.project.sequences.find((s) => s.id === (seqId || res.envelope.project.sequences[0]?.id));
+      const clip = seq?.clips.find((c) => c.id === res.clipId);
+      const asset = clip?.assetId ? res.envelope.project.assets.find((a) => a.id === clip.assetId) : undefined;
+      return {
+        revision: res.envelope.project.revision,
+        clipId: res.clipId,
+        asset,
+        clip,
+      };
+    }
+    case 'clip.applyPresetKeyframes': {
+      const p = await target.project();
+      const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+      const seq = p.sequences.find((s) => s.id === seqId);
+      if (!seq) throw new Error('成片序列不存在');
+      const clip = seq.clips.find((c) => c.id === String(params.clipId || ''));
+      if (!clip) throw new Error('片段不存在');
+      const preset = String(params.preset || '');
+      let nextKf = clip.keyframes;
+      if (preset === 'zoom-in' || preset === 'zoom-out' || preset === 'pan-right') {
+        nextKf = buildKenBurnsKeyframes(clip, preset);
+      } else if (preset === 'auto-duck') {
+        nextKf = buildAudioDuckingKeyframes(seq, clip, {
+          duckVolume: params.duckVolume !== undefined ? Number(params.duckVolume) : undefined,
+          rampFrames: params.rampFrames !== undefined ? Number(params.rampFrames) : undefined,
+        });
+      } else if (preset === 'fade-in-out') {
+        const fadeLen = Math.min(18, Math.max(3, Math.floor(clip.duration / 4)));
+        const end = Math.max(1, clip.duration - 1);
+        nextKf = {
+          ...(clip.keyframes || {}),
+          opacity: [
+            { frame: 0, value: 0, easing: 'ease-out' },
+            { frame: fadeLen, value: 1, easing: 'linear' },
+            { frame: Math.max(fadeLen, end - fadeLen), value: 1, easing: 'ease-in' },
+            { frame: end, value: 0, easing: 'ease-in' },
+          ],
+        };
+      } else {
+        throw new Error(`不支持的关键帧预设：${preset}`);
+      }
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `MCP 应用关键帧预设 (${preset})`,
+        operations: [
+          { type: 'updateClip', sequenceId: seq.id, clipId: clip.id, changes: { keyframes: nextKf } },
+        ],
+        author: 'agent',
+      });
+      await changed(target, envelope);
+      return { revision: envelope.project.revision, clipId: clip.id, keyframes: nextKf };
+    }
+    case 'clip.detachAudio': {
+      const p = await target.project();
+      const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+      const seq = p.sequences.find((s) => s.id === seqId);
+      if (!seq) throw new Error('成片序列不存在');
+      const clip = seq.clips.find((c) => c.id === String(params.clipId || ''));
+      if (!clip) throw new Error('片段不存在');
+      const { operations, audioClipId } = detachAudioFromClipOperations(seq, clip);
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `MCP 分离音画「${clip.name}」`,
+        operations,
+        author: 'agent',
+      });
+      await changed(target, envelope);
+      return { revision: envelope.project.revision, audioClipId };
+    }
+    case 'component.compile': {
+      const p = await target.project();
+      const source = String(params.source || '');
+      if (!source.trim()) throw new Error('source TSX 代码不能为空');
+      const id = String(params.id || uid('component'));
+      const name = String(params.name || 'MCP 自定义组件');
+      const props =
+        params.props && typeof params.props === 'object' && !Array.isArray(params.props)
+          ? (params.props as Record<string, string | number | boolean>)
+          : {};
+      const component = await compileComponent(source, id, name, target.path, props, target.path);
+      const ops: EditOperation[] = [{ type: 'putComponent', component }];
+      let addedClipId: string | undefined;
+      if (params.addClip) {
+        const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+        const seq = p.sequences.find((s) => s.id === seqId);
+        if (!seq) throw new Error('成片序列不存在');
+        const clip = {
+          ...newClip('code', Math.max(0, Math.round(Number(params.start ?? 0)))),
+          name,
+          track: (params.track === 'overlay' ? 'overlay' : 'visual') as 'visual' | 'overlay',
+          duration: Math.max(1, Math.round(Number(params.duration ?? seq.fps * 4))),
+          componentId: component.id,
+          props: { ...props },
+        };
+        addedClipId = clip.id;
+        ops.push({ type: 'addClip', sequenceId: seq.id, clip });
+      }
+      await jobs.validateComponents(applyOperations(p, ops, 'agent'), ops);
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `MCP 编译组件「${name}」`,
+        operations: ops,
+        author: 'agent',
+      });
+      await changed(target, envelope);
+      return {
+        revision: envelope.project.revision,
+        component: { id: component.id, name: component.name, hash: component.hash, props: component.props },
+        clipId: addedClipId,
+      };
+    }
+    case 'media.import': {
+      const paths = Array.isArray(params.paths)
+        ? params.paths.map(String).filter(Boolean)
+        : typeof params.path === 'string' && params.path.trim()
+          ? [params.path.trim()]
+          : [];
+      if (!paths.length) throw new Error('请提供本地文件路径 path 或 paths');
+      const res = await importFiles(
+        paths,
+        Boolean(params.append),
+        typeof params.sequenceId === 'string' ? params.sequenceId : undefined,
+      );
+      return {
+        revision: res.project.revision,
+        assets: res.project.assets.slice(-paths.length),
+      };
+    }
+    case 'media.generate': {
+      const use = String(params.use || '') as 'image' | 'video' | 'speech' | 'transcription';
+      if (!['image', 'video', 'speech', 'transcription'].includes(use)) {
+        throw new Error('use 必须是 image | video | speech | transcription');
+      }
+      const job = await generation.start(
+        target,
+        {
+          use,
+          prompt: String(params.prompt || ''),
+          modelId: typeof params.modelId === 'string' ? params.modelId : undefined,
+          referenceAssetId: typeof params.referenceAssetId === 'string' ? params.referenceAssetId : undefined,
+          assetId: typeof params.assetId === 'string' ? params.assetId : undefined,
+          size: typeof params.size === 'string' ? params.size : undefined,
+          seconds: params.seconds !== undefined ? Number(params.seconds) : undefined,
+          voice: typeof params.voice === 'string' ? params.voice : undefined,
+          language: typeof params.language === 'string' ? params.language : undefined,
+        },
+        { publish: true },
+      );
+      if (params.wait === false) {
+        return { jobId: job.id, status: job.status };
+      }
+      const result = await jobs.wait(job.id);
+      const latest = await target.project();
+      return {
+        jobId: job.id,
+        status: 'completed',
+        revision: latest.revision,
+        asset: result.asset,
+        text: result.text,
+        segments: result.segments,
+      };
+    }
+    case 'preview.frame': {
+      const p = await target.project();
+      const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+      const seq = p.sequences.find((s) => s.id === seqId);
+      if (!seq) throw new Error('成片序列不存在');
+      const frame = Math.max(0, Math.round(Number(params.frame ?? 0)));
+      const scale = Math.max(0.25, Math.min(1, Number(params.scale ?? 0.5)));
+      const outDir = join(target.path, '.cocraft', 'mcp-previews');
+      await mkdir(outDir, { recursive: true });
+      const output = join(outDir, `preview-v${p.revision}-f${frame}-${Date.now()}.png`);
+      const job = await jobs.render(p, seq.id, output, {
+        still: true,
+        frame,
+        scale,
+        silent: true,
+        projectPath: target.path,
+      });
+      await jobs.wait(job.id);
+      const bytes = await readFile(output);
+      return {
+        frame,
+        revision: p.revision,
+        sequenceId: seq.id,
+        width: Math.round(seq.width * scale),
+        height: Math.round(seq.height * scale),
+        path: output,
+        mimeType: 'image/png',
+        base64: bytes.toString('base64'),
+      };
+    }
+    case 'export.preflight': {
+      const p = await target.project();
+      const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+      const missing = p.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
+      return preflightSequence(p, seqId, missing);
+    }
+    case 'export.start': {
+      const p = await target.project();
+      const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+      const seq = p.sequences.find((s) => s.id === seqId);
+      if (!seq) throw new Error('成片序列不存在');
+      if (!seq.clips.length) throw new Error('先添加一些画面，再导出成片');
+      const missing = p.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
+      const issues = preflightSequence(p, seq.id, missing);
+      const blocker = issues.find((i) => i.severity === 'blocker');
+      if (blocker) throw new Error(`${blocker.title}：${blocker.detail}`);
+      const scale = Math.max(0.25, Math.min(2, Number(params.scale ?? 1)));
+      const customName =
+        typeof params.fileName === 'string' && params.fileName.trim()
+          ? sanitizeFileName(params.fileName, 'film')
+          : `${sanitizeFileName(seq.name, 'film')}-v${p.revision}-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      const output = join(target.path, 'exports', customName.endsWith('.mp4') ? customName : `${customName}.mp4`);
+      const job = await jobs.render(p, seq.id, output, { scale, projectPath: target.path });
+      if (params.wait === false) {
+        return { jobId: job.id, status: job.status, output };
+      }
+      await jobs.wait(job.id);
+      return { jobId: job.id, status: 'completed', output, issues };
+    }
+    case 'agent.run': {
+      const prompt = String(params.prompt || '').trim();
+      if (!prompt) throw new Error('prompt 不能为空');
+      const p = await target.project();
+      const seqId = String(params.sequenceId || p.sequences[0]?.id || '');
+      let taskId = typeof params.taskId === 'string' ? params.taskId : '';
+      if (!taskId) {
+        const task: Task = {
+          id: uid('task'),
+          name: `MCP 协同 · ${prompt.slice(0, 18)}`,
+          modelId: typeof params.modelId === 'string' ? params.modelId : undefined,
+          sequenceId: seqId,
+          createdAt: new Date().toISOString(),
+          messages: [],
+          status: 'idle',
+        };
+        await target.saveTask(task);
+        taskId = task.id;
+      }
+      const modelOverride = typeof params.modelId === 'string' ? params.modelId : undefined;
+      await agents.start(
+        target,
+        taskId,
+        prompt,
+        async () => settings.agent(modelOverride, (await target.project()).modelDefaults),
+        typeof params.context === 'string' ? params.context : '',
+        undefined,
+        {
+          thinkingLevel:
+            params.thinkingLevel === 'off' ||
+            params.thinkingLevel === 'low' ||
+            params.thinkingLevel === 'medium' ||
+            params.thinkingLevel === 'high'
+              ? params.thinkingLevel
+              : undefined,
+        },
+      );
+      const timeoutMs = Math.max(10000, Math.min(300000, Number(params.timeoutMs ?? 180000)));
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        await new Promise((r) => setTimeout(r, 400));
+        const tasks = await target.tasks();
+        const cur = tasks.find((t) => t.id === taskId);
+        if (cur && cur.status !== 'running') {
+          const latest = await target.project();
+          const lastAssistant = [...cur.messages].reverse().find((m) => m.role === 'assistant');
+          const toolMessages = cur.messages.filter((m) => m.role === 'tool' && m.tool);
+          return {
+            taskId,
+            status: cur.status,
+            revision: latest.revision,
+            reply: lastAssistant?.text || '',
+            toolCalls: toolMessages.map((m) => ({ name: m.tool, text: m.text.slice(0, 140) })),
+          };
+        }
+      }
+      await agents.stop(taskId);
+      throw new Error(`Agent 运行超时 (${Math.round(timeoutMs / 1000)}s)`);
+    }
+    default:
+      throw new Error(`未知的 MCP 操作：${action}`);
+  }
+}
+
 app
   .whenReady()
   .then(async () => {
@@ -1094,6 +1589,15 @@ app
       globalVault,
       join(root, 'skills'),
     );
+    const mcpScriptPath = app.isPackaged
+      ? join(process.resourcesPath, 'mcp', 'cocraft-mcp.mjs')
+      : resolve(here, '../scripts/cocraft-mcp.mjs');
+    mcpBridge = new McpBridgeServer(root, app.getVersion(), mcpScriptPath, async (action, params) =>
+      handleMcpAction(action, params),
+    );
+    if ((await settings.get()).mcpBridgeEnabled || process.env.COCRAFT_MCP_ENABLED === '1') {
+      await mcpBridge.start().catch((err) => console.error('启动本地 MCP 服务失败', err));
+    }
     ipcMain.handle('cocraft:call', async (event, method, payload) => {
       if (event.sender.id !== win.webContents.id || event.senderFrame !== win.webContents.mainFrame)
         throw new Error('无权限调用应用接口');
@@ -1168,6 +1672,7 @@ app.on('before-quit', (event) => {
   quitting = true;
   event.preventDefault();
   void Promise.allSettled([
+    mcpBridge?.stop(),
     agents?.stopAll(),
     jobs?.shutdownWorkers(),
   ])

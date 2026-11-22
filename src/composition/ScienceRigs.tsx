@@ -476,9 +476,10 @@ export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p 
     .slice(0, 3);
   const callout = String(p.callout || '手绘标注 · 确定性 seed 渲染，导出零闪烁');
   const padX = (portrait ? 56 : 82) * u;
-  const padY = (portrait ? 78 : 64) * u;
+  const padTop = (portrait ? 78 : 60) * u;
+  const padBottom = (portrait ? 185 : 148) * u;
   const svgW = w - padX * 2;
-  const svgH = h * (portrait ? 0.58 : 0.54);
+  const svgH = h * (portrait ? 0.52 : 0.44);
 
   return (
     <div
@@ -486,11 +487,11 @@ export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p 
         position: 'relative',
         width: '100%',
         height: '100%',
-        background: bg,
+        background: dark ? 'radial-gradient(circle at 50% 42%, #172133 0%, #090e18 78%)' : bg,
         color: ink,
         fontFamily: family,
         overflow: 'hidden',
-        padding: `${padY}px ${padX}px`,
+        padding: `${padTop}px ${padX}px ${padBottom}px`,
         boxSizing: 'border-box',
         display: 'flex',
         flexDirection: 'column',
@@ -538,7 +539,7 @@ export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p 
           const count = Math.max(1, cards.length);
           const gap = (portrait ? 52 : 64) * u;
           const cardW = portrait ? svgW * 0.88 : (svgW - gap * (count - 1)) / count;
-          const cardH = portrait ? (svgH - gap * (count - 1)) / count : svgH * 0.66;
+          const cardH = portrait ? (svgH - gap * (count - 1)) / count : svgH * 0.72;
           const x = portrait ? (svgW - cardW) / 2 : idx * (cardW + gap);
           const y = portrait ? idx * (cardH + gap) : (svgH - cardH) / 2;
           const isLast = idx === count - 1;
@@ -564,20 +565,20 @@ export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p 
                 y={y}
                 width={cardW}
                 height={cardH}
-                stroke={isLast ? accent : ink}
-                strokeWidth={3.2 * u}
-                fill={isLast ? `${accent}24` : dark ? '#182131' : '#ffffff'}
+                stroke={isLast ? accent : dark ? '#475569' : ink}
+                strokeWidth={3.0 * u}
+                fill={isLast ? `${accent}24` : dark ? '#131d2f' : '#ffffff'}
                 fillStyle={isLast ? 'hachure' : 'solid'}
                 hachureGap={9 * u}
-                roughness={1.7}
-                bowing={1.3}
+                roughness={1.55}
+                bowing={1.2}
                 progress={cardDraw}
               />
               <RoughCircle
                 seed={300 + idx * 29}
-                cx={x + 42 * u}
-                cy={y + 42 * u}
-                diameter={44 * u}
+                cx={x + 48 * u}
+                cy={y + 48 * u}
+                diameter={48 * u}
                 stroke={accent}
                 strokeWidth={2.5 * u}
                 fill={`${accent}2e`}
@@ -586,8 +587,8 @@ export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p 
                 progress={cardDraw}
               />
               <text
-                x={x + 42 * u}
-                y={y + 50 * u}
+                x={x + 48 * u}
+                y={y + 56 * u}
                 textAnchor="middle"
                 fill={accent}
                 fontFamily={mono}
@@ -595,13 +596,35 @@ export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p 
                 fontWeight={800}
                 opacity={cardDraw}
               >
-                {idx + 1}
+                0{idx + 1}
               </text>
               <text
-                x={x + 28 * u}
-                y={y + cardH * 0.62}
+                x={x + 88 * u}
+                y={y + 55 * u}
+                fill={muted}
+                fontFamily={mono}
+                fontSize={16 * u}
+                letterSpacing={2 * u}
+                opacity={cardDraw * 0.9}
+              >
+                PHASE 0{idx + 1}
+              </text>
+              <RoughLine
+                seed={350 + idx * 17}
+                x1={x + 28 * u}
+                y1={y + 92 * u}
+                x2={x + cardW - 28 * u}
+                y2={y + 92 * u}
+                stroke={isLast ? `${accent}88` : dark ? '#334155' : '#cbd5e1'}
+                strokeWidth={1.8 * u}
+                roughness={1.2}
+                progress={cardDraw}
+              />
+              <text
+                x={x + 30 * u}
+                y={y + cardH * 0.64}
                 fill={ink}
-                fontSize={31 * u}
+                fontSize={34 * u}
                 fontWeight={750}
                 fontFamily={family}
                 opacity={cardDraw}
@@ -609,14 +632,14 @@ export function WhiteboardSketchRig({ width: w, height: h, frame, fps, props: p 
                 {label}
               </text>
               <text
-                x={x + 28 * u}
-                y={y + cardH * 0.8}
-                fill={muted}
+                x={x + 30 * u}
+                y={y + cardH * 0.84}
+                fill={isLast ? accent : muted}
                 fontFamily={mono}
-                fontSize={16 * u}
-                opacity={cardDraw * 0.9}
+                fontSize={15 * u}
+                opacity={cardDraw * 0.88}
               >
-                STEP 0{idx + 1}
+                {isLast ? 'OUTPUT · RESULT' : idx === 0 ? 'INPUT · SOURCE' : 'TRANSFORM · PROCESS'}
               </text>
             </g>
           );

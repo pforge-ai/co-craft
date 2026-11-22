@@ -1,6 +1,6 @@
 # CoCraft 决策记录
 
-更新日期：2026 年 11 月 22 日（深度全面审计后拍板「先止血再提质」三波次路线 C）。
+更新日期：2026 年 11 月 22 日（完成专业 NLE 关键帧与音画分离、PBR 3D + RoughJS 渲染引擎升级及内置本地受控 MCP 服务端落地与实机短片验收）。
 
 “已对齐”记录用户明确表达或拍板的方向；“当前建议”保留技术评估方案与待验证条件；“已替代”防止后续沿用旧前提。能力是否已经实现，以 [迭代计划](ROADMAP.md) 的验收记录为准。
 
@@ -27,6 +27,9 @@
 | 11 月 18 日 | **TapNow 原生画布交互 × 高频时钟时间线解耦 × 多选编组/素材包与剪辑资产沉淀（v0.5.2）** | ① 移除创造画布左悬浮条 `.cc-float-rail` 与拆解模态框，改为底部 `( + )` FAB + 右键菜单 + Drop-to-Create + 画布内联可编辑文本节点（`entityKind: 'text'`）+ 右下三合一胶囊 + 全向连线；② 新增统一取消选中（点空白/`Esc`）与多选框选/`Shift/⌘+Click`（支持 `@ 添加到对话`、`⌘G 成组`、`打成素材包` 个人库/离线 `cocraft-pack.json`、`建立关联`、`串入时间线`、`存为资产`）；③ 建立独立外部 `PlayheadClock` 驱动播放头 `translate3d` 与独立 `<PlayheadTimecode>`，`rAF` 节流预览 `seek` 并冻结搓擦期间的 `measureVisibleBoxes`，彻底消除时间线拖动/播放卡顿；④ 对齐 macOS `38px` 顶栏红绿灯（`y: 13`），移除双层焦点轮廓、`input[type="range"]` 粗滑条与底部 `.composer-note`，`Inspector` 全量收敛至 `24px` 精度（单行填充+不透明+混合）；⑤ 新增 `AudioWaveformPlayer` 单色可拖拽进度音频试听组件与 `compound` 精剪资产沉淀（`createCompoundVaultItemFromClips` / `instantiateCompoundVaultItemOperations`），支持将裁剪与调色转场后的时间线选区回存至资产库并跨项目封装 |
 | 11 月 18 日 | **阿里百炼 / 千问全模态可扩展接入 × 可视化 Skill 工作台 × 对话与画布交互深化（v0.5.3）** | ① 在 `ProviderConnection['protocol']` 中抽象原生+兼容双模路由协议 `'dashscope'`（及可复用 `providerModelSuites` 推荐模型套件注册表），一个连接与 API Key 同时打通千问对话/视觉（`/compatible-mode/v1`）、千问生图/万相生图（`dashscope-image`）、万相文生/图生视频异步任务及崩溃恢复（`dashscope-video`）、千问 TTS 语音合成（`dashscope-speech`）与本地音视频切片 Base64 直传 ASR 转录（`dashscope-transcription`），后续扩展新云厂商仅需注册套件与适配器；② 开放设置页 `Skills 与工具` 工作台（项目/全局/内置三层优先级加载、`cocraft-multimodal` 全流程 Skill、内置派生覆盖、自定义 `SKILL.md` 新建/导入/编辑/常驻开关）；③ 废弃原生系统 `<select>`，重构 Agent 自定义单色会话弹窗、紧凑无间距模型选择器、可调思考深度（`off/low/medium/high` 直通 Pi SDK）、剪贴板/拖放/选择多模态附件与圆形发送按钮，并以 `AgentThread` 折叠思考过程、顺序配对工具执行时间线及可点击时间码增强会话可读性；④ 重构画布全向自适应 4 向端口连线、全卡表面拖拽（节点层级置于线标签层之上防止斜线遮挡）、去除画布属性冗余 `成片视觉风格` 4 张模板卡并修复全局 `.switch` 滑块溢出 |
 | 11 月 22 日 | **暂停新功能扩张，按路线 C 执行三波次稳定化、专业 NLE 对齐与还债** | 暂缓 PBR `RoomEnvironment`、`roughjs`、关键帧曲线等新特性，先收口三波次：① **Wave A（止血与安全封口）** 封堵 P0 安全/沙箱/SSRF/MediaServer/预览通道与 DashScope/3D/UI 高危阻断；② **Wave B（创作者交付信任 + 专业 NLE 标准）** 清零 11/18 评审前 10 项并按专业剪辑软件标准改造转场（真 A/B 交叠）、统一创造/剪辑单一分镜模型、明确音频附着模式（`随镜` vs `固定时间线`）与三路音频独立静音，落地固定红蓝片端到端回归；③ **Wave C（前端架构与 CSS 减债）** 统一 `AssetExplorer` / `ResourceLibrary`、拆分 `App.tsx` 并收拢冗余样式与 `z-index` 层级体系 |
+| 11 月 22 日 | **专业 NLE 关键帧曲线、J/L Cut 音画分离与轨道独奏（Milestone 1）** | `Clip` 新增 `keyframes` 帧级曲线（支持 `x / y / scale / rotation / opacity / volume / cameraYaw / cameraPitch / explode` 与 `linear / ease-in / ease-out / ease-in-out / hold` 5 种缓动），时间线渲染可拖拽菱形关键帧，内置一键 Ken Burns 与人声闪避（Auto-Ducking），刀片分割与跨帧率复合资产无缝保持曲线连续；新增视频 J/L Cut 一键音画分离（原视频静音并在 A1 生成帧对齐独立时间线音轨）与轨道独奏 `S`（含导出预检提醒） |
+| 11 月 22 日 | **Three.js PBR `RoomEnvironment` 环境光、实时 3D 舞台交互运镜与 `roughjs` 确定性手绘引擎（Milestone 2）** | `ThreeStage.tsx` 全量接入 `PMREMGenerator + RoomEnvironment` IBL 环境反射及 `studio / dramatic / soft` 三档布光预设（卸载严格释放 GPU 纹理防 WebGL 泄漏）；`StageOverlay.tsx` 打通 3D 实时 `live-transform` 拖拽旋转并自动写入已有关键帧；引入 `roughjs` 与固定 `seed` 确定性 SVG 渲染原语 `RoughPrimitives`（同步开放 `cocraft/rough` 与 `roughjs` 给用户/Agent TSX 组件），升级 `tinycharts-state` 并新增 `whiteboard-sketch` 预设 |
+| 11 月 22 日 | **内置 Opt-in 本地受控 MCP 服务端（Milestone 3）** | 在设置页提供默认关闭、用户按需启用的本地 MCP 桥接服务（`electron/mcp-bridge.ts` + 独立零依赖 stdio 服务端 `scripts/cocraft-mcp.mjs`）：仅监听 `127.0.0.1` 随机端口、32 字节随机 Bearer Token 以 `0600` 权限落盘 `<userData>/mcp-bridge.json`（退出自动清理）、`timingSafeEqual` 鉴权、零 API 密钥暴露，全部编辑经统一 `ProjectStore` 版本锁与实时 UI 推送；外部 MCP 客户端可直接协同创作、预览帧、编译 TSX、调用已配置模型并导出 MP4 |
 
 ## 已替代的前提
 

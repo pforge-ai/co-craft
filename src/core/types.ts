@@ -568,6 +568,7 @@ export interface Settings {
   theme: 'dark' | 'light' | 'system';
   allowShell: boolean;
   allowNetwork: boolean;
+  mcpBridgeEnabled?: boolean;
 }
 
 export type EditOperation =

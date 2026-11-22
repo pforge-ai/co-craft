@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Settings2,
   KeyRound,
@@ -89,6 +89,15 @@ export function SettingsDialog({
     body: string;
   } | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
+  const [mcpInfo, setMcpInfo] = useState<{ running: boolean; port: number | null; scriptPath?: string; discoveryFile?: string } | null>(null);
+  const [mcpCopied, setMcpCopied] = useState(false);
+
+  useEffect(() => {
+    void window.cocraft
+      .call<{ running: boolean; port: number | null; scriptPath: string; discoveryFile: string }>('mcp.status', {})
+      .then((res) => setMcpInfo(res))
+      .catch(() => {});
+  }, [settings.mcpBridgeEnabled]);
   const provider = draft.providers.find((p) => p.id === providerId),
     model = draft.models.find((m) => m.id === modelId);
   const field = <K extends keyof Settings>(key: K, value: Settings[K]) =>
@@ -324,6 +333,51 @@ export function SettingsDialog({
                     <FolderOpen size={14} />
                     打开
                   </button>
+                </div>
+              </div>
+              <div className="settings-section">
+                <h3>本地 MCP 服务（外部 Agent 协作）</h3>
+                <div className="setting-row">
+                  <div>
+                    <b>启用本地 MCP 桥接服务</b>
+                    <p>允许 Claude / Cursor / Antigravity 等外部 MCP 客户端通过受控协议操作当前工程并调用已配置模型（仅监听 127.0.0.1，0600 令牌鉴权，绝不暴露 API 密钥）。</p>
+                  </div>
+                  <input
+                    className="switch"
+                    aria-label="启用本地 MCP 桥接服务"
+                    type="checkbox"
+                    checked={Boolean(draft.mcpBridgeEnabled)}
+                    onChange={(e) => field('mcpBridgeEnabled', e.target.checked)}
+                  />
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>运行状态与客户端配置</b>
+                    <p>
+                      {mcpInfo?.running && mcpInfo.port
+                        ? `监听 127.0.0.1:${mcpInfo.port} · 可直接接入任意 MCP 客户端`
+                        : draft.mcpBridgeEnabled
+                          ? '点击右下角「保存」后立即启动本地 MCP 桥接服务'
+                          : '默认关闭，按需开启'}
+                    </p>
+                  </div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <span className={`status-badge ${mcpInfo?.running ? 'good' : ''}`}>
+                      {mcpInfo?.running ? '运行中' : '未启用'}
+                    </span>
+                    <button
+                      type="button"
+                      className="button subtle"
+                      onClick={() =>
+                        void window.cocraft.call('mcp.copyConfig', {}).then(() => {
+                          setMcpCopied(true);
+                          setTimeout(() => setMcpCopied(false), 2000);
+                        })
+                      }
+                    >
+                      {mcpCopied ? '已复制配置' : '复制 MCP 配置'}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="settings-section">

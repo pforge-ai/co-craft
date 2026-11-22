@@ -367,57 +367,88 @@ function buildProceduralScene(
       packets.push(pkt);
     }
   } else {
-    // Default 'turbine': Coaxial precision optical/mechanical turbine assembly
-    const rearMount = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.25, 0.32, 36), metalDark);
-    rearMount.rotation.z = Math.PI / 2;
-    rearMount.position.set(-1.15, 0, 0);
-    group.add(rearMount);
-    parts.push({ obj: rearMount, basePos: rearMount.position.clone(), explodeDir: new THREE.Vector3(-1.6, 0, 0) });
+    // Default 'turbine': Cinema-grade coaxial optical lens & precision interferometer assembly
+    // Machined outer titanium aperture ring (never occludes lens as a flat wall)
+    const rearGroup = new THREE.Group();
+    rearGroup.position.set(-1.05, 0, 0);
+    const rearOuter = new THREE.Mesh(new THREE.TorusGeometry(1.12, 0.11, 28, 72), metalDark);
+    rearOuter.rotation.y = Math.PI / 2;
+    const rearInner = new THREE.Mesh(new THREE.TorusGeometry(0.92, 0.04, 20, 64), metalSilver);
+    rearInner.rotation.y = Math.PI / 2;
+    rearGroup.add(rearOuter, rearInner);
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      const tick = new THREE.Mesh(new THREE.BoxGeometry(0.05, i % 3 === 0 ? 0.14 : 0.07, 0.025), copperMat);
+      tick.position.set(0.06, Math.cos(a) * 1.02, Math.sin(a) * 1.02);
+      tick.rotation.x = a;
+      rearGroup.add(tick);
+    }
+    group.add(rearGroup);
+    parts.push({ obj: rearGroup, basePos: rearGroup.position.clone(), explodeDir: new THREE.Vector3(-1.35, 0, 0) });
 
-    const coil = new THREE.Mesh(new THREE.TorusGeometry(0.88, 0.18, 20, 48), copperMat);
+    // Anodized brass focusing ring
+    const coil = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.12, 32, 96), copperMat);
     coil.rotation.y = Math.PI / 2;
-    coil.position.set(-0.62, 0, 0);
+    coil.position.set(-0.56, 0, 0);
     group.add(coil);
-    parts.push({ obj: coil, basePos: coil.position.clone(), explodeDir: new THREE.Vector3(-0.9, 0, 0) });
+    parts.push({ obj: coil, basePos: coil.position.clone(), explodeDir: new THREE.Vector3(-0.78, 0, 0) });
 
+    // Precision 12-blade iris diaphragm & coaxial hub
     const rotorGroup = new THREE.Group();
     rotorGroup.position.set(-0.08, 0, 0);
-    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.44, 28), metalSilver);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.34, 48), metalSilver);
     hub.rotation.z = Math.PI / 2;
-    rotorGroup.add(hub);
-    for (let i = 0; i < 10; i++) {
-      const angle = (i / 10) * Math.PI * 2;
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.62, 0.07), secondaryMat);
-      blade.position.set(0, Math.cos(angle) * 0.72, Math.sin(angle) * 0.72);
+    const hubRing = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.035, 20, 48), copperMat);
+    hubRing.rotation.y = Math.PI / 2;
+    hubRing.position.set(0.16, 0, 0);
+    rotorGroup.add(hub, hubRing);
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2;
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.56, 0.045), secondaryMat);
+      blade.position.set(0, Math.cos(angle) * 0.66, Math.sin(angle) * 0.66);
       blade.rotation.x = angle;
-      blade.rotation.y = 0.38;
+      blade.rotation.y = 0.42;
       rotorGroup.add(blade);
     }
     group.add(rotorGroup);
     parts.push({
       obj: rotorGroup,
       basePos: rotorGroup.position.clone(),
-      explodeDir: new THREE.Vector3(-0.15, 0, 0),
-      spinSpeed: 2.2,
+      explodeDir: new THREE.Vector3(-0.12, 0, 0),
+      spinSpeed: 1.6,
       spinAxis: 'x',
     });
 
-    const prismCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.56, 1), accentMat);
-    prismCore.position.set(0.52, 0, 0);
+    // High-IOR crystal optical glass core lens
+    const crystalGlass = new THREE.MeshPhysicalMaterial({
+      color: accent,
+      metalness: 0.05,
+      roughness: 0.05,
+      transmission: 0.78,
+      ior: 1.52,
+      thickness: 1.2,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.04,
+      emissive: accent,
+      emissiveIntensity: 0.18,
+    });
+    const prismCore = new THREE.Mesh(new THREE.IcosahedronGeometry(0.54, 4), crystalGlass);
+    prismCore.position.set(0.48, 0, 0);
     group.add(prismCore);
     parts.push({
       obj: prismCore,
       basePos: prismCore.position.clone(),
-      explodeDir: new THREE.Vector3(0.75, 0, 0),
-      spinSpeed: -0.9,
+      explodeDir: new THREE.Vector3(0.62, 0, 0),
+      spinSpeed: -0.65,
       spinAxis: 'x',
     });
 
-    const shroud = new THREE.Mesh(new THREE.CylinderGeometry(1.28, 1.12, 0.56, 36, 1, true), metalSilver);
+    // Brushed aluminum cylindrical lens barrel (smooth 72-segment)
+    const shroud = new THREE.Mesh(new THREE.CylinderGeometry(1.18, 1.08, 0.44, 72, 1, true), metalSilver);
     shroud.material = metalSilver.clone();
     (shroud.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
     shroud.rotation.z = Math.PI / 2;
-    shroud.position.set(0.95, 0, 0);
+    shroud.position.set(0.92, 0, 0);
     group.add(shroud);
     parts.push({ obj: shroud, basePos: shroud.position.clone(), explodeDir: new THREE.Vector3(1.55, 0, 0) });
 
@@ -456,8 +487,8 @@ function applyCameraPreset(
     camera.position.set(Math.sin(angle) * 5.2 * distScale, 0.85 * distScale, Math.cos(angle) * 5.2 * distScale);
   } else {
     // 'orbit'
-    const angle = 0.55 + t * 0.48 * spd;
-    camera.position.set(Math.cos(angle) * 5.4 * distScale, 2.35 * distScale, Math.sin(angle) * 5.4 * distScale);
+    const angle = 0.55 + t * 0.42 * spd;
+    camera.position.set(Math.cos(angle) * 6.35 * distScale, 2.35 * distScale, Math.sin(angle) * 6.35 * distScale);
   }
   if (cameraYaw || cameraPitch) {
     const spherical = new THREE.Spherical().setFromVector3(camera.position);
@@ -765,7 +796,7 @@ function TeardownStageBody({
         <div
           style={{
             position: 'absolute',
-            bottom: isPortrait ? 120 : 56,
+            bottom: isPortrait ? 185 : 132,
             left: isPortrait ? 56 : 68,
             right: isPortrait ? 56 : 68,
             display: 'flex',
