@@ -15,6 +15,8 @@
     "test:redblue": "node scripts/red-blue-regression.mjs",
     "smoke": "tsx scripts/smoke.ts",
     "package": "npm run build && electron-builder --mac dir --arm64",
+    "package:dmg": "npm run build && electron-builder --mac dmg --arm64",
+    "package:signed": "npm run build && electron-builder --mac dmg --arm64 -c.mac.identity= -c.mac.hardenedRuntime=true -c.mac.gatekeeperAssess=false",
     "test:ui": "node scripts/functional-check-v2.mjs",
     "smoke:agent": "node scripts/agent-smoke.mjs",
     "smoke:models": "node scripts/generation-smoke.mjs",
@@ -102,8 +104,32 @@
       "target": "dir",
       "identity": "-",
       "icon": "resources/icon.icns",
-      "minimumSystemVersion": "15.0",
-      "hardenedRuntime": false
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "title": "CoCraft ${version}",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "icon": "resources/icon.icns",
+      "iconSize": 108,
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 145,
+          "y": 190
+        },
+        {
+          "x": 395,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "directories": {
       "output": "release/0.4"
