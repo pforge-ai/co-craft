@@ -1,5 +1,6 @@
 import { PresetContent } from './Presets';
 import { getPreset, isLightHex, resolveProjectStyle } from '../core/presets';
+import { evaluateKeyframeTrack, resolveClipPropsAtFrame } from '../core/keyframes';
 import { ThreeCanvas, TeardownStage } from './ThreeStage';
 import React, { useMemo } from 'react';
 import * as Remotion from 'remotion';
@@ -82,7 +83,8 @@ function buildFilterCss(p: Record<string, unknown>): string | undefined {
 }
 
 function computeAudioVolume(f: number, clip: Clip, fps: number): number {
-  const base = Number(clip.props.volume ?? 1);
+  const staticBase = Number(clip.props.volume ?? 1);
+  const base = Math.max(0, evaluateKeyframeTrack(clip.keyframes?.volume, f, staticBase));
   if (base <= 0) return 0;
   const clipSec = clip.duration / fps;
   const defaultIn = clip.kind === 'audio' ? Math.min(0.45, clipSec * 0.18) : Math.min(0.05, clipSec * 0.1);
@@ -402,7 +404,8 @@ function Code({
 }
 
 function Content({
-  clip,
+  clip: rawClip,
+  liveOverrideProps,
   project,
   mediaOrigin,
   audioTrackMuted,
@@ -412,6 +415,7 @@ function Content({
   isSelected,
 }: {
   clip: Clip;
+  liveOverrideProps?: Record<string, unknown>;
   project: Project;
   mediaOrigin: string;
   audioTrackMuted?: boolean;
@@ -422,6 +426,9 @@ function Content({
 }) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const keyframedProps = resolveClipPropsAtFrame(rawClip, frame);
+  const resolvedProps = liveOverrideProps ? { ...keyframedProps, ...liveOverrideProps } : keyframedProps;
+  const clip = resolvedProps === rawClip.props ? rawClip : { ...rawClip, props: resolvedProps };
   const rotation = Number(clip.props.rotation || 0);
   const borderRadius = Number(clip.props.borderRadius || 0);
   const filterCss = buildFilterCss(clip.props);
@@ -433,10 +440,19 @@ function Content({
     : (f: number) => computeAudioVolume(f, clip, fps) * (audioGainScale ? audioGainScale(f) : 1);
 
   if (getPreset(String(clip.props.presetId || ''))) {
+    const px = Number(clip.props.x || 0);
+    const py = Number(clip.props.y || 0);
+    const pScale = clip.props.scale !== undefined ? Number(clip.props.scale) : 1;
+    const pOpacity = clip.props.opacity !== undefined ? Number(clip.props.opacity) : 1;
+    const hasPresetXform = px !== 0 || py !== 0 || pScale !== 1 || rotation !== 0;
     return (
       <AbsoluteFill
         style={{
-          transform: rotation ? `rotate(${rotation}deg)` : undefined,
+          transformOrigin: 'center center',
+          transform: hasPresetXform
+            ? `translate(${px}px, ${py}px) rotate(${rotation}deg) scale(${pScale})`
+            : undefined,
+          opacity: pOpacity,
           filter: filterCss,
         }}
       >
@@ -613,20 +629,20 @@ function TransitionEnvelope({
 export function Film({ project, sequenceId, mediaOrigin, paused, selectedClipId, liveOverride }: FilmProps) {
   const sequence: FilmSequence = project.sequences.find((s) => s.id === sequenceId) || project.sequences[0];
   const muted = new Set(sequence.mutedTracks || []);
-  const a1TrackMuted = muted.has('audio');
-  const v1VideoAudioMuted = Boolean(sequence.mutedVideoAudio);
+  const solo = new Set(sequence.soloTracks || []);
+  const isTrackActive = (t: Clip['track']) => !muted.has(t) && (solo.size === 0 || solo.has(t));
+  const a1TrackMuted = !isTrackActive('audio');
+  const v1VideoAudioMuted = Boolean(sequence.mutedVideoAudio) || !isTrackActive('visual');
   const layers = { visual: 0, audio: 1, overlay: 2, caption: 3 };
   const sortedClips = [...sequence.clips]
-    .filter((clip) => !muted.has(clip.track))
+    .filter((clip) => isTrackActive(clip.track))
     .sort((a, b) => layers[a.track] - layers[b.track] || (a.layer ?? 0) - (b.layer ?? 0) || a.start - b.start);
 
   return (
     <AbsoluteFill style={{ background: sequence.background }}>
       {sortedClips.map((origClip) => {
-        const clip =
-          liveOverride && liveOverride.clipId === origClip.id
-            ? { ...origClip, props: { ...origClip.props, ...liveOverride.props } }
-            : origClip;
+        const clipOverride = liveOverride && liveOverride.clipId === origClip.id ? liveOverride.props : undefined;
+        const clip = origClip;
         const isSelected = selectedClipId === clip.id;
 
         // Pro NLE True A/B Cross-Transition Bridge: when an incoming clip has transitionIn and touches a preceding
@@ -724,6 +740,7 @@ export function Film({ project, sequenceId, mediaOrigin, paused, selectedClipId,
                 <TransitionEnvelope clip={clip} hasOutgoing={Boolean(outgoingClip)}>
                   <Content
                     clip={clip}
+                    liveOverrideProps={clipOverride}
                     project={project}
                     mediaOrigin={mediaOrigin}
                     audioTrackMuted={a1TrackMuted}

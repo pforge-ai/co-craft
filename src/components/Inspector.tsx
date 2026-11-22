@@ -23,11 +23,15 @@ import {
   RotateCcw,
   AtSign,
   BookmarkPlus,
+  Scissors,
 } from 'lucide-react';
-import type { Clip, Sequence, Project, EditOperation, TransitionType } from '../core/types';
-import { uid, clone } from '../core/project';
+import type { Clip, Sequence, Project, EditOperation, TransitionType, KeyframeProperty } from '../core/types';
+import { uid, clone, detachAudioFromClipOperations } from '../core/project';
+import { upsertClipKeyframe } from '../core/keyframes';
+import type { PlayheadClock } from '../lib/playheadClock';
 import { mediaUrl } from '../composition/Film';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
+import { KeyframeSection } from './KeyframeSection';
 import { PresetControls, ParameterControls } from './PresetControls';
 import { BUILT_IN_TRANSITIONS, getPreset } from '../core/presets';
 import { pointerDrag } from '../lib/pointerDrag';
@@ -384,6 +388,9 @@ export const Inspector = React.memo(function Inspector({
   sequence,
   project,
   previewOrigin = '',
+  playheadClock,
+  onSeek,
+  onSelectClip,
   onEdit,
   onReference,
   onSaveAsAsset,
@@ -396,6 +403,9 @@ export const Inspector = React.memo(function Inspector({
   sequence: Sequence;
   project: Project;
   previewOrigin?: string;
+  playheadClock?: PlayheadClock;
+  onSeek?: (frame: number) => void;
+  onSelectClip?: (clipId: string) => void;
   onEdit: (name: string, ops: EditOperation[]) => void;
   onReference: () => void;
   onSaveAsAsset?: () => void;
@@ -487,7 +497,24 @@ export const Inspector = React.memo(function Inspector({
 
   const update = (changes: Partial<Clip>, name = '调整片段') =>
     onEdit(name, [{ type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes }]);
-  const prop = (key: string, value: unknown) => update({ props: { [key]: value } }, '调整' + clip.name);
+  const prop = (key: string, value: unknown) => {
+    const kfTrack = clip.keyframes?.[key as KeyframeProperty];
+    if (kfTrack && kfTrack.length > 0 && typeof value === 'number' && Number.isFinite(value)) {
+      const rawLocal = (playheadClock?.get() ?? clip.start) - clip.start;
+      const localFrame = Math.max(0, Math.min(Math.max(0, clip.duration - 1), rawLocal));
+      const existingAtFrame = kfTrack.find((k) => k.frame === localFrame);
+      const nextKf = upsertClipKeyframe(
+        clip.keyframes,
+        key as KeyframeProperty,
+        localFrame,
+        value,
+        existingAtFrame?.easing || 'ease-in-out',
+      );
+      update({ props: { [key]: value }, keyframes: nextKf }, '更新关键帧 · ' + clip.name);
+      return;
+    }
+    update({ props: { [key]: value } }, '调整' + clip.name);
+  };
   const propsPatch = (patch: Record<string, unknown>, label = '调整' + clip.name) =>
     update({ props: patch }, label);
 
@@ -807,14 +834,31 @@ export const Inspector = React.memo(function Inspector({
     <section className="ins-sec">
       <div className="ins-sec-head">
         <h4>声音控制</h4>
-        <button
-          type="button"
-          className={`button tiny ${clip.muted ? 'primary' : 'subtle'}`}
-          disabled={clip.locked}
-          onClick={() => update({ muted: !clip.muted })}
-        >
-          {clip.muted ? '已静音 · 点击恢复' : '静音此片段'}
-        </button>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          {clip.kind === 'video' && clip.assetId && !clip.muted && (
+            <button
+              type="button"
+              className="button tiny subtle"
+              disabled={clip.locked}
+              title="将视频内嵌同期声分离到独立 A1 音轨，支持 J-Cut / L-Cut 声画错位剪辑"
+              onClick={() => {
+                const res = detachAudioFromClipOperations(sequence, clip);
+                onEdit(`分离「${clip.name}」音画 (J/L Cut)`, res.operations);
+                onSelectClip?.(res.audioClipId);
+              }}
+            >
+              <Scissors size={10} /> 分离音画
+            </button>
+          )}
+          <button
+            type="button"
+            className={`button tiny ${clip.muted ? 'primary' : 'subtle'}`}
+            disabled={clip.locked}
+            onClick={() => update({ muted: !clip.muted })}
+          >
+            {clip.muted ? '已静音 · 点击恢复' : '静音此片段'}
+          </button>
+        </div>
       </div>
       <CompactSliderRow
         label="音量"
@@ -1523,6 +1567,14 @@ export const Inspector = React.memo(function Inspector({
             </div>
           </section>
 
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={['x', 'y', 'scale', 'rotation', 'opacity']}
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
           {renderTransitionSection()}
           {renderTimeAndLayer()}
         </>
@@ -1532,6 +1584,14 @@ export const Inspector = React.memo(function Inspector({
       {!preset && isMedia && mediaTab === 'frame' && (
         <>
           {renderAlignAndTransform(true)}
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={['x', 'y', 'scale', 'rotation', 'opacity']}
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
           <section className="ins-sec">
             <h4>画幅适应与裁切</h4>
             <div className="ins-inline-row">
@@ -1605,6 +1665,14 @@ export const Inspector = React.memo(function Inspector({
       {!preset && clip.kind === 'video' && mediaTab === 'audio' && (
         <>
           {renderAudioSection()}
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={['volume']}
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
           {renderTimeAndLayer()}
         </>
       )}
@@ -1626,6 +1694,14 @@ export const Inspector = React.memo(function Inspector({
             </section>
           )}
           {renderAudioSection()}
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={['volume']}
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
           {renderTimeAndLayer()}
         </>
       )}
@@ -1679,6 +1755,18 @@ export const Inspector = React.memo(function Inspector({
       {preset && presetTab === 'transform' && (
         <>
           {renderAlignAndTransform(true)}
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={
+              preset.id === 'teardown-3d' || asset?.kind === 'model-3d'
+                ? ['x', 'y', 'scale', 'rotation', 'opacity', 'cameraYaw', 'cameraPitch', 'explode']
+                : ['x', 'y', 'scale', 'rotation', 'opacity']
+            }
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
           {renderOpacityAndBlend()}
           {renderTransitionSection()}
           {renderTimeAndLayer()}
@@ -1760,6 +1848,14 @@ export const Inspector = React.memo(function Inspector({
             )}
           </section>
           {renderAlignAndTransform(true)}
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={['x', 'y', 'scale', 'rotation', 'opacity']}
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
           {renderOpacityAndBlend()}
           {renderTransitionSection()}
           {renderTimeAndLayer()}
@@ -1789,6 +1885,14 @@ export const Inspector = React.memo(function Inspector({
               onChange={(hex) => prop('color', hex)}
             />
           </section>
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={['x', 'y', 'scale', 'rotation', 'opacity']}
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
           {renderOpacityAndBlend()}
           {renderTransitionSection()}
           {renderTimeAndLayer()}

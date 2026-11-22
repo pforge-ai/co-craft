@@ -9,9 +9,11 @@ import type {
   EditScope,
   PreflightIssue,
   CodeComponent,
+  Track,
   VaultItem,
 } from './types';
 import { applyStyleTokensToClip, resolveProjectStyle } from './presets';
+import { scaleKeyframesForFps, splitKeyframesForSplit } from './keyframes';
 
 export const uid = (prefix = 'id') => `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
 export const clone = <T>(v: T): T => structuredClone(v);
@@ -519,6 +521,7 @@ export function applyOperations(
         'fps',
         'background',
         'mutedTracks',
+        'soloTracks',
         'mutedVideoAudio',
         'branchName',
         'workflowIntent',
@@ -664,6 +667,7 @@ export function applyOperations(
         'audioAttachMode',
         'muted',
         'transitionIn',
+        'keyframes',
         'takes',
         'activeTakeId',
         'subjectIds',
@@ -674,6 +678,9 @@ export function applyOperations(
       const { id, ...changes } = op.changes;
       Object.assign(c, changes, changes.props ? { props: { ...c.props, ...changes.props } } : {});
       if (changes.transitionIn === null) delete c.transitionIn;
+      if ('keyframes' in changes && (!changes.keyframes || Object.keys(changes.keyframes).length === 0)) {
+        delete c.keyframes;
+      }
     } else if (op.type === 'deleteClip') {
       const cutEnd = c.start + c.duration;
       s.clips = s.clips.filter((x) => x.id !== c.id);
@@ -698,6 +705,7 @@ export function applyOperations(
 export function splitOperations(sequence: Sequence, clip: Clip, at: number): EditOperation[] {
   const offset = at - clip.start;
   if (offset <= 0 || offset >= clip.duration) throw new Error('将播放头移到片段内部再分割');
+  const splitKf = splitKeyframesForSplit(clip.keyframes, offset);
   const secondHalf: Clip = {
     ...clone(clip),
     layer: clip.layer ?? 0,
@@ -708,14 +716,60 @@ export function splitOperations(sequence: Sequence, clip: Clip, at: number): Edi
     sourceIn: clip.kind === 'image' ? 0 : clip.sourceIn + offset,
   };
   delete secondHalf.transitionIn;
+  if (splitKf.right) secondHalf.keyframes = splitKf.right;
+  else delete secondHalf.keyframes;
+  const firstChanges: Partial<Clip> = { duration: offset };
+  if (clip.keyframes) firstChanges.keyframes = splitKf.left;
   return [
-    { type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes: { duration: offset } },
+    { type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes: firstChanges },
     {
       type: 'addClip',
       sequenceId: sequence.id,
       clip: secondHalf,
     },
   ];
+}
+
+/**
+ * Pro NLE Audio/Video Detach (J/L Cut):
+ * Mutes the video clip's embedded audio and spawns a frame-aligned, source-synced
+ * independent audio clip on A1 (`audioAttachMode: 'timeline'`) that can be trimmed
+ * independently for J-Cuts (audio leads video) or L-Cuts (audio trails video).
+ */
+export function detachAudioFromClipOperations(
+  sequence: Sequence,
+  clip: Clip,
+): { operations: EditOperation[]; audioClipId: string } {
+  if (clip.locked) throw new Error('片段已锁定，请先解锁再分离音画');
+  if (clip.kind !== 'video' || !clip.assetId) throw new Error('仅支持对包含素材的视频片段执行音画分离');
+  const audioClipId = uid('clip');
+  const detached: Clip = {
+    ...newClip('audio', clip.start, clip.assetId),
+    id: audioClipId,
+    name: `${clip.name} · 分离音轨`,
+    duration: clip.duration,
+    sourceIn: clip.sourceIn,
+    audioAttachMode: 'timeline',
+    props: {
+      volume: clip.props.volume !== undefined ? Number(clip.props.volume) : 1,
+      ...(clip.props.fadeIn !== undefined ? { fadeIn: Number(clip.props.fadeIn) } : {}),
+      ...(clip.props.fadeOut !== undefined ? { fadeOut: Number(clip.props.fadeOut) } : {}),
+    },
+    ...(clip.keyframes?.volume?.length ? { keyframes: { volume: clone(clip.keyframes.volume) } } : {}),
+  };
+  const videoChanges: Partial<Clip> = { muted: true };
+  if (clip.keyframes?.volume) {
+    const restKf = clone(clip.keyframes);
+    delete restKf.volume;
+    videoChanges.keyframes = Object.keys(restKf).length ? restKf : undefined;
+  }
+  return {
+    audioClipId,
+    operations: [
+      { type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes: videoChanges },
+      { type: 'addClip', sequenceId: sequence.id, clip: detached },
+    ],
+  };
 }
 
 export function parseSRTText(text: string, fps: number): Clip[] {
@@ -818,10 +872,22 @@ export function preflightSequence(
   }
 
   // 2. Complete visual coverage check: empty visual, leading gap, middle gaps, AND trailing gap (Warning)
+  const soloSet = new Set(seq.soloTracks || []);
+  const trackActive = (track: Track) => !muted.has(track) && (soloSet.size === 0 || soloSet.has(track));
+  if (soloSet.size > 0) {
+    const trackNames: Record<Track, string> = { visual: 'V1 画面', overlay: 'V2+ 叠加', caption: 'T1 字幕', audio: 'A1 声音' };
+    issues.push({
+      id: 'solo-tracks-active',
+      severity: 'warning',
+      title: '当前开启了轨道独奏（Solo）',
+      detail: `仅 ${[...soloSet].map((t) => trackNames[t]).join('、')} 会参与导出，其余轨道将被跳过。如非刻意测试单轨，建议先取消独奏。`,
+      frame: 0,
+    });
+  }
   const total = durationOf(seq);
   const gapThreshold = Math.max(1, Math.round(seq.fps * 0.5));
   const visibleClips = seq.clips
-    .filter((c) => (c.track === 'visual' || c.track === 'overlay') && !muted.has(c.track) && c.kind !== 'audio')
+    .filter((c) => (c.track === 'visual' || c.track === 'overlay') && trackActive(c.track) && c.kind !== 'audio')
     .sort((a, b) => a.start - b.start);
 
   if (visibleClips.length === 0) {
@@ -1169,6 +1235,7 @@ export function instantiateCompoundVaultItemOperations(
             },
           }
         : {}),
+      ...(orig.keyframes ? { keyframes: scaleKeyframesForFps(orig.keyframes, ratio) } : {}),
       locked: false,
     };
     if (!primaryClipId || c.track === 'visual') primaryClipId = newId;

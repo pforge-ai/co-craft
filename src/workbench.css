@@ -4916,7 +4916,7 @@ input[type='checkbox']:not(.switch) {
 
 /* ── Professional NLE Timeline Visuals & Tooling ── */
 .track-labels {
-  width: 114px;
+  width: 134px;
   padding: 0 8px;
 }
 .track-label {
@@ -4950,7 +4950,8 @@ input[type='checkbox']:not(.switch) {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
+  flex: none;
 }
 .track-head-btn,
 .track-mute-btn {
@@ -6953,6 +6954,204 @@ input[type='checkbox']:not(.switch) {
   align-items: center;
   gap: 5px;
 }
+
+/* ── Milestone 1: Keyframes & Easing Inspector + Timeline Diamonds + Track Solo ── */
+.kf-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.kf-nav-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.kf-nav-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid var(--line-soft);
+  background: var(--well);
+  color: var(--dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.kf-nav-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.kf-nav-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.kf-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.kf-frame-readout {
+  min-width: 40px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 4px;
+}
+.kf-prop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.kf-prop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--well);
+  border: 1px solid transparent;
+  font-size: 11px;
+}
+.kf-prop-row.animated {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--well));
+}
+.kf-prop-name {
+  flex: 1;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kf-prop-row.animated .kf-prop-name {
+  color: var(--text);
+}
+.kf-prop-val {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.kf-prop-count {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--accent);
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.kf-diamond-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, transform 0.12s ease;
+}
+.kf-diamond-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.kf-diamond-btn.has-keys {
+  color: var(--accent);
+}
+.kf-diamond-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.kf-easing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.kf-curve-svg {
+  flex: none;
+  border-radius: 5px;
+  background: var(--well);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+}
+.kf-easing-row select {
+  flex: 1;
+  height: 24px;
+  font-size: 11px;
+}
+.kf-presets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.kf-presets-row > button {
+  gap: 4px;
+}
+
+/* Timeline Track Solo (S) Button */
+.track-solo-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.track-solo-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.track-solo-btn.active {
+  background: color-mix(in srgb, #eab308 24%, var(--well));
+  border-color: color-mix(in srgb, #eab308 65%, transparent);
+  color: #facc15;
+}
+
+/* Timeline Clip Keyframe Diamonds */
+.clip-kf-bar {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  height: 12px;
+  pointer-events: none;
+  z-index: var(--z-stage-overlay);
+}
+.clip-kf-diamond {
+  position: absolute;
+  bottom: 2px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  margin-left: -4px;
+  border: 1.25px solid rgba(10, 12, 16, 0.85);
+  border-radius: 1.5px;
+  background: var(--accent);
+  transform: rotate(45deg);
+  pointer-events: auto;
+  cursor: ew-resize;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+.clip-kf-diamond:hover {
+  transform: rotate(45deg) scale(1.28);
+  background: #fde047;
+}
+
 
 
 

@@ -267,6 +267,28 @@ export interface ClipTransition {
   durationFrames: number;
 }
 
+export type KeyframeEasing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold';
+
+export type KeyframeProperty =
+  | 'x'
+  | 'y'
+  | 'scale'
+  | 'rotation'
+  | 'opacity'
+  | 'volume'
+  | 'cameraYaw'
+  | 'cameraPitch'
+  | 'explode';
+
+export interface ClipKeyframe {
+  /** Local frame offset relative to clip.start (0 .. clip.duration - 1). */
+  frame: number;
+  value: number;
+  easing?: KeyframeEasing;
+}
+
+export type ClipKeyframes = Partial<Record<KeyframeProperty, ClipKeyframe[]>>;
+
 export interface Clip {
   id: string;
   name: string;
@@ -285,6 +307,8 @@ export interface Clip {
   /** Per-clip audio mute (applies to video embedded audio or independent audio clips in preview & export). */
   muted?: boolean;
   transitionIn?: ClipTransition | null;
+  /** Property keyframe animation curves evaluated per local frame in preview & MP4 export. */
+  keyframes?: ClipKeyframes;
   takes?: ClipTake[];
   activeTakeId?: string;
   subjectIds?: string[];
@@ -323,6 +347,8 @@ export interface Sequence {
   clips: Clip[];
   background: string;
   mutedTracks?: Track[];
+  /** Soloed tracks: when non-empty, only listed tracks (unless muted) render in preview & export. */
+  soloTracks?: Track[];
   /** Independently mute embedded video audio on V1/V2 tracks (separate from A1 track mute and preview monitor mute). */
   mutedVideoAudio?: boolean;
   /** Film Version Tree & Parallel Branch metadata */

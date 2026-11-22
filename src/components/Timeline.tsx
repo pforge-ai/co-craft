@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import type { Sequence, Clip, Project, EditOperation, Track, TransitionType, Asset } from '../core/types';
 import { BUILT_IN_TRANSITIONS } from '../core/presets';
+import { listAllKeyframeFrames, moveClipKeyframeFrame } from '../core/keyframes';
 import { durationOf, splitOperations, timecode, timecodeFrames } from '../core/project';
 import { mediaUrl } from '../composition/Film';
 import { pointerDrag } from '../lib/pointerDrag';
@@ -91,8 +92,10 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
   overlayCount,
   allClips,
   mutedSet,
+  soloSet,
   mutedVideoAudio,
   onToggleLock,
+  onToggleSolo,
   onToggleVisMute,
   onToggleVideoAudioMute,
 }: {
@@ -102,8 +105,10 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
   overlayCount: number;
   allClips: Clip[];
   mutedSet: Set<Track>;
+  soloSet: Set<Track>;
   mutedVideoAudio: boolean;
   onToggleLock: (trackId: Track) => void;
+  onToggleSolo: (trackId: Track) => void;
   onToggleVisMute: (trackId: Track) => void;
   onToggleVideoAudioMute: () => void;
 }) {
@@ -112,6 +117,8 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
       <div className="ruler-label">{fps} FPS</div>
       {rows.map((t) => {
         const isHiddenOrMuted = mutedSet.has(t.id);
+        const isSolo = soloSet.has(t.id);
+        const isDimmedBySolo = soloSet.size > 0 && !isSolo;
         const isAudio = t.id === 'audio';
         const isVisual = t.id === 'visual';
         const trackClips = allClips.filter((c) => c.track === t.id);
@@ -123,11 +130,20 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
               ? t.code
               : `${t.code[0]}${t.index + 1}`;
         return (
-          <div key={t.key} className={`track-label ${t.id} ${isHiddenOrMuted ? 'is-muted' : ''}`}>
+          <div key={t.key} className={`track-label ${t.id} ${isHiddenOrMuted || isDimmedBySolo ? 'is-muted' : ''} ${isSolo ? 'is-solo' : ''}`}>
             <b className="track-code">{displayCode}</b>
             <span>{t.label}</span>
             {t.index === 0 && (
               <div className="track-head-acts">
+                <button
+                  type="button"
+                  className={`track-solo-btn ${isSolo ? 'active' : ''}`}
+                  aria-label={`${isSolo ? '取消独奏' : '独奏'}${t.label}轨`}
+                  title={`${isSolo ? '取消' : '开启'}${t.label}轨独奏 (Solo)`}
+                  onClick={() => onToggleSolo(t.id)}
+                >
+                  S
+                </button>
                 <button
                   type="button"
                   className={`track-head-btn ${trackLocked ? 'locked-active' : ''}`}
@@ -212,6 +228,7 @@ const TimelineRuler = React.memo(function TimelineRuler({
 const TimelineLanes = React.memo(function TimelineLanes({
   rows,
   mutedSet,
+  soloSet,
   assetsById,
   fps,
   totalFrames,
@@ -228,9 +245,11 @@ const TimelineLanes = React.memo(function TimelineLanes({
   onClipDoubleClick,
   onClipSelect,
   onApplyTransition,
+  onKeyframeDragStart,
 }: {
   rows: LaneRow[];
   mutedSet: Set<Track>;
+  soloSet: Set<Track>;
   assetsById: Map<string, Asset>;
   fps: number;
   totalFrames: number;
@@ -247,6 +266,7 @@ const TimelineLanes = React.memo(function TimelineLanes({
   onClipDoubleClick: (start: number) => void;
   onClipSelect: (id: string | null, additive?: boolean) => void;
   onApplyTransition: (clip: Clip, trType: TransitionType) => void;
+  onKeyframeDragStart: (e: React.PointerEvent<HTMLButtonElement>, clip: Clip, kfFrame: number) => void;
 }) {
   const selectedSet = useMemo(() => {
     const s = new Set(selectedIds);
@@ -256,7 +276,7 @@ const TimelineLanes = React.memo(function TimelineLanes({
   return (
     <>
       {rows.map((track) => {
-        const isMuted = mutedSet.has(track.id);
+        const isMuted = mutedSet.has(track.id) || (soloSet.size > 0 && !soloSet.has(track.id));
         return (
           <div
             className={`lane ${track.id} ${isMuted ? 'lane-muted' : ''}`}
@@ -388,6 +408,26 @@ const TimelineLanes = React.memo(function TimelineLanes({
                       <div className="trim-handle right" onPointerDown={(e) => onClipDragStart(e, c, 'out')} />
                     </>
                   )}
+                  {c.keyframes && (() => {
+                    const kfFrames = listAllKeyframeFrames(c);
+                    if (!kfFrames.length) return null;
+                    return (
+                      <div className="clip-kf-bar" aria-label={`${c.name} 关键帧`}>
+                        {kfFrames.map((kf) => (
+                          <button
+                            key={kf}
+                            type="button"
+                            className="clip-kf-diamond"
+                            style={{ left: `${(Math.min(c.duration, kf) / Math.max(1, c.duration)) * 100}%` }}
+                            title={`关键帧 F${kf} (${timecodeFrames(c.start + kf, fps)}) · 点击跳转，拖拽调整时机`}
+                            aria-label={`关键帧 F${kf}`}
+                            onPointerDown={(e) => onKeyframeDragStart(e, c, kf)}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -465,6 +505,7 @@ export const Timeline = React.memo(function Timeline({
   }, []);
 
   const mutedSet = useMemo(() => new Set(sequence.mutedTracks || []), [sequence.mutedTracks]);
+  const soloSet = useMemo(() => new Set(sequence.soloTracks || []), [sequence.soloTracks]);
   const assetsById = useMemo(() => new Map(project.assets.map((a) => [a.id, a])), [project.assets]);
 
   const rows: LaneRow[] = useMemo(
@@ -580,6 +621,62 @@ export const Timeline = React.memo(function Timeline({
       { type: 'updateSequence', sequenceId: sequence.id, changes: { mutedVideoAudio: nextMuted } },
     ]);
   }, [sequence.mutedVideoAudio, sequence.id, onEdit]);
+
+  const toggleTrackSolo = useCallback(
+    (trackId: Track) => {
+      const current = new Set(sequence.soloTracks || []);
+      if (current.has(trackId)) current.delete(trackId);
+      else current.add(trackId);
+      onEdit(current.has(trackId) ? '开启轨道独奏' : '取消轨道独奏', [
+        { type: 'updateSequence', sequenceId: sequence.id, changes: { soloTracks: [...current] } },
+      ]);
+    },
+    [sequence.soloTracks, sequence.id, onEdit],
+  );
+
+  const handleKeyframeDragStart = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>, clip: Clip, kfFrame: number) => {
+      e.stopPropagation();
+      onSelect(clip.id);
+      onSeek(clip.start + kfFrame);
+      if (clip.locked) return;
+      const sx = e.clientX;
+      const startFrame = kfFrame;
+      let targetFrame = kfFrame;
+      cleanup.current?.();
+      cleanup.current = pointerDrag(
+        e,
+        (mx) => {
+          const { totalFrames: tf, contentWidth: cw } = scaleRef.current;
+          const deltaFrames = Math.round(((mx - sx) / Math.max(1, cw)) * tf);
+          targetFrame = Math.max(0, Math.min(Math.max(0, clip.duration - 1), startFrame + deltaFrames));
+          onSeek(clip.start + targetFrame, { scrubbing: true });
+        },
+        () => {
+          cleanup.current = null;
+          onEndScrub?.(clip.start + targetFrame);
+          if (targetFrame !== startFrame) {
+            const nextKf = moveClipKeyframeFrame(
+              clip.keyframes,
+              startFrame,
+              targetFrame,
+              Math.max(0, clip.duration - 1),
+            );
+            onEdit(`移动「${clip.name}」关键帧至 F${targetFrame}`, [
+              {
+                type: 'updateClip',
+                sequenceId: sequence.id,
+                clipId: clip.id,
+                changes: { keyframes: nextKf },
+              },
+            ]);
+          }
+        },
+        'ew-resize',
+      );
+    },
+    [sequence.id, onSelect, onSeek, onEndScrub, onEdit],
+  );
 
   const toggleTrackLock = useCallback(
     (trackId: Track) => {
@@ -836,8 +933,10 @@ export const Timeline = React.memo(function Timeline({
         overlayCount={overlayCount}
         allClips={sequence.clips}
         mutedSet={mutedSet}
+        soloSet={soloSet}
         mutedVideoAudio={Boolean(sequence.mutedVideoAudio)}
         onToggleLock={toggleTrackLock}
+        onToggleSolo={toggleTrackSolo}
         onToggleVisMute={toggleTrackMuteOrVis}
         onToggleVideoAudioMute={toggleVideoAudioMute}
       />
@@ -866,6 +965,7 @@ export const Timeline = React.memo(function Timeline({
           <TimelineLanes
             rows={rows}
             mutedSet={mutedSet}
+            soloSet={soloSet}
             assetsById={assetsById}
             fps={sequence.fps}
             totalFrames={totalFrames}
@@ -882,6 +982,7 @@ export const Timeline = React.memo(function Timeline({
             onClipDoubleClick={onSeek}
             onClipSelect={onSelect}
             onApplyTransition={applyTransitionToClip}
+            onKeyframeDragStart={handleKeyframeDragStart}
           />
           {drag?.snapFrame !== undefined && (
             <div className="snap-guide" style={{ left: `${(drag.snapFrame / totalFrames) * 100}%` }} />

@@ -7,15 +7,29 @@ import {
   applyOperations,
   clone,
   createCompoundVaultItemFromClips,
+  detachAudioFromClipOperations,
   instantiateCompoundVaultItemOperations,
   newClip,
   newProject,
   parseSRTText,
   preflightSequence,
   prepareScopedComponentOperations,
+  splitOperations,
   timecodeFrames,
   uid,
 } from '../src/core/project';
+import {
+  applyKeyframeEasing,
+  buildAudioDuckingKeyframes,
+  buildKenBurnsKeyframes,
+  evaluateKeyframeTrack,
+  moveClipKeyframeFrame,
+  removeClipKeyframe,
+  resolveClipPropsAtFrame,
+  scaleKeyframesForFps,
+  splitKeyframesForSplit,
+  upsertClipKeyframe,
+} from '../src/core/keyframes';
 import { ProjectStore } from '../electron/store';
 import type { Asset, CodeComponent } from '../src/core/types';
 import {
@@ -758,4 +772,119 @@ assert.ok(
   assert.deepEqual(pHide.canvasHiddenNodeIds, ['asset:foo']);
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C core regression tests (timecode, SRT, ripple, strict scope, lock-safe relink, numeric breakdown, per-line SRT, unified storyboard, shot audio, spanning watermark, trailing preflight, transitions, cross-FPS compounds, unified catalog & workbench state)');
+// 8. Milestone 1: Keyframes & Easing Curves, Split/FPS Scaling, Auto-Ducking, J/L Cut Detach, Track Solo
+{
+  // 8a. Easing curves & track evaluation
+  assert.equal(applyKeyframeEasing(0.5, 'linear'), 0.5);
+  assert.ok(applyKeyframeEasing(0.5, 'ease-in') < 0.2, 'ease-in starts slow');
+  assert.ok(applyKeyframeEasing(0.5, 'ease-out') > 0.8, 'ease-out decelerates smoothly');
+  assert.equal(applyKeyframeEasing(0.5, 'ease-in-out'), 0.5);
+  assert.equal(applyKeyframeEasing(0.99, 'hold'), 0);
+  assert.equal(applyKeyframeEasing(1, 'hold'), 1);
+
+  const track = [
+    { frame: 0, value: 0, easing: 'linear' as const },
+    { frame: 30, value: 1, easing: 'hold' as const },
+    { frame: 60, value: 0.25, easing: 'ease-in-out' as const },
+  ];
+  assert.equal(evaluateKeyframeTrack(track, -5, 9), 0, 'Clamps to first keyframe before start');
+  assert.ok(Math.abs(evaluateKeyframeTrack(track, 15, 9) - 0.5) < 1e-6, 'Linear midpoint');
+  assert.equal(evaluateKeyframeTrack(track, 45, 9), 1, 'Hold keeps previous value until next keyframe');
+  assert.equal(evaluateKeyframeTrack(track, 60, 9), 0.25);
+  assert.equal(evaluateKeyframeTrack(track, 120, 9), 0.25, 'Clamps to last keyframe after end');
+
+  // 8b. Upsert / Move / Remove + resolveClipPropsAtFrame
+  let kf = upsertClipKeyframe(undefined, 'scale', 0, 1, 'ease-in-out');
+  kf = upsertClipKeyframe(kf, 'scale', 60, 1.2, 'ease-in-out');
+  kf = moveClipKeyframeFrame(kf, 60, 30);
+  assert.equal(kf?.scale?.[1].frame, 30);
+  const clipBase = { ...newClip('image', 0), id: 'kf_clip', duration: 60, props: { scale: 1, opacity: 1 }, keyframes: kf };
+  const midProps = resolveClipPropsAtFrame(clipBase, 15);
+  assert.ok(Math.abs(Number(midProps.scale) - 1.1) < 1e-4, 'resolveClipPropsAtFrame evaluates animated props');
+  kf = removeClipKeyframe(kf, 'scale', 0);
+  kf = removeClipKeyframe(kf, 'scale', 30);
+  assert.equal(kf, undefined, 'Removing final keyframe cleans empty keyframes record');
+
+  // 8c. Split keyframes seamlessly across clip boundary & FPS scaling
+  const splitPair = splitKeyframesForSplit(
+    { opacity: [{ frame: 0, value: 0, easing: 'linear' }, { frame: 60, value: 1, easing: 'linear' }] },
+    30,
+  );
+  assert.ok(Math.abs(evaluateKeyframeTrack(splitPair.left?.opacity, 30, 1) - 0.5) < 1e-4);
+  assert.ok(Math.abs(evaluateKeyframeTrack(splitPair.right?.opacity, 0, 1) - 0.5) < 1e-4);
+  assert.ok(Math.abs(evaluateKeyframeTrack(splitPair.right?.opacity, 30, 1) - 1) < 1e-4);
+
+  const scaled = scaleKeyframesForFps(splitPair.left, 60 / 30);
+  assert.equal(scaled?.opacity?.[1].frame, 60, '30f@30fps keyframe scales cleanly to 60f@60fps');
+
+  // 8d. Ken Burns + Auto-Ducking presets
+  const kb = buildKenBurnsKeyframes(clipBase, 'zoom-in');
+  assert.equal(kb.scale?.length, 2);
+  assert.ok((kb.scale?.[1].value ?? 0) > (kb.scale?.[0].value ?? 0));
+
+  let pM1 = newProject('Milestone1Test');
+  const sM1 = pM1.sequences[0].id;
+  pM1 = applyOperations(pM1, [
+    { type: 'addAsset', asset: { id: 'a_vid1', name: 'interview.mp4', kind: 'video', path: '/tmp/iv.mp4', duration: 6, createdAt: '' } },
+    { type: 'addAsset', asset: { id: 'a_bgm1', name: 'bgm.wav', kind: 'audio', path: '/tmp/bgm.wav', duration: 6, createdAt: '' } },
+    { type: 'addAsset', asset: { id: 'a_vo1', name: 'vo.wav', kind: 'audio', path: '/tmp/vo.wav', duration: 2, createdAt: '' } },
+    {
+      type: 'addClip',
+      sequenceId: sM1,
+      clip: {
+        ...newClip('video', 0, 'a_vid1'),
+        id: 'v_iv',
+        duration: 180,
+        props: { volume: 0.9 },
+        keyframes: {
+          opacity: [{ frame: 0, value: 0, easing: 'linear' }, { frame: 60, value: 1, easing: 'linear' }],
+          volume: [{ frame: 0, value: 0.5, easing: 'linear' }, { frame: 60, value: 1, easing: 'linear' }],
+        },
+      },
+    },
+    { type: 'addClip', sequenceId: sM1, clip: { ...newClip('audio', 0, 'a_bgm1'), id: 'aud_bgm_m1', duration: 180, props: { volume: 1 } } },
+    { type: 'addClip', sequenceId: sM1, clip: { ...newClip('audio', 60, 'a_vo1'), id: 'aud_vo_m1', duration: 60, props: { volume: 1 } } },
+  ]);
+  const bgmClip = pM1.sequences[0].clips.find((c) => c.id === 'aud_bgm_m1')!;
+  const duckedKf = buildAudioDuckingKeyframes(pM1.sequences[0], bgmClip, { duckVolume: 0.25, rampFrames: 6 });
+  assert.ok((duckedKf.volume?.length ?? 0) >= 4, 'Auto-Duck generates ramp points around voice window');
+  assert.ok(evaluateKeyframeTrack(duckedKf.volume, 10, 1) > 0.9, 'BGM stays full before narration');
+  assert.ok(evaluateKeyframeTrack(duckedKf.volume, 90, 1) < 0.3, 'BGM ducks down during narration (f60..120)');
+  assert.ok(evaluateKeyframeTrack(duckedKf.volume, 150, 1) > 0.9, 'BGM recovers after narration');
+
+  // 8e. Split clip preserves & splits keyframes through applyOperations
+  const vIv = pM1.sequences[0].clips.find((c) => c.id === 'v_iv')!;
+  const splitM1Ops = splitOperations(pM1.sequences[0], vIv, 30);
+  const pSplitM1 = applyOperations(pM1, splitM1Ops);
+  const firstHalf = pSplitM1.sequences[0].clips.find((c) => c.id === 'v_iv')!;
+  const secondHalf = pSplitM1.sequences[0].clips.find((c) => c.id !== 'v_iv' && c.kind === 'video')!;
+  assert.ok(Math.abs(evaluateKeyframeTrack(firstHalf.keyframes?.opacity, 30, 1) - 0.5) < 1e-4);
+  assert.ok(Math.abs(evaluateKeyframeTrack(secondHalf.keyframes?.opacity, 0, 1) - 0.5) < 1e-4);
+
+  // 8f. J/L Cut Audio Detach (mutes video clip, spawns frame-aligned audio clip on A1 with transferred volume keyframes)
+  const { operations: detachOps, audioClipId } = detachAudioFromClipOperations(pM1.sequences[0], vIv);
+  assert.equal(detachOps.length, 2);
+  const pDetached = applyOperations(pM1, detachOps);
+  const mutedVid = pDetached.sequences[0].clips.find((c) => c.id === 'v_iv')!;
+  const detachedAud = pDetached.sequences[0].clips.find((c) => c.id === audioClipId)!;
+  assert.equal(mutedVid.muted, true, 'Original video clip is muted');
+  assert.equal(mutedVid.keyframes?.volume, undefined, 'Volume keyframes moved off muted video clip');
+  assert.ok(mutedVid.keyframes?.opacity?.length, 'Visual keyframes remain intact on video clip');
+  assert.equal(detachedAud.kind, 'audio');
+  assert.equal(detachedAud.track, 'audio');
+  assert.equal(detachedAud.assetId, vIv.assetId);
+  assert.equal(detachedAud.start, vIv.start);
+  assert.equal(detachedAud.duration, vIv.duration);
+  assert.equal(detachedAud.audioAttachMode, 'timeline', 'Detached audio defaults to timeline-anchored for J/L sliding');
+  assert.equal(detachedAud.keyframes?.volume?.length, 2, 'Volume keyframes transferred to detached audio clip');
+
+  // 8g. Track Solo (S) persists via updateSequence & surfaces warning in preflightSequence
+  const pSolo = applyOperations(pM1, [
+    { type: 'updateSequence', sequenceId: sM1, changes: { soloTracks: ['audio'] } },
+  ]);
+  assert.deepEqual(pSolo.sequences[0].soloTracks, ['audio']);
+  const soloIssues = preflightSequence(pSolo, sM1, []);
+  assert.ok(soloIssues.some((i) => i.id === 'solo-tracks-active'), 'Preflight warns when Solo mode is active');
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 core regression tests (keyframes, easing, auto-duck, J/L detach, track solo)');

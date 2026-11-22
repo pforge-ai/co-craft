@@ -102,6 +102,7 @@ import type {
 import {
   clone,
   createCompoundVaultItemFromClips,
+  detachAudioFromClipOperations,
   durationOf,
   inferDefaultAudioAttachMode,
   instantiateCompoundVaultItemOperations,
@@ -1343,6 +1344,22 @@ export function App() {
         setShowRight((v) => !v);
       },
     },
+    ...(clip && clip.kind === 'video' && clip.assetId && !clip.muted && !clip.locked
+      ? [
+          {
+            name: '分离当前视频音画 (J/L Cut)',
+            detail: '静音原视频声音并在 A1 轨生成独立音轨',
+            key: '',
+            action: () => {
+              if (!sequence || !clip) return;
+              const res = detachAudioFromClipOperations(sequence, clip);
+              void edit(`分离「${clip.name}」音画 (J/L Cut)`, res.operations).then(() =>
+                selectClip(res.audioClipId),
+              );
+            },
+          },
+        ]
+      : []),
     { name: '设置', detail: '模型、外观与 Skills', key: '⌘ ,', action: () => openSettings() },
   ];
 
@@ -2803,6 +2820,9 @@ export function App() {
               sequence={sequence}
               project={project}
               previewOrigin={boot.previewOrigin}
+              playheadClock={playheadClockRef.current ?? undefined}
+              onSeek={seek}
+              onSelectClip={selectClip}
               onEdit={editVoidCb}
               onReference={referenceCb}
               onSaveAsAsset={saveSelectedClipsAsAssetCb}
