@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   AbsoluteFill,
+  Freeze,
   Sequence,
   Img,
   OffthreadVideo,
@@ -18,7 +19,7 @@ import {
   spring,
   getRemotionEnvironment,
 } from 'remotion';
-import type { Project, Sequence as FilmSequence, Clip, CodeComponent } from '../core/types';
+import type { Project, Sequence as FilmSequence, Clip, CodeComponent, TransitionType } from '../core/types';
 
 export interface FilmProps extends Record<string, unknown> {
   project: Project;
@@ -31,6 +32,9 @@ export interface FilmProps extends Record<string, unknown> {
 
 export const mediaUrl = (origin: string, id: string, thumbnail = false) =>
   `${origin}/media/${encodeURIComponent(id)}${thumbnail ? '?thumbnail=1' : ''}`;
+
+export const mediaFrameUrl = (origin: string, id: string, frame: number, fps = 30, cacheTag?: string) =>
+  `${origin}/media/${encodeURIComponent(id)}?frame=${Math.max(0, Math.round(frame))}&fps=${fps}${cacheTag ? `&v=${encodeURIComponent(cacheTag.slice(0, 8))}` : ''}`;
 
 const bounded = (n: number) => Math.max(0, Math.min(1, n));
 
@@ -401,14 +405,18 @@ function Content({
   clip,
   project,
   mediaOrigin,
-  audioMuted,
+  audioTrackMuted,
+  videoAudioMuted,
+  audioGainScale,
   paused,
   isSelected,
 }: {
   clip: Clip;
   project: Project;
   mediaOrigin: string;
-  audioMuted?: boolean;
+  audioTrackMuted?: boolean;
+  videoAudioMuted?: boolean;
+  audioGainScale?: (f: number) => number;
   paused?: boolean;
   isSelected?: boolean;
 }) {
@@ -418,6 +426,11 @@ function Content({
   const borderRadius = Number(clip.props.borderRadius || 0);
   const filterCss = buildFilterCss(clip.props);
   const vignette = Number(clip.props.vignette || 0);
+  const effectiveVideoMuted = Boolean(videoAudioMuted || clip.muted);
+  const effectiveAudioMuted = Boolean(audioTrackMuted || clip.muted);
+  const videoVol: number | ((f: number) => number) = effectiveVideoMuted
+    ? 0
+    : (f: number) => computeAudioVolume(f, clip, fps) * (audioGainScale ? audioGainScale(f) : 1);
 
   if (getPreset(String(clip.props.presetId || ''))) {
     return (
@@ -427,7 +440,7 @@ function Content({
           filter: filterCss,
         }}
       >
-        <PresetContent clip={clip} project={project} mediaOrigin={mediaOrigin} />
+        <PresetContent clip={clip} project={project} mediaOrigin={mediaOrigin} videoVolume={videoVol} />
       </AbsoluteFill>
     );
   }
@@ -475,8 +488,14 @@ function Content({
   }
   const src = mediaUrl(mediaOrigin, clip.assetId!);
   if (clip.kind === 'audio') {
-    if (audioMuted) return null;
-    return <Html5Audio src={src} startFrom={clip.sourceIn} volume={(f) => computeAudioVolume(f, clip, fps)} />;
+    if (effectiveAudioMuted) return null;
+    return (
+      <Html5Audio
+        src={src}
+        startFrom={clip.sourceIn}
+        volume={(f) => computeAudioVolume(f, clip, fps) * (audioGainScale ? audioGainScale(f) : 1)}
+      />
+    );
   }
   const motion = clip.props.animation === 'none' ? 1 : 1 + Math.min(frame / (clip.duration || 1), 1) * 0.035;
   const boxScale = Number(clip.props.scale || 1) * (clip.kind === 'image' ? motion : 1);
@@ -496,7 +515,6 @@ function Content({
     opacity: Number(clip.props.opacity ?? 1),
     filter: filterCss,
   };
-  const videoVol = audioMuted ? 0 : (f: number) => computeAudioVolume(f, clip, fps);
   return (
     <AbsoluteFill style={{ overflow: 'hidden' }}>
       <div data-clip-box={clip.id} style={boxStyle}>
@@ -522,15 +540,40 @@ function Content({
   );
 }
 
+function OutgoingTransitionEnvelope({
+  type,
+  durationFrames,
+  children,
+}: {
+  type: TransitionType;
+  durationFrames: number;
+  children: React.ReactNode;
+}) {
+  const f = useCurrentFrame();
+  const dur = Math.max(1, durationFrames);
+  const raw = bounded(f / dur);
+  const p = 1 - Math.pow(1 - raw, 3);
+  let style: React.CSSProperties = {};
+  if (type === 'slide-left') {
+    style = { transform: `translateX(${(-p * 100).toFixed(2)}%)` };
+  } else if (type === 'zoom-in') {
+    style = { transform: `scale(${(1 + 0.08 * p).toFixed(4)})` };
+  } else if (type === 'blur') {
+    style = { filter: `blur(${(p * 14).toFixed(2)}px)` };
+  } else if (type === 'fade') {
+    // Pro NLE Dip-to-Black: first half fades outgoing clip A smoothly to black
+    style = { opacity: raw < 0.5 ? Math.max(0, 1 - raw * 2) : 0 };
+  }
+  return <AbsoluteFill style={style}>{children}</AbsoluteFill>;
+}
+
 function TransitionEnvelope({
   clip,
-  paused = false,
-  isSelected = false,
+  hasOutgoing = false,
   children,
 }: {
   clip: Clip;
-  paused?: boolean;
-  isSelected?: boolean;
+  hasOutgoing?: boolean;
   children: React.ReactNode;
 }) {
   const f = useCurrentFrame();
@@ -546,16 +589,21 @@ function TransitionEnvelope({
   } else if (tr.type === 'slide-left') {
     style = { transform: `translateX(${((1 - p) * 100).toFixed(2)}%)` };
   } else if (tr.type === 'zoom-in') {
-    style = { transform: `scale(${(0.86 + 0.14 * p).toFixed(4)})`, opacity: p };
+    style = { transform: `scale(${(0.88 + 0.12 * p).toFixed(4)})`, opacity: p };
   } else if (tr.type === 'blur') {
-    style = { filter: `blur(${((1 - p) * 16).toFixed(2)}px)`, opacity: Math.min(1, p * 1.3) };
+    style = { filter: `blur(${((1 - p) * 14).toFixed(2)}px)`, opacity: p };
   } else if (tr.type === 'wipe') {
     style = { clipPath: `inset(0 ${((1 - p) * 100).toFixed(2)}% 0 0)` };
+  } else if (tr.type === 'fade') {
+    if (hasOutgoing) {
+      // Second half of Dip-to-Black: incoming clip B fades up from black
+      style = { opacity: raw < 0.5 ? 0 : bounded((raw - 0.5) * 2) };
+    }
   }
   return (
     <AbsoluteFill style={style}>
       {children}
-      {tr.type === 'fade' && (
+      {tr.type === 'fade' && !hasOutgoing && (
         <AbsoluteFill style={{ background: `rgba(0, 0, 0, ${(1 - p).toFixed(4)})`, pointerEvents: 'none' }} />
       )}
     </AbsoluteFill>
@@ -565,23 +613,99 @@ function TransitionEnvelope({
 export function Film({ project, sequenceId, mediaOrigin, paused, selectedClipId, liveOverride }: FilmProps) {
   const sequence: FilmSequence = project.sequences.find((s) => s.id === sequenceId) || project.sequences[0];
   const muted = new Set(sequence.mutedTracks || []);
+  const a1TrackMuted = muted.has('audio');
+  const v1VideoAudioMuted = Boolean(sequence.mutedVideoAudio);
   const layers = { visual: 0, audio: 1, overlay: 2, caption: 3 };
+  const sortedClips = [...sequence.clips]
+    .filter((clip) => !muted.has(clip.track))
+    .sort((a, b) => layers[a.track] - layers[b.track] || (a.layer ?? 0) - (b.layer ?? 0) || a.start - b.start);
+
   return (
     <AbsoluteFill style={{ background: sequence.background }}>
-      {[...sequence.clips]
-        .filter((clip) => !muted.has(clip.track))
-        .sort(
-          (a, b) => layers[a.track] - layers[b.track] || (a.layer ?? 0) - (b.layer ?? 0) || a.start - b.start,
-        )
-        .map((origClip) => {
-          const clip =
-            liveOverride && liveOverride.clipId === origClip.id
-              ? { ...origClip, props: { ...origClip.props, ...liveOverride.props } }
-              : origClip;
-          const isSelected = selectedClipId === clip.id;
-          return (
+      {sortedClips.map((origClip) => {
+        const clip =
+          liveOverride && liveOverride.clipId === origClip.id
+            ? { ...origClip, props: { ...origClip.props, ...liveOverride.props } }
+            : origClip;
+        const isSelected = selectedClipId === clip.id;
+
+        // Pro NLE True A/B Cross-Transition Bridge: when an incoming clip has transitionIn and touches a preceding
+        // clip on the same track, render outgoing footage (tail handle or held last frame) seamlessly underneath!
+        const tr = clip.transitionIn;
+        const trDur = tr && clip.kind !== 'audio' ? Math.min(clip.duration, Math.max(1, tr.durationFrames || 1)) : 0;
+        const outgoingClip =
+          tr && trDur > 0
+            ? sortedClips.find(
+                (prev) =>
+                  prev.id !== clip.id &&
+                  prev.track === clip.track &&
+                  prev.kind !== 'audio' &&
+                  Math.abs(prev.start + prev.duration - clip.start) <= 1,
+              )
+            : undefined;
+
+        let outgoingBridge: React.ReactNode = null;
+        if (outgoingClip && tr && trDur > 0) {
+          const outAsset = outgoingClip.assetId
+            ? project.assets.find((a) => a.id === outgoingClip.assetId)
+            : undefined;
+          const outAssetFrames =
+            outAsset && outAsset.duration > 0 ? Math.floor(outAsset.duration * sequence.fps) : 0;
+          const hasTailHandle =
+            outgoingClip.kind === 'video' &&
+            outAssetFrames > 0 &&
+            outgoingClip.sourceIn + outgoingClip.duration + trDur <= outAssetFrames;
+          const bridgeClip: Clip =
+            outgoingClip.kind === 'video'
+              ? {
+                  ...outgoingClip,
+                  sourceIn: hasTailHandle
+                    ? outgoingClip.sourceIn + outgoingClip.duration
+                    : Math.max(0, outgoingClip.sourceIn + outgoingClip.duration - 1),
+                  duration: trDur,
+                  muted: hasTailHandle ? outgoingClip.muted : true,
+                }
+              : outgoingClip;
+          const bridgeInner = (
+            <Content
+              clip={bridgeClip}
+              project={project}
+              mediaOrigin={mediaOrigin}
+              audioTrackMuted={a1TrackMuted}
+              videoAudioMuted={v1VideoAudioMuted || !hasTailHandle}
+              audioGainScale={hasTailHandle ? (f) => bounded(1 - f / trDur) : undefined}
+              paused={paused}
+              isSelected={false}
+            />
+          );
+          outgoingBridge = (
             <Sequence
-              key={clip.id}
+              key={`${clip.id}-tr-out`}
+              from={clip.start}
+              durationInFrames={trDur}
+              name={`${outgoingClip.name} (转场出画)`}
+              layout="absolute-fill"
+            >
+              <OutgoingTransitionEnvelope type={tr.type} durationFrames={trDur}>
+                {hasTailHandle ? (
+                  bridgeInner
+                ) : (
+                  <Freeze frame={outgoingClip.kind === 'video' ? 0 : Math.max(0, outgoingClip.duration - 1)}>
+                    {bridgeInner}
+                  </Freeze>
+                )}
+              </OutgoingTransitionEnvelope>
+            </Sequence>
+          );
+        }
+
+        const incomingAudioCrossfade =
+          outgoingClip && trDur > 0 && clip.kind === 'video' ? (f: number) => bounded(f / trDur) : undefined;
+
+        return (
+          <React.Fragment key={clip.id}>
+            {outgoingBridge}
+            <Sequence
               from={clip.start}
               durationInFrames={clip.duration}
               name={clip.name}
@@ -597,20 +721,23 @@ export function Film({ project, sequenceId, mediaOrigin, paused, selectedClipId,
                   mixBlendMode: (clip.props.blendMode as React.CSSProperties['mixBlendMode']) || 'normal',
                 }}
               >
-                <TransitionEnvelope clip={clip} paused={paused} isSelected={isSelected}>
+                <TransitionEnvelope clip={clip} hasOutgoing={Boolean(outgoingClip)}>
                   <Content
                     clip={clip}
                     project={project}
                     mediaOrigin={mediaOrigin}
-                    audioMuted={muted.has('audio')}
+                    audioTrackMuted={a1TrackMuted}
+                    videoAudioMuted={v1VideoAudioMuted}
+                    audioGainScale={incomingAudioCrossfade}
                     paused={paused}
                     isSelected={isSelected}
                   />
                 </TransitionEnvelope>
               </div>
             </Sequence>
-          );
-        })}
+          </React.Fragment>
+        );
+      })}
     </AbsoluteFill>
   );
 }

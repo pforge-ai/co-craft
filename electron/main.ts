@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeTheme, nativeImage } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname, resolve, basename } from 'node:path';
-import { mkdir, readFile, writeFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, rm, stat, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { Library, ProjectStore } from './store';
 import { SettingsStore } from './settings';
@@ -15,7 +15,15 @@ import { createDemo } from './demo';
 import { importMedia } from './media';
 import { compileComponent } from './code';
 import { GlobalVault } from './vault';
-import { newClip, uid, applyOperations, parseSRTText, preflightSequence } from '../src/core/project';
+import {
+  newClip,
+  uid,
+  clone,
+  applyOperations,
+  parseSRTText,
+  preflightSequence,
+  inferDefaultAudioAttachMode,
+} from '../src/core/project';
 import { friendlySkillTitle } from '../src/core/taxonomy';
 import type {
   Asset,
@@ -72,7 +80,7 @@ const emit = (channel: string, data: unknown) => {
 async function changed(target: ProjectStore, envelope: ProjectEnvelope) {
   await library.remember(target, false);
   if (store.path === target.path) {
-    media.setProjectAssets(envelope.project.assets);
+    media.setProjectAssets(envelope.project.assets, target.path);
     emit('project', envelope);
   }
 }
@@ -91,10 +99,12 @@ async function importFiles(paths: string[], append = false, sequenceId?: string)
     operations.push({ type: 'addAsset', asset: a });
     if (append) {
       const clipKind = a.kind === 'model-3d' ? 'shape' : a.kind;
+      const dur = Math.max(1, Math.floor(a.duration * seq.fps));
       const c = {
         ...newClip(clipKind, start, a.id),
         name: a.name,
-        duration: Math.max(1, Math.floor(a.duration * seq.fps)),
+        duration: dur,
+        ...(a.kind === 'audio' ? { audioAttachMode: inferDefaultAudioAttachMode(a, dur, seq.fps) } : {}),
       };
       operations.push({ type: 'addClip', sequenceId: seq.id, clip: c });
       if (a.kind !== 'audio') start += c.duration;
@@ -114,7 +124,7 @@ async function handle(method: string, arg: any = {}) {
   switch (method) {
     case 'boot': {
       const current = await store.envelope();
-      media.setProjectAssets(current.project.assets);
+      media.setProjectAssets(current.project.assets, store.path);
       return {
         projects: await library.list(),
         current,
@@ -132,13 +142,13 @@ async function handle(method: string, arg: any = {}) {
     case 'project.demo': {
       store = await createDemo(library, resources);
       const envelope = await store.envelope();
-      media.setProjectAssets(envelope.project.assets);
+      media.setProjectAssets(envelope.project.assets, store.path);
       return envelope;
     }
     case 'project.create': {
       store = await library.create(String(arg.name || '未命名项目'));
       const envelope = await store.envelope();
-      media.setProjectAssets(envelope.project.assets);
+      media.setProjectAssets(envelope.project.assets, store.path);
       return envelope;
     }
     case 'project.open': {
@@ -153,7 +163,7 @@ async function handle(method: string, arg: any = {}) {
       }
       store = await library.open(extname(path) === '.json' ? dirname(path) : path);
       const e = await store.envelope();
-      media.setProjectAssets(e.project.assets);
+      media.setProjectAssets(e.project.assets, store.path);
       return e;
     }
     case 'project.reveal':
@@ -282,40 +292,118 @@ async function handle(method: string, arg: any = {}) {
           properties: ['openFile'],
           filters: [
             {
-              name: asset.kind === 'image' ? '图片' : asset.kind === 'audio' ? '音频' : '视频',
+              name:
+                asset.kind === 'image'
+                  ? '图片'
+                  : asset.kind === 'audio'
+                    ? '音频'
+                    : asset.kind === 'model-3d'
+                      ? '3D 模型'
+                      : '视频',
               extensions:
                 asset.kind === 'image'
                   ? ['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif', 'avif']
                   : asset.kind === 'audio'
                     ? ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg']
-                    : ['mp4', 'mov', 'm4v', 'webm', 'mkv'],
+                    : asset.kind === 'model-3d'
+                      ? ['glb', 'gltf']
+                      : ['mp4', 'mov', 'm4v', 'webm', 'mkv'],
             },
           ],
         });
         if (d.canceled || !d.filePaths[0]) return null;
         filePath = d.filePaths[0];
       }
-      const probed = await importMedia(filePath, target.path, asset.id);
-      if (probed.kind !== asset.kind) throw new Error('所选文件类型与原资产不一致');
-      const e = await target.edit({
-        baseRevision: p.revision,
-        name: `重连素材「${asset.name}」`,
-        operations: [
-          {
-            type: 'relinkAsset',
-            assetId: asset.id,
-            path: probed.path,
-            duration: probed.duration,
-            width: probed.width,
-            height: probed.height,
-            thumbnail: probed.thumbnail,
-            waveform: probed.waveform,
-            hasAudio: probed.hasAudio,
-          },
-        ],
-      });
-      await changed(target, e);
-      return e;
+      const thumbDir = join(target.path, '.cocraft', 'thumbnails');
+      const tempThumb =
+        asset.kind === 'video' ? join(thumbDir, `${asset.id}.relink-${Date.now()}.jpg`) : undefined;
+      const finalThumb = asset.kind === 'video' ? join(thumbDir, `${asset.id}.jpg`) : undefined;
+      let probed: Asset;
+      try {
+        probed = await importMedia(filePath, target.path, asset.id, { thumbnailPath: tempThumb });
+      } catch (err) {
+        if (tempThumb) await rm(tempThumb, { force: true }).catch(() => {});
+        throw err;
+      }
+      if (probed.kind !== asset.kind) {
+        if (tempThumb) await rm(tempThumb, { force: true }).catch(() => {});
+        throw new Error('所选文件类型与原资产不一致');
+      }
+      const sameContent = Boolean(asset.sha256 && probed.sha256 && asset.sha256 === probed.sha256);
+      const lockedRefs = p.sequences.flatMap((s) =>
+        s.clips.filter(
+          (c) =>
+            c.locked &&
+            (c.assetId === asset.id || c.takes?.some((t) => t.assetId === asset.id)),
+        ),
+      );
+      if (!sameContent && lockedRefs.length > 0 && arg.mode === 'fork-unlocked') {
+        const newAssetId = uid('asset');
+        let forkedThumb = probed.thumbnail;
+        if (tempThumb && existsSync(tempThumb)) {
+          forkedThumb = join(thumbDir, `${newAssetId}.jpg`);
+          await rename(tempThumb, forkedThumb);
+        }
+        const forkedAsset: Asset = { ...probed, id: newAssetId, thumbnail: forkedThumb };
+        const ops: EditOperation[] = [{ type: 'addAsset', asset: forkedAsset }];
+        for (const seq of p.sequences) {
+          for (const clip of seq.clips) {
+            if (clip.locked) continue;
+            const changes: Partial<typeof clip> = {};
+            if (clip.assetId === asset.id) changes.assetId = newAssetId;
+            if (clip.takes?.some((t) => t.assetId === asset.id)) {
+              changes.takes = clip.takes.map((t) =>
+                t.assetId === asset.id ? { ...clone(t), assetId: newAssetId } : clone(t),
+              );
+            }
+            if (Object.keys(changes).length > 0) {
+              ops.push({ type: 'updateClip', sequenceId: seq.id, clipId: clip.id, changes });
+            }
+          }
+        }
+        const e = await target.edit({
+          baseRevision: p.revision,
+          name: `派生新素材替换未锁定镜头「${asset.name}」`,
+          operations: ops,
+        });
+        await changed(target, e);
+        return e;
+      }
+      try {
+        const e = await target.edit({
+          baseRevision: p.revision,
+          name: sameContent ? `找回原素材「${asset.name}」` : `重连并替换素材「${asset.name}」`,
+          operations: [
+            {
+              type: 'relinkAsset',
+              assetId: asset.id,
+              path: probed.path,
+              sha256: probed.sha256,
+              byteSize: probed.byteSize,
+              duration: probed.duration,
+              width: probed.width,
+              height: probed.height,
+              thumbnail: finalThumb || probed.thumbnail,
+              waveform: probed.waveform,
+              hasAudio: probed.hasAudio,
+              clearTranscript: !sameContent,
+            },
+          ],
+        });
+        if (tempThumb && finalThumb && existsSync(tempThumb)) {
+          await rename(tempThumb, finalThumb);
+        }
+        if (!sameContent) {
+          await rm(join(target.path, '.cocraft', 'analysis', `transcript-${asset.id}.json`), {
+            force: true,
+          }).catch(() => {});
+        }
+        await changed(target, e);
+        return e;
+      } catch (err) {
+        if (tempThumb) await rm(tempThumb, { force: true }).catch(() => {});
+        throw err;
+      }
     }
     case 'captions.import': {
       const target = store;
@@ -558,7 +646,7 @@ async function handle(method: string, arg: any = {}) {
         if (d.canceled || !d.filePath) return null;
         output = d.filePath;
       }
-      return jobs.render(p, seq.id, output, { scale: arg.scale || 1 });
+      return jobs.render(p, seq.id, output, { scale: arg.scale || 1, projectPath: target.path });
     }
     case 'export.still': {
       const p = await store.project();
@@ -983,7 +1071,7 @@ app
     await media.start();
     studioMedia = await studioCatalog(resources);
     media.registerStudio(studioMedia);
-    media.setProjectAssets((await store.project()).assets);
+    media.setProjectAssets((await store.project()).assets, store.path);
     jobs = new JobService(
       root,
       join(here, 'render-worker.mjs'),

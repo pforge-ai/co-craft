@@ -49,16 +49,20 @@ import { createPresetClip, getPreset } from '../core/presets';
 import {
   clone,
   createCompoundVaultItemFromClips,
+  inferDefaultAudioAttachMode,
   instantiateCompoundVaultItemOperations,
   newClip,
   timecode,
   uid,
 } from '../core/project';
 import {
+  collectShotClipsForCompound,
   computePrimaryTimelineShots,
   moveCompositeShotOperations,
   scriptOutlineToShotOperations,
+  updateShotNotesOperations,
   updateShotScriptOperations,
+  updateSingleCaptionTextOperations,
   type CompositeShot,
 } from '../core/storyboard';
 import { ROLE_LABELS, inferAssetRole } from '../core/taxonomy';
@@ -70,6 +74,7 @@ import type {
   Clip,
   ClipTake,
   EditOperation,
+  GenerationTarget,
   Project,
   Sequence,
   ShotBinding,
@@ -111,7 +116,11 @@ interface CreateCanvasProps {
     componentIds: string[];
     vaultIds?: string[];
   }) => Promise<void>;
-  onSaveClipsAsAsset?: (clips: Clip[], customName?: string) => Promise<void>;
+  onSaveClipsAsAsset?: (
+    clips: Clip[],
+    customName?: string,
+    clipWindow?: { start: number; duration: number },
+  ) => Promise<void>;
   onAddRefsToChat?: (refs: ChatContextRef[], openDrawer?: boolean) => void;
   chatRefs?: ChatContextRef[];
   onRemoveChatRef?: (key: string) => void;
@@ -121,6 +130,7 @@ interface CreateCanvasProps {
     prompt?: string;
     referenceAssetId?: string;
     assetId?: string;
+    target?: GenerationTarget;
   }) => void;
   onAskAgentForShot: (clip: Clip, prompt: string) => void;
 }
@@ -237,6 +247,7 @@ export function CreateCanvas({
 
   const [activeVarByEnt, setActiveVarByEnt] = useState<Record<string, string>>({});
   const [textDrafts, setTextDrafts] = useState<Record<string, string>>({});
+  const [rigExplodeDrafts, setRigExplodeDrafts] = useState<Record<string, number>>({});
   const activeDragCleanupRef = useRef<(() => void) | null>(null);
 
   const startManagedDrag = useCallback((cleanup: () => void) => {
@@ -440,14 +451,40 @@ export function CreateCanvas({
     setSelectedNodeIds(Object.keys(layoutRef.current));
   }, []);
 
-  function resetCanvasView() {
-    setNodePositions({});
-    nodePositionsRef.current = {};
-    if (project.canvasLayout && Object.keys(project.canvasLayout).length > 0) {
-      void onEdit('自动整理画布布局', [{ type: 'updateProject', changes: { canvasLayout: {} } }]);
+  /** Fits viewport pan & zoom to show all nodes WITHOUT overwriting manual node positions (Review #11). */
+  function fitCanvasToNodes() {
+    const entries = Object.entries(layoutRef.current);
+    const vp = viewportRef.current?.getBoundingClientRect();
+    if (!entries.length || !vp || vp.width < 100 || vp.height < 100) {
+      setPan({ x: 96, y: 72 });
+      setZoom(0.95);
+      return;
     }
-    setPan({ x: 96, y: 72 });
-    setZoom(0.95);
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const [k, pos] of entries) {
+      const w = k.startsWith('shot:') ? 286 : 264;
+      const h = k.startsWith('shot:') ? 220 : 210;
+      minX = Math.min(minX, pos.x);
+      minY = Math.min(minY, pos.y);
+      maxX = Math.max(maxX, pos.x + w);
+      maxY = Math.max(maxY, pos.y + h);
+    }
+    const contentW = Math.max(240, maxX - minX);
+    const contentH = Math.max(200, maxY - minY);
+    const padX = 72;
+    const padY = 96;
+    const nextZoom = Math.max(
+      0.35,
+      Math.min(1.1, Math.min((vp.width - padX * 2) / contentW, (vp.height - padY * 2) / contentH)),
+    );
+    const roundedZoom = Math.round(nextZoom * 100) / 100;
+    const nextPanX = Math.round((vp.width - contentW * roundedZoom) / 2 - minX * roundedZoom);
+    const nextPanY = Math.round((vp.height - contentH * roundedZoom) / 2 - minY * roundedZoom);
+    setZoom(roundedZoom);
+    setPan({ x: nextPanX, y: nextPanY });
   }
 
   function resolveShotGenContext(shot: CompositeShot): { prompt: string; refAssetId?: string } {
@@ -671,6 +708,7 @@ export function CreateCanvas({
                   clip: {
                     ...newClip('audio', sh.start, a.id),
                     name: a.name,
+                    audioAttachMode: 'shot',
                     duration: Math.max(1, Math.min(sh.duration, Math.floor(a.duration * sequence.fps))),
                   },
                 });
@@ -1064,7 +1102,8 @@ export function CreateCanvas({
               clip: {
                 ...newClip('audio', sh.start, a.id),
                 name: a.name,
-                duration: Math.max(15, Math.min(sh.duration, Math.floor(a.duration * sequence.fps))),
+                audioAttachMode: 'shot',
+                duration: Math.max(1, Math.min(sh.duration, Math.floor(a.duration * sequence.fps))),
               },
             },
           ]);
@@ -2483,9 +2522,12 @@ export function CreateCanvas({
                       {hasRig ? (
                         <PresetPreview
                           presetId={ent.rig!.presetId!}
-                          values={ent.rig!.props || {}}
+                          values={{
+                            ...(ent.rig!.props || {}),
+                            ...(rigExplodeDrafts[ent.id] !== undefined ? { explode: rigExplodeDrafts[ent.id] } : {}),
+                          }}
                           playing={isPrimarySelected}
-                          thumbnail={!isPrimarySelected}
+                          thumbnail={!isPrimarySelected && rigExplodeDrafts[ent.id] === undefined}
                         />
                       ) : refAsset && !refAsset.offline && refAsset.thumbnail ? (
                         <img src={mediaUrl(previewOrigin, refAsset.id, true)} alt={ent.name} draggable={false} />
@@ -2576,21 +2618,57 @@ export function CreateCanvas({
                         </select>
                       </label>
                       <label className="cc-mini-field">
-                        <span>拆解间距 ({Math.round(Number(ent.rig.props?.explode ?? 0.65) * 100)}%)</span>
+                        <span>
+                          拆解间距 (
+                          {Math.round(
+                            Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65) * 100,
+                          )}
+                          %)
+                        </span>
                         <input
                           type="range"
                           min={0}
                           max={1.3}
                           step={0.05}
-                          value={Number(ent.rig.props?.explode ?? 0.65)}
+                          value={Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65)}
                           onChange={(e) => {
-                            const nextProps = { ...(ent.rig?.props || {}), explode: Number(e.target.value) };
-                            void onEdit('调整三维拆解间距', [
-                              {
-                                type: 'putVaultItem',
-                                item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
-                              },
-                            ]);
+                            const val = Number(e.target.value);
+                            setRigExplodeDrafts((prev) => ({ ...prev, [ent.id]: val }));
+                          }}
+                          onPointerUp={(e) => {
+                            const val = Number(e.currentTarget.value);
+                            setRigExplodeDrafts((prev) => {
+                              const next = { ...prev };
+                              delete next[ent.id];
+                              return next;
+                            });
+                            if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
+                              const nextProps = { ...(ent.rig?.props || {}), explode: val };
+                              void onEdit('调整三维拆解间距', [
+                                {
+                                  type: 'putVaultItem',
+                                  item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
+                                },
+                              ]);
+                            }
+                          }}
+                          onBlur={(e) => {
+                            const val = Number(e.currentTarget.value);
+                            if (rigExplodeDrafts[ent.id] === undefined) return;
+                            setRigExplodeDrafts((prev) => {
+                              const next = { ...prev };
+                              delete next[ent.id];
+                              return next;
+                            });
+                            if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
+                              const nextProps = { ...(ent.rig?.props || {}), explode: val };
+                              void onEdit('调整三维拆解间距', [
+                                {
+                                  type: 'putVaultItem',
+                                  item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
+                                },
+                              ]);
+                            }
                           }}
                         />
                       </label>
@@ -2672,10 +2750,12 @@ export function CreateCanvas({
                           const audioEnd = sequence.clips
                             .filter((c) => c.track === 'audio')
                             .reduce((m, c) => Math.max(m, c.start + c.duration), 0);
+                          const dur = Math.max(1, Math.floor(a.duration * sequence.fps));
                           const c: Clip = {
                             ...newClip('audio', audioEnd, a.id),
                             name: a.name,
-                            duration: Math.max(15, Math.floor(a.duration * sequence.fps)),
+                            duration: dur,
+                            audioAttachMode: inferDefaultAudioAttachMode(a, dur, sequence.fps),
                           };
                           void onEdit(`铺入音频「${a.name}」`, [
                             { type: 'addClip', sequenceId: sequence.id, clip: c },
@@ -2978,6 +3058,12 @@ export function CreateCanvas({
                         use: 'image',
                         prompt: ctx.prompt,
                         referenceAssetId: ctx.refAssetId,
+                        target: {
+                          sequenceId: sequence.id,
+                          clipId: c.id,
+                          shotLabel: `镜头 #${shot.index} · ${c.name}`,
+                          mode: 'take',
+                        },
                       });
                     }}
                   >
@@ -3017,7 +3103,12 @@ export function CreateCanvas({
                       type="button"
                       aria-label="保存为项目资产"
                       title="将当前镜头整组保存为复合资产"
-                      onClick={() => void onSaveClipsAsAsset([...shot.compositeClips, ...shot.captionClips], c.name)}
+                      onClick={() =>
+                        void onSaveClipsAsAsset(collectShotClipsForCompound(sequence, shot), c.name, {
+                          start: shot.start,
+                          duration: shot.duration,
+                        })
+                      }
                     >
                       <BookmarkPlus size={11} /> 存资产
                     </button>
@@ -3076,6 +3167,12 @@ export function CreateCanvas({
                         use: 'image',
                         prompt: ctx.prompt,
                         referenceAssetId: ctx.refAssetId,
+                        target: {
+                          sequenceId: sequence.id,
+                          clipId: c.id,
+                          shotLabel: `镜头 #${shot.index} · ${c.name}`,
+                          mode: 'take',
+                        },
                       });
                     }}
                   >
@@ -3126,23 +3223,93 @@ export function CreateCanvas({
 
                 {selected && (
                   <div className="cc-shot-inspector-drawer" onClick={(e) => e.stopPropagation()}>
-                    <textarea
-                      key={`${shot.id}-${shot.scriptText}`}
-                      className="cc-shot-script"
-                      rows={2}
-                      aria-label={`镜头 ${shot.index} 旁白与字幕`}
-                      placeholder="输入本镜台词或旁白（自动同步字幕轨）…"
-                      defaultValue={shot.scriptText}
-                      disabled={shot.locked}
-                      onBlur={(e) => {
-                        if (e.currentTarget.value.trim() !== shot.scriptText.trim()) {
-                          void onEdit(
-                            `更新镜头 #${shot.index} 台词`,
-                            updateShotScriptOperations(sequence, shot, e.currentTarget.value),
-                          );
-                        }
-                      }}
-                    />
+                    {shot.captionClips.length >= 2 ? (
+                      <div className="shot-timed-captions compact">
+                        <div className="shot-timed-head">
+                          <span>已对时字幕（{shot.captionClips.length} 句）</span>
+                          {!shot.locked && (
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `确定将镜头 #${shot.index} 的 ${shot.captionClips.length} 条逐句字幕合并为 1 条整镜字幕？原分句停顿时间将被替换（可 ⌘Z 撤销）。`,
+                                  )
+                                ) {
+                                  void onEdit(
+                                    `合并重写镜头 #${shot.index} 字幕`,
+                                    updateShotScriptOperations(sequence, shot, shot.scriptText, { resetTiming: true }),
+                                  );
+                                }
+                              }}
+                            >
+                              合并重排
+                            </button>
+                          )}
+                        </div>
+                        {shot.captionClips.map((cap, capIdx) => (
+                          <div key={cap.id} className="shot-timed-row">
+                            <span className="shot-timed-tc">{timecode(cap.start, sequence.fps)}</span>
+                            <input
+                              key={`${cap.id}-${String(cap.props.text || '')}`}
+                              type="text"
+                              className="shot-timed-input"
+                              aria-label={`镜头 ${shot.index} 第 ${capIdx + 1} 句字幕`}
+                              defaultValue={String(cap.props.text || '')}
+                              disabled={shot.locked || cap.locked}
+                              onBlur={(e) => {
+                                const nextVal = e.currentTarget.value.trim();
+                                if (nextVal !== String(cap.props.text || '').trim()) {
+                                  void onEdit(
+                                    `修改镜头 #${shot.index} 第 ${capIdx + 1} 句字幕`,
+                                    updateSingleCaptionTextOperations(sequence, cap, nextVal),
+                                  );
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.currentTarget.blur();
+                              }}
+                            />
+                          </div>
+                        ))}
+                        <input
+                          key={`${shot.id}-notes-${c.shotNotes || ''}`}
+                          type="text"
+                          className="shot-notes-input"
+                          aria-label={`镜头 ${shot.index} 旁白备注`}
+                          placeholder="本镜旁白备注（不影响字幕时码）…"
+                          defaultValue={c.shotNotes || ''}
+                          disabled={shot.locked}
+                          onBlur={(e) => {
+                            if (e.currentTarget.value.trim() !== (c.shotNotes || '').trim()) {
+                              void onEdit(
+                                `更新镜头 #${shot.index} 旁白备注`,
+                                updateShotNotesOperations(sequence, shot, e.currentTarget.value),
+                              );
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <textarea
+                        key={`${shot.id}-${shot.scriptText}`}
+                        className="cc-shot-script"
+                        rows={2}
+                        aria-label={`镜头 ${shot.index} 旁白与字幕`}
+                        placeholder="输入本镜台词或旁白（自动同步字幕轨）…"
+                        defaultValue={shot.scriptText}
+                        disabled={shot.locked}
+                        onBlur={(e) => {
+                          if (e.currentTarget.value.trim() !== shot.scriptText.trim()) {
+                            void onEdit(
+                              `更新镜头 #${shot.index} 台词`,
+                              updateShotScriptOperations(sequence, shot, e.currentTarget.value),
+                            );
+                          }
+                        }}
+                      />
+                    )}
                     <div className="cc-shot-foot">
                       {shot.bindings.map((binding) => {
                         const ent = upstreamEntities.find((x) => x.id === binding.entityId);
@@ -3402,8 +3569,8 @@ export function CreateCanvas({
           <button
             type="button"
             className="cc-zoom-readout"
-            title="自动整理节点与视角"
-            onClick={resetCanvasView}
+            title="适应全部画布节点（保留手动布局）"
+            onClick={fitCanvasToNodes}
           >
             <LayoutGrid size={11} style={{ marginRight: 3 }} />
             {Math.round(zoom * 100)}%

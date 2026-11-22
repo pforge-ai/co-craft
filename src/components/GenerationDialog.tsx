@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AudioLines, Captions, Eye, ImagePlus, Video, ArrowUpRight, SlidersHorizontal } from 'lucide-react';
-import type { Asset, Job, ModelUse, Project, Settings } from '../core/types';
+import type { Asset, GenerationTarget, Job, ModelUse, Project, Settings } from '../core/types';
 import { selectedModel } from '../core/models';
 import { Modal, Spinner } from './ui';
 
@@ -22,6 +22,7 @@ export interface GenerationDraft {
   seconds?: number;
   voice?: string;
   language?: string;
+  target?: GenerationTarget;
 }
 type Props = {
   project: Project;
@@ -39,7 +40,7 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
   const [history, setHistory] = useState<Partial<Record<Use, GenerationDraft>>>({});
   React.useEffect(() => {
     setDraft(initial);
-  }, [initial.use, initial.prompt, initial.assetId, initial.referenceAssetId]);
+  }, [initial.use, initial.prompt, initial.assetId, initial.referenceAssetId, initial.target?.clipId]);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const update = (part: Partial<GenerationDraft>) => {
@@ -67,6 +68,7 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
         prompt: draft.prompt?.trim() || undefined,
         assetId: isAnalysis ? assetId : undefined,
         referenceAssetId: draft.referenceAssetId || undefined,
+        target: draft.use === 'image' || draft.use === 'video' ? draft.target : undefined,
       });
       onStarted(job);
     } catch (e) {
@@ -96,6 +98,7 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
                   prompt: m.id === 'image' || m.id === 'video' ? draft.prompt : undefined,
                   referenceAssetId:
                     m.id === 'image' || m.id === 'video' ? draft.referenceAssetId : undefined,
+                  target: m.id === 'image' || m.id === 'video' ? draft.target : undefined,
                 },
               );
               setError('');
@@ -113,6 +116,20 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
         }}
       >
         <div className="generation-body">
+          {draft.target && (draft.use === 'image' || draft.use === 'video') && (
+            <div className="generation-target-banner" role="status">
+              <span>
+                目标镜头：<b>{draft.target.shotLabel || '当前分镜'}</b> · 完成后将自动作为未激活候选挂载回此镜
+              </span>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => update({ target: undefined })}
+              >
+                仅收入素材库
+              </button>
+            </div>
+          )}
           <label className="field">
             <span>使用模型</span>
             <select

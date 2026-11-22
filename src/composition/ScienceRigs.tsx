@@ -16,6 +16,7 @@ export interface RigRenderContext {
   assetUrl?: string;
   assetKind?: 'video' | 'image' | 'audio' | 'model-3d';
   sourceIn?: number;
+  videoVolume?: number | ((f: number) => number);
 }
 
 export function SeeCodeRig({ width: w, height: h, frame, fps, props: p }: RigRenderContext) {
@@ -35,7 +36,8 @@ export function SeeCodeRig({ width: w, height: h, frame, fps, props: p }: RigRen
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 4);
-  const metrics = String(p.metrics || '99.4% 帧准率 · 3.2x 吞吐提升 · <8ms 调度延迟')
+  const rawMetrics = p.metrics !== undefined ? String(p.metrics) : '';
+  const metrics = rawMetrics
     .split('·')
     .map((s) => s.trim())
     .filter(Boolean);
@@ -569,6 +571,7 @@ export function ScreenFocusRig({
   assetUrl,
   assetKind,
   sourceIn = 0,
+  videoVolume = 1,
 }: RigRenderContext) {
   const u = Math.min(w, h) / 1080;
   const t = frame / fps;
@@ -696,12 +699,14 @@ export function ScreenFocusRig({
               <OffthreadVideo
                 src={assetUrl}
                 startFrom={sourceIn}
+                volume={videoVolume}
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />
             ) : (
               <Html5Video
                 src={assetUrl}
                 startFrom={sourceIn}
+                volume={videoVolume}
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />
             )

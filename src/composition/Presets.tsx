@@ -543,6 +543,7 @@ export interface PresetFrameProps {
   assetUrl?: string;
   assetKind?: 'video' | 'image' | 'audio' | 'model-3d';
   sourceIn?: number;
+  videoVolume?: number | ((f: number) => number);
 }
 export function PresetFrame({
   presetId,
@@ -555,6 +556,7 @@ export function PresetFrame({
   assetUrl,
   assetKind,
   sourceIn = 0,
+  videoVolume = 1,
 }: PresetFrameProps) {
   const requestedVersion =
     overrides.presetVersion === undefined ? undefined : Number(overrides.presetVersion);
@@ -1508,6 +1510,7 @@ export function PresetFrame({
         assetUrl={assetUrl}
         assetKind={assetKind}
         sourceIn={sourceIn}
+        videoVolume={videoVolume}
       />
     );
   }
@@ -1521,10 +1524,12 @@ export function PresetContent({
   clip,
   project,
   mediaOrigin,
+  videoVolume = 1,
 }: {
   clip: Clip;
   project?: Project;
   mediaOrigin?: string;
+  videoVolume?: number | ((f: number) => number);
 }) {
   const frame = useCurrentFrame();
   const { width, height, fps } = useVideoConfig();
@@ -1553,6 +1558,7 @@ export function PresetContent({
       assetUrl={assetUrl}
       assetKind={linked?.kind}
       sourceIn={clip.sourceIn}
+      videoVolume={videoVolume}
     />
   );
 }

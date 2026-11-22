@@ -1,6 +1,6 @@
 # CoCraft 迭代与重构计划（ROADMAP）
 
-更新日期：2026 年 11 月 22 日（完成深度全面审计与 Wave A 安全封口 / 模型路由 / 3D / P0 交互阻断清零，并完成打包版全量实机复验）。
+更新日期：2026 年 11 月 22 日（完成 Wave A 安全封口 + Wave B 创作者交付信任、专业 NLE 标准对齐、固定红蓝片端到端回归与联网沙箱修复，打包版 6 套回归全绿）。
 
 遵循小时级可运行、可演示、可验证增量交付约定。每次交付包含实际构建、可复现步骤、自动化与真机验证结果、已知边界和下一项最小目标。
 
@@ -70,6 +70,21 @@
     - `ThreeStage.tsx` / `Film.tsx` / `preview.tsx`：修复异步加载 GLB / 暂停改参后 3D 白屏，递归释放几何/材质/纹理并调用 `forceContextLoss()`，小尺寸卡片缩略图渲染一帧转静态 PNG 后立刻释放 WebGL 上下文；去除 `Film.tsx` 暂停选中时的表现偏差，增加 `componentCache` LRU(64) 与每片段 `<ClipErrorBoundary>`，修复 `Code` 变换顺序与 `preview.tsx` 崩溃恢复后 `<Player>` 监听重绑。
     - `App.tsx` / `CreateCanvas.tsx` / `Inspector.tsx` / `Timeline.tsx` / `AssetExplorer.tsx` / `SettingsDialog.tsx`：修复初始帧硬编码 70 → `0`、默认思考深度 `off`、音频试听跨切残留、全量拖拽遮罩卸载清理、`textDrafts` 撤销重置与工具栏失焦竞态、Modal `z-index` 被顶栏遮挡与弹窗内全局快捷键误触、标尺标签重叠、属性栏音频页签切图片白屏、画布底色重复输入、文字填充 `透 100 %` 截断、思考深度弹窗右溢视口、素材栏跨分类隐藏筛选与设置页一键套件 React 18 批处理覆盖。
   - **打包版全量验收结果**：`npm run test:unit`、`npm run smoke`、`npm run smoke:models`（含 `100.100.100.200` 与 `::ffff:127.0.0.1` SSRF 拦截）、打包版 `npm run smoke:agent`（含悬空软链逃逸、`relinkAsset` 拦截、deny-default 沙箱与 DashScope `enable_thinking` 路由）、打包版 `verify_wave_a.mjs`（9 项实机交互/安全/UI 断言 + 0 控制台/页面报错）与打包版 `npm run test:v04`（`[1/5]`–`[6/6]` + `823,745 bytes / 5.01s` H.264/AAC MP4 `ffprobe` 校验）全部 PASS（退出码 0）。
+- **v0.5.5 Wave B 创作者交付信任、专业 NLE 标准对齐与联网沙箱热修（已通过打包版 6 套全量验收 ✅，耗时约 38 分钟）**：
+  - **0. 联网沙箱热修（`allowNetwork: true` 退出码 65）**：[electron/agent-worker.ts](../electron/agent-worker.ts) 修正 macOS Seatbelt `(deny network-outbound ...)` 仅接受 `"localhost:*"` 的语法约束（改用 TCP/UDP 0ms 即时拦截本机回环）、提前创建工作区 `.tmp`/`.npm-cache` 并设定 `HOME: cwd`、调整 `PATH` 使本机完整 `ffmpeg` 优先于内置精简版且改用 `DYLD_FALLBACK_LIBRARY_PATH`，彻底恢复 Agent 在沙箱内运行 Python/FFmpeg 合成音频与脚本能力，同时保持本机回环与 `~/.ssh` 严格隔离。
+  - **1. 11/18 评审前 10 项全量清零**：
+    - **#1 内容指纹锁保护重连**：`Asset` 记录流式 `sha256` 与 `byteSize`；同哈希换路径在锁定镜头下直接找回，异内容换片（即使时长分辨率完全一致）触发锁定保护拦截，并提供「派生新素材仅替换未锁定镜头（`fork-unlocked`）」；重连先探临时缩略图避免失败污染，异内容自动清理陈旧转录，补齐 `.glb/.gltf` 筛选。
+    - **#2 专业 NLE 三路独立音频**：拆分为 **A1 声音轨静音（`mutedTracks`）**、**V1 视频原声静音（`mutedVideoAudio` + 片段级 `muted`）** 与 **预览监听静音（不影响导出）**；`Film.tsx` 与 `ScreenFocusRig` 全量接入，`Timeline` V1 轨头新增独立视频原声静音按钮。
+    - **#3 拆镜数字逐字保留与单份文案**：新增 `stripExplicitListMarker` 仅剥离显式列表符，逐字保留 `2026 年`、`3.5 倍`、`35mm`、`100%`、`-15℃`；光标改按非音频轨计算，不再把标题与字幕在画面上双写重复文案。
+    - **#4 分句 SRT 时码保留**：`StoryboardStudio` 与 `CreateCanvas` 对多句对时字幕提供逐句改字（`updateSingleCaptionTextOperations` 完整保留每句起止帧）与独立旁白备注，合并重排改为显式确认操作。
+    - **#5 + 统一单分镜模型 + 随镜音频归属**：`computeCompositeShots` 与 `computePrimaryTimelineShots` 统一为单一主镜轨模型，跨镜水印划入 `spanningOverlays` 不再阻断换序；音频片段新增显式 `audioAttachMode: 'shot' | 'timeline'`（短音效/配音默认 `随镜`，长底乐默认 `固定时间线`，支持时间线徽标查看与属性栏切换），换序原子同步画面、局部叠加、字幕与随镜声音。
+    - **#6 复合镜头整栈沉淀**：`collectShotClipsForCompound` + `createCompoundVaultItemFromClips` 保留裁切 `sourceIn`、时长、字幕与随镜声音并修复素材角色标注；`instantiateCompoundVaultItemOperations` 跨帧率等比缩放 `sourceIn` 与转场时长。
+    - **#7 冷启动空工程舞台手柄即时生效**：`StageOverlay.tsx` 增加 `visible` 联动 `useLayoutEffect` 与实时 DOM 尺寸兜底，`preview.tsx` 在工程版本/片段数变化后主动重测 `[data-clip-root]`，冷启动空工程入轨即刻生成 `.stage-viewport` 与 4 角缩放手柄。
+    - **#8 逐帧精确分镜缩略图**：`media.ts` / `server.ts` 新增 `/media/<id>?frame=<n>&fps=<fps>` 缓存抽帧端点（按 `sha256` 标签自动失效），`ShotCompositeThumb` 按 `clip.sourceIn + offset` 取真实代表帧。
+    - **#9 AI 候选自动回挂原镜头**：`GenerationRequest`/`Job` 携带 `target` 目标镜头，生图/生视频完成后原子 `addAsset` + 追加未激活 `ClipTake`（不覆盖当前镜头），目标锁定/删除时安全降级入库并在后台作业面板提示原因。
+    - **#10 完整导出预检与异常显性化**：`preflightSequence` 补齐空视觉、片头、中段、片尾空黑与静音提示；`Dialogs.tsx` 不再吞没预检异常，提供重试入口。
+  - **2. 专业 NLE 真 A/B 交叉叠化转场 & 高频体验打磨（#11/#12/#14/#15/#16/#17/#18/#20/#21/#22）**：`Film.tsx` 为相邻同轨转场渲染出画桥接层（有余量播放真实尾帧并交叉淡出原声，无余量用 `Freeze` 稳住末帧，`dissolve/wipe/slide-left/zoom-in/blur` 全程无黑闪，`fade` 为标准 Dip-to-Black）；`splitOperations` 不再向后半段克隆 `transitionIn`；修复适应画布不清空手动排版、滑杆松手单次提交（防刷爆版本历史）、样式继承与演示样例指标分离、中文无空格 `@` 触发与 IME 护栏、按工程记忆界面位置/播放头、空舞台已有素材一键入轨、时间码点击按帧/秒跳转、命令面板空态与后台作业「本工程 / 全部」筛选。
+  - **3. 固定红蓝片端到端回归（`npm run test:redblue`）与打包版 6 套全绿验收**：在 `release/0.4/mac-arm64/CoCraft.app` 上全部跑通 `test:unit`、`smoke`、`smoke:models`、`smoke:agent`（含 `allowNetwork=true` 音频合成与本机回环拦截）、`test:redblue`（实测解码验证红蓝代表帧 `(254,0,0)`/`(1,0,254)`、A/B 叠化中点 `(198,0,55)`、静音 A1 保留 V1 同期声 `-24.7 dB` 与独立静音 V1 无声）、`verify_wave_a.mjs` 与 `test:v04`（`823,447 bytes / 5.01s` MP4）。
 
 ---
 
@@ -78,11 +93,10 @@
 - 11 月 18 日，用本机 0.4.0 打包应用手动选择 `wan2.6-i2v`，将内置电车参考图提交给阿里百炼。远端作业成功，CoCraft 下载并登记了 1280×720、30 fps、约 5 秒的 H.264/AAC 素材。通过后台作业面板添加到时间线后，实机播放并核对了 150 帧片段。此次实测覆盖图生视频。[回执摘要](../artifacts/alpha-intro/source/video-job.json) · [生成结果](../artifacts/alpha-intro/media/wan.mp4)
 - `城市清晨` 的同一脚本在创造画布拆为三镜后进入剪辑工作台；实录验证了字幕编辑、项目 Skill 的保存、试剪分支独立换序、跨项目个人库引入与 MP4 导出。[实录与片源](../artifacts/alpha-intro/README.md)
 
-## 下一阶段演进方向（路线 C · Wave B & Wave C 最小目标）
+## 下一阶段演进方向（路线 C · Wave C 最小目标）
 
-1. **Wave B · 创作者交付信任与专业 NLE 标准对齐**：清零 11/18 评审前 10 项（基于内容指纹的锁保护重连、V1 原声/A1 音轨/监听三路独立静音、分镜拆解保留数字前缀、分句 SRT 时码编辑与防双写、复合镜头整栈沉淀与跨帧率缩放、按 `sourceIn` 真帧缩略图、AI 候选回挂目标镜头 `ClipTake`、完整 `preflightSequence` 与错误显性提示），并按专业剪辑软件标准升级真 A/B 交叉叠化转场、统一创造/剪辑单一分镜模型、明确音频附着模式（`随镜` / `固定时间线`），补齐固定红蓝片端到端自动化回归。
-2. **Wave C · 前端架构与 CSS 减债**：合并 `AssetExplorer` 与 `ResourceLibrary` 共享目录索引引擎、拆分 `src/App.tsx`、收敛 `styles.css` + `workbench.css` 重叠/死代码与统一 `--z-*` 层级令牌，优化 `1080×720` 笔记本视口密度。
-3. **待稳定化完成后再推进（暂缓）**：PBR `RoomEnvironment` 环境反射、`roughjs` 矢量手绘与关键帧曲线编辑器。
+1. **Wave C · 前端架构与 CSS 减债**：合并 `AssetExplorer` 与 `ResourceLibrary` 共享目录索引引擎、拆分 `src/App.tsx`、收敛 `styles.css` + `workbench.css` 重叠/死代码与统一 `--z-*` 层级令牌，优化 `1080×720` 笔记本视口布局预设。
+2. **待稳定化完成后再推进（暂缓）**：PBR `RoomEnvironment` 环境反射、`roughjs` 矢量手绘与关键帧曲线编辑器。
 
 ---
 

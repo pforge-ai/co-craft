@@ -10,7 +10,7 @@ import { AssetExplorer, type AssetCategory } from './components/AssetExplorer';
 import { CreateCanvas } from './components/CreateCanvas';
 import { StoryboardStudio } from './components/StoryboardStudio';
 import { buildMentionCandidates, friendlySkillTitle, type MentionCandidate } from './core/taxonomy';
-import { computeCompositeShots } from './core/storyboard';
+import { collectShotClipsForCompound, computeCompositeShots } from './core/storyboard';
 import { selectedModel } from './core/models';
 import { BUILT_IN_TRANSITIONS, createPresetClip } from './core/presets';
 import { AgentThread, TOOL_LABELS } from './components/AgentThread';
@@ -96,6 +96,7 @@ import {
   clone,
   createCompoundVaultItemFromClips,
   durationOf,
+  inferDefaultAudioAttachMode,
   instantiateCompoundVaultItemOperations,
   newClip,
   prepareScopedComponentOperations,
@@ -125,6 +126,55 @@ type Dialog =
   | 'rename-task'
   | 'sequence'
   | null;
+
+interface SavedProjectUi {
+  appMode?: 'create' | 'edit';
+  sequenceId?: string;
+  frame?: number;
+  showNav?: boolean;
+  showBottom?: boolean;
+  showRight?: boolean;
+}
+
+function readProjectUi(projectId: string): SavedProjectUi | null {
+  try {
+    const raw = localStorage.getItem(`cocraft:ui:${projectId}`);
+    return raw ? (JSON.parse(raw) as SavedProjectUi) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeProjectUi(projectId: string, state: SavedProjectUi) {
+  try {
+    localStorage.setItem(`cocraft:ui:${projectId}`, JSON.stringify(state));
+  } catch {}
+}
+
+/** Triggers @ / # / / immediately after Chinese or punctuation too, while ignoring email/URL substrings (Review #16). */
+function matchMentionTrigger(text: string): string | null {
+  const m = text.match(/(?:^|[^a-zA-Z0-9._-])([@#/][^\s@#/]*)$/);
+  return m ? m[1] : null;
+}
+
+/** Parses frame number (`70`, `70f`), seconds (`2.5s`), `MM:SS.cc`, or `MM:SS:FF` into integer frame (Review #20). */
+function parseTimecodeInput(raw: string, fps: number): number | null {
+  const s = raw.trim();
+  if (!s) return null;
+  if (/^\d+f?$/i.test(s)) return Math.max(0, parseInt(s, 10));
+  if (/^\d+(?:\.\d+)?s$/i.test(s)) return Math.max(0, Math.round(parseFloat(s) * fps));
+  const mmssff = s.match(/^(\d+):(\d{1,2}):(\d{1,2})$/);
+  if (mmssff) {
+    return Math.max(0, (Number(mmssff[1]) * 60 + Number(mmssff[2])) * fps + Number(mmssff[3]));
+  }
+  const mmsscc = s.match(/^(\d+):(\d{1,2})(?:\.(\d{1,3}))?$/);
+  if (mmsscc) {
+    const frac = mmsscc[3] ? Number(`0.${mmsscc[3]}`) : 0;
+    return Math.max(0, Math.round((Number(mmsscc[1]) * 60 + Number(mmsscc[2]) + frac) * fps));
+  }
+  const num = Number(s);
+  return Number.isFinite(num) && num >= 0 ? Math.round(num * fps) : null;
+}
 
 const api = <T,>(method: string, payload?: unknown) => window.cocraft.call<T>(method, payload);
 const errorText = (e: unknown) =>
@@ -187,7 +237,10 @@ export function App() {
     [showBottom, setShowBottom] = useState(false),
     [showRight, setShowRight] = useState(false),
     [dialog, setDialog] = useState<Dialog>(null),
-    [jobsOpen, setJobsOpen] = useState(false);
+    [jobsOpen, setJobsOpen] = useState(false),
+    [jobsScope, setJobsScope] = useState<'project' | 'all'>('project'),
+    [editingTimecode, setEditingTimecode] = useState(false),
+    [tcDraft, setTcDraft] = useState('');
   const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null),
     [fatal, setFatal] = useState(''),
     [busy, setBusy] = useState(''),
@@ -415,15 +468,23 @@ export function App() {
     pause();
     stopAllAudioPreviews();
     accept(next);
-    setSequenceId(next.project.sequences[0].id);
+    const savedUi = readProjectUi(next.project.id);
+    const restoredSeq =
+      (savedUi?.sequenceId && next.project.sequences.find((s) => s.id === savedUi.sequenceId)) ||
+      next.project.sequences[0];
+    setSequenceId(restoredSeq.id);
     setTaskId(next.tasks[0]?.id || '');
     setConnectingTask('');
     setStream({});
     setThinkingStream({});
     setToolState({});
-    setFrame(0);
-    frameRef.current = 0;
-    playheadClockRef.current?.set(0);
+    const restoredFrame =
+      restoredSeq.clips.length > 0 && typeof savedUi?.frame === 'number'
+        ? Math.max(0, Math.min(durationOf(restoredSeq) - 1, Math.round(savedUi.frame)))
+        : 0;
+    setFrame(restoredFrame);
+    frameRef.current = restoredFrame;
+    playheadClockRef.current?.set(restoredFrame);
     setIsScrubbing(false);
     setSelected(null);
     setSelectedIds([]);
@@ -434,11 +495,11 @@ export function App() {
     setOpenComposerMenu(null);
     setStagePin(undefined);
     setPinMode(false);
-    const hasClips = Boolean(next.project.sequences[0]?.clips.length);
-    setAppMode(hasClips ? 'edit' : 'create');
-    setShowNav(hasClips);
-    setShowBottom(hasClips);
-    setShowRight(hasClips);
+    const hasClips = Boolean(restoredSeq?.clips.length);
+    setAppMode(savedUi?.appMode || (hasClips ? 'edit' : 'create'));
+    setShowNav(savedUi?.showNav ?? hasClips);
+    setShowBottom(savedUi?.showBottom ?? hasClips);
+    setShowRight(savedUi?.showRight ?? hasClips);
     setRight(hasClips ? 'inspector' : 'agent');
     setAssetCategory('media');
     setToast(null);
@@ -508,6 +569,19 @@ export function App() {
   };
 
   useEffect(() => {
+    const pid = env?.project.id;
+    if (!pid || !sequenceId) return;
+    writeProjectUi(pid, {
+      appMode,
+      sequenceId,
+      frame: frameRef.current,
+      showNav,
+      showBottom,
+      showRight,
+    });
+  }, [env?.project.id, appMode, sequenceId, frame, showNav, showBottom, showRight]);
+
+  useEffect(() => {
     api<BootData>('boot')
       .then((data) => {
         setBoot(data);
@@ -516,14 +590,25 @@ export function App() {
         setProjects(data.projects);
         setSettings(data.settings);
         setJobs(data.jobs);
-        setSequenceId(data.current.project.sequences[0].id);
+        const savedUi = readProjectUi(data.current.project.id);
+        const initialSeq =
+          (savedUi?.sequenceId && data.current.project.sequences.find((s) => s.id === savedUi.sequenceId)) ||
+          data.current.project.sequences[0];
+        setSequenceId(initialSeq.id);
         setTaskId(data.current.tasks[0]?.id || '');
         setBriefDraft(data.current.project.brief);
-        const enterEdit = Boolean(data.current.project.sequences[0]?.clips.length);
-        setAppMode(enterEdit ? 'edit' : 'create');
-        setShowNav(enterEdit);
-        setShowBottom(enterEdit);
-        setShowRight(enterEdit);
+        const enterEdit = Boolean(initialSeq?.clips.length);
+        const restoredFrame =
+          enterEdit && typeof savedUi?.frame === 'number'
+            ? Math.max(0, Math.min(durationOf(initialSeq) - 1, Math.round(savedUi.frame)))
+            : 0;
+        setFrame(restoredFrame);
+        frameRef.current = restoredFrame;
+        playheadClockRef.current?.set(restoredFrame);
+        setAppMode(savedUi?.appMode || (enterEdit ? 'edit' : 'create'));
+        setShowNav(savedUi?.showNav ?? enterEdit);
+        setShowBottom(savedUi?.showBottom ?? enterEdit);
+        setShowRight(savedUi?.showRight ?? enterEdit);
         setRight(enterEdit ? 'inspector' : 'agent');
         setAssetCategory('media');
       })
@@ -748,10 +833,12 @@ export function App() {
     }
     const asset = project.assets.find((a) => a.id === payload);
     if (!asset) return;
+    const dur = Math.max(1, Math.floor((asset.kind === 'image' ? 5 : asset.duration) * sequence.fps));
     const c = {
       ...newClip(asset.kind === 'model-3d' ? 'shape' : asset.kind, atFrame, asset.id),
       name: asset.name,
-      duration: Math.max(1, Math.floor((asset.kind === 'image' ? 5 : asset.duration) * sequence.fps)),
+      duration: dur,
+      ...(asset.kind === 'audio' ? { audioAttachMode: inferDefaultAudioAttachMode(asset, dur, sequence.fps) } : {}),
     };
     await edit('添加素材到时间线', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
     selectClip(c.id);
@@ -759,10 +846,36 @@ export function App() {
 
   const relinkAsset = (assetId: string) =>
     work('正在重新定位素材', async () => {
-      const next = await api<ProjectEnvelope | null>('media.relink', { assetId });
-      if (next) {
-        accept(next);
-        notify('素材已重新定位并恢复在线');
+      try {
+        const next = await api<ProjectEnvelope | null>('media.relink', { assetId });
+        if (next) {
+          accept(next);
+          notify('素材已重新定位并恢复在线');
+        }
+      } catch (err) {
+        const msg = errorText(err);
+        if (msg.includes('禁止替换为不同内容') && project) {
+          const unlockedExists = project.sequences.some((s) =>
+            s.clips.some(
+              (c) => !c.locked && (c.assetId === assetId || c.takes?.some((t) => t.assetId === assetId)),
+            ),
+          );
+          if (
+            unlockedExists &&
+            window.confirm(`${msg}\n\n是否派生为新素材并仅替换未锁定的镜头？（锁定镜头保持原内容不变）`)
+          ) {
+            const forked = await api<ProjectEnvelope | null>('media.relink', {
+              assetId,
+              mode: 'fork-unlocked',
+            });
+            if (forked) {
+              accept(forked);
+              notify('已派生新素材替换未锁定镜头，锁定镜头保持原样');
+            }
+            return;
+          }
+        }
+        throw err;
       }
     });
 
@@ -843,23 +956,35 @@ export function App() {
     });
   };
 
-  const saveClipsAsAsset = async (clipsToSave: Clip[], customName?: string) => {
+  const saveClipsAsAsset = async (
+    clipsToSave: Clip[],
+    customName?: string,
+    clipWindow?: { start: number; duration: number },
+  ) => {
     if (!project || !sequence || !clipsToSave.length) return;
-    const item = createCompoundVaultItemFromClips(project, sequence, clipsToSave, customName);
+    const item = createCompoundVaultItemFromClips(project, sequence, clipsToSave, customName, clipWindow);
     await edit(`保存为项目资产「${item.name}」`, [{ type: 'putVaultItem', item }]);
     notify(`已将 ${clipsToSave.length} 个片段保存为项目资产「${item.name}」`);
   };
 
   const saveSelectedClipsAsAsset = async () => {
     if (!sequence) return;
-    const picked =
-      selectedIds.length > 1
-        ? sequence.clips.filter((c) => selectedIds.includes(c.id))
-        : clip
-          ? [clip]
-          : [];
-    if (!picked.length) return;
-    await saveClipsAsAsset(picked);
+    if (selectedIds.length > 1) {
+      const picked = sequence.clips.filter((c) => selectedIds.includes(c.id));
+      if (picked.length) await saveClipsAsAsset(picked);
+      return;
+    }
+    if (!clip) return;
+    // Review #6: When promoting a primary visual shot, capture its full stack (trims, overlays, captions, shot-attached audio)!
+    const owningShot = computeCompositeShots(sequence).find(
+      (sh) => sh.anchorClip.id === clip.id || (clip.track === 'visual' && sh.id === clip.id),
+    );
+    if (owningShot) {
+      const stack = collectShotClipsForCompound(sequence, owningShot);
+      await saveClipsAsAsset(stack, clip.name, { start: owningShot.start, duration: owningShot.duration });
+      return;
+    }
+    await saveClipsAsAsset([clip]);
   };
 
   const addRefsToChat = useCallback((refs: ChatContextRef[], openDrawer = true) => {
@@ -1056,11 +1181,9 @@ export function App() {
   const applyMentionCandidate = (cand: MentionCandidate) => {
     if (cand.skillName) {
       setActiveComposerSkills((prev) => (prev.includes(cand.skillName!) ? prev : [...prev, cand.skillName!]));
-      setPrompt(
-        prompt.replace(/(?:^|\s)([@#/][^\s]*)$/, (full) => (full.startsWith(' ') ? ' ' : '')).trimStart(),
-      );
+      setPrompt(prompt.replace(/([@#/][^\s@#/]*)$/, '').replace(/\s+$/, ''));
     } else {
-      setPrompt(prompt.replace(/([@#/][^\s]*)$/, `${cand.token} `));
+      setPrompt(prompt.replace(/([@#/][^\s@#/]*)$/, `${cand.token} `));
     }
     setMentionIndex(0);
     promptRef.current?.focus();
@@ -2211,6 +2334,7 @@ export function App() {
                   frame={frame}
                   playing={playing}
                   scrubbing={isScrubbing}
+                  visible={appMode === 'edit'}
                   selectedId={selected}
                   pinMode={pinMode}
                   activePin={stagePin}
@@ -2235,9 +2359,53 @@ export function App() {
                 {sequence.clips.length === 0 && (
                   <div className="empty-canvas">
                     <h2>时间线为空</h2>
-                    <p>从左侧导入媒体，或切换至「创造」画布拆解分镜。</p>
+                    <p>
+                      {project.assets.length > 0
+                        ? `项目素材库已有 ${project.assets.length} 个素材，可直接加入主片或继续导入。`
+                        : '从左侧导入媒体，或切换至「创造」画布拆解分镜。'}
+                    </p>
                     <div>
-                      <button className="button primary" onClick={() => void importMedia()}>
+                      {project.assets.length > 0 && (
+                        <button
+                          className="button primary"
+                          onClick={() => {
+                            let vCursor = 0;
+                            let aCursor = 0;
+                            const ops: EditOperation[] = [];
+                            let firstId: string | undefined;
+                            for (const a of project.assets) {
+                              const dur = Math.max(
+                                1,
+                                Math.floor((a.kind === 'image' ? 5 : a.duration) * sequence.fps),
+                              );
+                              const isAudio = a.kind === 'audio';
+                              const c: Clip = {
+                                ...newClip(a.kind === 'model-3d' ? 'shape' : a.kind, isAudio ? aCursor : vCursor, a.id),
+                                name: a.name,
+                                duration: dur,
+                                ...(isAudio
+                                  ? { audioAttachMode: inferDefaultAudioAttachMode(a, dur, sequence.fps) }
+                                  : {}),
+                              };
+                              if (!firstId) firstId = c.id;
+                              ops.push({ type: 'addClip', sequenceId: sequence.id, clip: c });
+                              if (isAudio) aCursor += dur;
+                              else vCursor += dur;
+                            }
+                            if (ops.length) {
+                              void edit('将已有素材加入主片', ops).then(() => {
+                                if (firstId) selectClip(firstId);
+                              });
+                            }
+                          }}
+                        >
+                          <Plus size={13} /> 将已有素材加入主片 ({project.assets.length})
+                        </button>
+                      )}
+                      <button
+                        className={`button ${project.assets.length === 0 ? 'primary' : ''}`}
+                        onClick={() => void importMedia()}
+                      >
                         <Upload size={13} /> 导入素材
                       </button>
                       <button className="button" onClick={() => switchMode('create')}>
@@ -2256,9 +2424,42 @@ export function App() {
 
             <div className="playback-bar" style={appMode !== 'edit' ? { display: 'none' } : undefined}>
               <div className="playback-time">
-                <b>
-                  <PlayheadTimecode clock={playheadClockRef.current!} fps={sequence.fps} />
-                </b>
+                {editingTimecode ? (
+                  <input
+                    autoFocus
+                    className="tc-jump-input"
+                    aria-label="跳转时间码或帧号"
+                    placeholder="如 70f / 2.5s / 00:02:10"
+                    value={tcDraft}
+                    onChange={(e) => setTcDraft(e.target.value)}
+                    onBlur={() => {
+                      const parsed = parseTimecodeInput(tcDraft, sequence.fps);
+                      setEditingTimecode(false);
+                      if (parsed !== null) seek(parsed);
+                    }}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') {
+                        const parsed = parseTimecodeInput(tcDraft, sequence.fps);
+                        setEditingTimecode(false);
+                        if (parsed !== null) seek(parsed);
+                      } else if (e.key === 'Escape') {
+                        setEditingTimecode(false);
+                      }
+                    }}
+                  />
+                ) : (
+                  <b
+                    title="点击按帧号或时间码跳转（如 70f / 2.5s / 00:02:10）"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      setTcDraft(`${frameRef.current}f`);
+                      setEditingTimecode(true);
+                    }}
+                  >
+                    <PlayheadTimecode clock={playheadClockRef.current!} fps={sequence.fps} />
+                  </b>
+                )}
                 <span>/ {timecode(duration, sequence.fps)}</span>
               </div>
               <div className="transport">
@@ -2658,8 +2859,8 @@ export function App() {
                   onSelectClip={selectClip}
                   onSeek={seek}
                   onEdit={(n, ops) => edit(n, ops)}
-                  onOpenGenerationForShot={(genPrompt, refAssetId) => {
-                    openStudio({ use: 'image', prompt: genPrompt, referenceAssetId: refAssetId });
+                  onOpenGenerationForShot={(genPrompt, refAssetId, target) => {
+                    openStudio({ use: 'image', prompt: genPrompt, referenceAssetId: refAssetId, target });
                   }}
                   onAskAgentForShot={(targetClip, text) => {
                     setScope(clone(targetClip));
@@ -3059,9 +3260,8 @@ export function App() {
                     </div>
                   )}
                   {(() => {
-                    const match = prompt.match(/(?:^|\s)([@#/][^\s]*)$/);
-                    if (!match) return null;
-                    const tokenPrefix = match[1];
+                    const tokenPrefix = matchMentionTrigger(prompt);
+                    if (!tokenPrefix) return null;
                     const trigger = tokenPrefix[0] as '@' | '#' | '/';
                     const keyword = tokenPrefix.slice(1).toLowerCase();
                     const candidates = buildMentionCandidates(project, sequence, boot.skills)
@@ -3111,10 +3311,11 @@ export function App() {
                       setMentionIndex(0);
                     }}
                     onKeyDown={(e) => {
-                      const match = prompt.match(/(?:^|\s)([@#/][^\s]*)$/);
-                      if (match && !e.nativeEvent.isComposing) {
-                        const trigger = match[1][0] as '@' | '#' | '/';
-                        const keyword = match[1].slice(1).toLowerCase();
+                      const composing = e.nativeEvent.isComposing || (e as unknown as { keyCode?: number }).keyCode === 229;
+                      const tokenPrefix = matchMentionTrigger(prompt);
+                      if (tokenPrefix && !composing) {
+                        const trigger = tokenPrefix[0] as '@' | '#' | '/';
+                        const keyword = tokenPrefix.slice(1).toLowerCase();
                         const candidates = buildMentionCandidates(project, sequence, boot.skills)
                           .filter(
                             (c) =>
@@ -3143,7 +3344,7 @@ export function App() {
                           }
                         }
                       }
-                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      if (e.key === 'Enter' && !e.shiftKey && !composing) {
                         e.preventDefault();
                         void send();
                       }
@@ -3331,107 +3532,174 @@ export function App() {
           </button>
         </div>
       )}
-      {jobsOpen && (
-        <div className="jobs-popover">
-          <header>
-            <b>后台作业</b>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              {jobs.some((j) => j.status !== 'running' && j.status !== 'queued') && (
-                <button
-                  className="text-button"
-                  onClick={() => void api<Job[]>('jobs.clear').then(setJobs)}
-                >
-                  清理已完成
-                </button>
-              )}
-              <IconButton label="关闭后台作业" onClick={() => setJobsOpen(false)}>
-                <X size={14} />
-              </IconButton>
-            </div>
-          </header>
-          {jobs.length === 0 ? (
-            <div className="jobs-empty">导出、生成和分析作业会在这里显示。</div>
-          ) : (
-            jobs.slice(0, 12).map((j) => (
-              <div className="job-item" key={j.id}>
-                <div className="job-top">
-                  {j.status === 'running' ? (
-                    <Spinner />
-                  ) : j.status === 'completed' ? (
-                    <CheckCheck size={15} />
-                  ) : (
-                    <AlertCircle size={15} />
-                  )}
-                  <b>{j.name}</b>
-                  <span>{j.status === 'running' ? Math.round(j.progress * 100) + '%' : ''}</span>
+      {jobsOpen && (() => {
+        const visibleJobs =
+          jobsScope === 'project'
+            ? jobs.filter(
+                (j) =>
+                  (!j.projectId && !j.projectPath) ||
+                  j.projectId === project.id ||
+                  j.projectPath === env.path,
+              )
+            : jobs;
+        return (
+          <div className="jobs-popover">
+            <header>
+              <b>后台作业</b>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div className="jobs-scope-seg" role="group" aria-label="作业筛选">
+                  <button
+                    type="button"
+                    className={jobsScope === 'project' ? 'active' : ''}
+                    onClick={() => setJobsScope('project')}
+                  >
+                    本工程
+                  </button>
+                  <button
+                    type="button"
+                    className={jobsScope === 'all' ? 'active' : ''}
+                    onClick={() => setJobsScope('all')}
+                  >
+                    全部 ({jobs.length})
+                  </button>
                 </div>
-                <p>{j.error || j.stage}</p>
-                {j.status === 'running' && (
-                  <div className="job-progress">
-                    <i style={{ width: `${j.progress * 100}%` }} />
-                  </div>
+                {jobs.some((j) => j.status !== 'running' && j.status !== 'queued') && (
+                  <button
+                    className="text-button"
+                    onClick={() => void api<Job[]>('jobs.clear').then(setJobs)}
+                  >
+                    清理已完成
+                  </button>
                 )}
-                <div className="job-actions">
-                  {j.status === 'completed' && j.output && j.type === 'export' && (
-                    <>
-                      <button onClick={() => void api('file.open', { jobId: j.id })}>
-                        {j.output?.toLowerCase().endsWith('.png') ? '打开画面' : '打开成片'}{' '}
-                        <ArrowUpRight size={11} />
-                      </button>
-                      <button onClick={() => void api('file.reveal', { jobId: j.id })}>
-                        在 Finder 中显示
-                      </button>
-                    </>
-                  )}
-                  {j.status === 'completed' && j.result?.text && (
-                    <button
-                      onClick={() => {
-                        setResultJob(j);
-                        setResultClip(
-                          sequence.clips.find(
-                            (c) => c.id === selected && !!c.assetId && c.assetId === j.inputAssetId,
-                          )?.id || '',
-                        );
-                        setJobsOpen(false);
-                        setDialog('job-result');
-                      }}
-                    >
-                      查看结果 <ArrowUpRight size={11} />
-                    </button>
-                  )}
-                  {j.status === 'completed' &&
-                    j.result?.asset &&
-                    j.projectPath === env.path &&
-                    project.assets.some((a) => a.id === j.result?.asset?.id) && (
-                      <button
-                        onClick={() =>
-                          void work('添加素材', async () => {
-                            await addAsset(j.result!.asset!.id);
-                            setJobsOpen(false);
-                          })
-                        }
-                      >
-                        添加到时间线
-                      </button>
-                    )}
-                  {(j.status === 'failed' || j.status === 'cancelled') &&
-                    (j.remote || j.result?.asset) &&
-                    !['failed', 'expired', 'canceled', 'cancelled'].includes(j.remote?.status || '') && (
-                      <button
-                        onClick={() => void work('继续查询', () => api('generation.resume', { id: j.id }))}
-                      >
-                        {j.result?.asset ? '恢复素材入库' : '继续查询原作业'}
-                      </button>
-                    )}
-                  {j.status === 'running' && (
-                    <button onClick={() => void api('jobs.cancel', { id: j.id })}>取消</button>
-                  )}
-                </div>
+                <IconButton label="关闭后台作业" onClick={() => setJobsOpen(false)}>
+                  <X size={14} />
+                </IconButton>
               </div>
-            ))
-          )}
-        </div>
-      )}
+            </header>
+            {visibleJobs.length === 0 ? (
+              <div className="jobs-empty">
+                {jobsScope === 'project' && jobs.length > 0
+                  ? '当前工程暂无后台作业，可切换「全部」查看其他工程记录。'
+                  : '导出、生成和分析作业会在这里显示。'}
+              </div>
+            ) : (
+              visibleJobs.slice(0, 14).map((j) => {
+                const isSameProject =
+                  (!j.projectId && j.projectPath === env.path) || j.projectId === project.id;
+                const attachedTarget =
+                  j.status === 'completed' && j.target && j.targetAttachment?.applied && isSameProject;
+                return (
+                  <div className="job-item" key={j.id}>
+                    <div className="job-top">
+                      {j.status === 'running' ? (
+                        <Spinner />
+                      ) : j.status === 'completed' ? (
+                        <CheckCheck size={15} />
+                      ) : (
+                        <AlertCircle size={15} />
+                      )}
+                      <b>{j.name}</b>
+                      <span>{j.status === 'running' ? Math.round(j.progress * 100) + '%' : ''}</span>
+                    </div>
+                    {(j.projectName || j.branchName) && (
+                      <div className="job-meta-pill">
+                        {j.projectName || '当前工程'}
+                        {j.branchName ? ` · ${j.branchName}` : ''}
+                      </div>
+                    )}
+                    <p>
+                      {j.error ||
+                        (j.targetAttachment?.applied
+                          ? '已完成 · 已自动挂载为镜头未激活候选'
+                          : j.targetAttachment?.reason || j.stage)}
+                    </p>
+                    {j.status === 'running' && (
+                      <div className="job-progress">
+                        <i style={{ width: `${j.progress * 100}%` }} />
+                      </div>
+                    )}
+                    <div className="job-actions">
+                      {j.status === 'completed' && j.output && j.type === 'export' && (
+                        <>
+                          <button onClick={() => void api('file.open', { jobId: j.id })}>
+                            {j.output?.toLowerCase().endsWith('.png') ? '打开画面' : '打开成片'}{' '}
+                            <ArrowUpRight size={11} />
+                          </button>
+                          <button onClick={() => void api('file.reveal', { jobId: j.id })}>
+                            在 Finder 中显示
+                          </button>
+                        </>
+                      )}
+                      {j.status === 'completed' && j.result?.text && (
+                        <button
+                          onClick={() => {
+                            setResultJob(j);
+                            setResultClip(
+                              sequence.clips.find(
+                                (c) => c.id === selected && !!c.assetId && c.assetId === j.inputAssetId,
+                              )?.id || '',
+                            );
+                            setJobsOpen(false);
+                            setDialog('job-result');
+                          }}
+                        >
+                          查看结果 <ArrowUpRight size={11} />
+                        </button>
+                      )}
+                      {attachedTarget && j.target && (
+                        <button
+                          onClick={() => {
+                            if (j.target!.sequenceId !== sequenceId) changeSequence(j.target!.sequenceId);
+                            const targetSeq = project.sequences.find((s) => s.id === j.target!.sequenceId);
+                            const targetClip = targetSeq?.clips.find((c) => c.id === j.target!.clipId);
+                            if (targetClip) {
+                              selectClip(targetClip.id);
+                              seek(targetClip.start);
+                            }
+                            setView('storyboard');
+                            setShowBottom(true);
+                            setJobsOpen(false);
+                          }}
+                        >
+                          查看镜头候选 <ArrowUpRight size={11} />
+                        </button>
+                      )}
+                      {j.status === 'completed' &&
+                        j.result?.asset &&
+                        !attachedTarget &&
+                        isSameProject &&
+                        project.assets.some((a) => a.id === j.result?.asset?.id) && (
+                          <button
+                            onClick={() =>
+                              void work('添加素材', async () => {
+                                await addAsset(j.result!.asset!.id);
+                                setJobsOpen(false);
+                              })
+                            }
+                          >
+                            添加到时间线
+                          </button>
+                        )}
+                      {(j.status === 'failed' || j.status === 'cancelled') &&
+                        (j.remote || j.result?.asset) &&
+                        !['failed', 'expired', 'canceled', 'cancelled'].includes(j.remote?.status || '') && (
+                          <button
+                            onClick={() => void work('继续查询', () => api('generation.resume', { id: j.id }))}
+                          >
+                            {j.result?.asset ? '恢复素材入库' : '继续查询原作业'}
+                          </button>
+                        )}
+                      {j.status === 'running' && (
+                        <button onClick={() => void api('jobs.cancel', { id: j.id })}>取消</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        );
+      })()}
       {dialog === 'settings' && (
         <SettingsDialog
           projectDefaults={project.modelDefaults}
@@ -3623,25 +3891,31 @@ export function App() {
             <kbd>ESC</kbd>
           </div>
           <div className="command-results" role="listbox">
-            {filteredCommands.map((item, idx) => (
-              <button
-                key={item.id}
-                role="option"
-                aria-selected={idx === cmdIndex}
-                className={idx === cmdIndex ? 'active' : ''}
-                onMouseEnter={() => setCmdIndex(idx)}
-                onClick={() => {
-                  setDialog(null);
-                  item.run();
-                }}
-              >
-                <span>
-                  {item.name}
-                  <small>{item.detail}</small>
-                </span>
-                <kbd>{item.key === '+' ? <Plus size={14} /> : item.key || <ArrowUpRight size={13} />}</kbd>
-              </button>
-            ))}
+            {filteredCommands.length === 0 ? (
+              <div className="command-empty">
+                没有匹配「{command}」的命令。可尝试搜索：导出、分支、字幕、设置、素材、时间线或切换画布。
+              </div>
+            ) : (
+              filteredCommands.map((item, idx) => (
+                <button
+                  key={item.id}
+                  role="option"
+                  aria-selected={idx === cmdIndex}
+                  className={idx === cmdIndex ? 'active' : ''}
+                  onMouseEnter={() => setCmdIndex(idx)}
+                  onClick={() => {
+                    setDialog(null);
+                    item.run();
+                  }}
+                >
+                  <span>
+                    {item.name}
+                    <small>{item.detail}</small>
+                  </span>
+                  <kbd>{item.key === '+' ? <Plus size={14} /> : item.key || <ArrowUpRight size={13} />}</kbd>
+                </button>
+              ))
+            )}
           </div>
         </Modal>
       )}

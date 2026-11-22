@@ -201,13 +201,36 @@ function CompactSliderRow({
   disabled?: boolean;
   onChange: (next: number) => void;
 }) {
+  const [draft, setDraft] = useState<number | null>(null);
+  const draggingRef = useRef(false);
+  const latestRef = useRef<number>(value);
+
+  useEffect(() => {
+    if (!draggingRef.current) {
+      setDraft(null);
+      latestRef.current = value;
+    }
+  }, [value]);
+
+  const shown = draft ?? value;
+  const commit = () => {
+    draggingRef.current = false;
+    const next = latestRef.current;
+    setDraft(null);
+    if (next !== value) onChange(next);
+  };
+
   return (
     <div className="ins-slider-row">
       <span
         className="ins-slider-label"
         title="双击恢复默认"
         onDoubleClick={() => {
-          if (!disabled) onChange(defaultValue);
+          if (!disabled) {
+            draggingRef.current = false;
+            setDraft(null);
+            onChange(defaultValue);
+          }
         }}
       >
         {label}
@@ -219,14 +242,32 @@ function CompactSliderRow({
         max={max}
         step={step}
         disabled={disabled}
-        value={value}
+        value={shown}
         onDoubleClick={() => {
-          if (!disabled) onChange(defaultValue);
+          if (!disabled) {
+            draggingRef.current = false;
+            setDraft(null);
+            onChange(defaultValue);
+          }
         }}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onPointerDown={() => {
+          draggingRef.current = true;
+          latestRef.current = shown;
+        }}
+        onChange={(e) => {
+          const next = Number(e.target.value);
+          latestRef.current = next;
+          if (draggingRef.current) setDraft(next);
+          else onChange(next);
+        }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onBlur={() => {
+          if (draggingRef.current) commit();
+        }}
       />
       <span className="ins-slider-val">
-        {value}
+        {shown}
         {suffix}
       </span>
     </div>
@@ -764,7 +805,17 @@ export const Inspector = React.memo(function Inspector({
 
   const renderAudioSection = () => (
     <section className="ins-sec">
-      <h4>声音控制</h4>
+      <div className="ins-sec-head">
+        <h4>声音控制</h4>
+        <button
+          type="button"
+          className={`button tiny ${clip.muted ? 'primary' : 'subtle'}`}
+          disabled={clip.locked}
+          onClick={() => update({ muted: !clip.muted })}
+        >
+          {clip.muted ? '已静音 · 点击恢复' : '静音此片段'}
+        </button>
+      </div>
       <CompactSliderRow
         label="音量"
         value={Math.round(Number(clip.props.volume ?? 1) * 100)}
@@ -772,7 +823,7 @@ export const Inspector = React.memo(function Inspector({
         max={200}
         defaultValue={100}
         suffix="%"
-        disabled={clip.locked}
+        disabled={clip.locked || Boolean(clip.muted)}
         onChange={(v) => prop('volume', v / 100)}
       />
       <div className="ins-grid-2">
@@ -811,6 +862,29 @@ export const Inspector = React.memo(function Inspector({
           onCommit={(v) => prop('fadeOut', v)}
         />
       </div>
+      {clip.track === 'audio' && (
+        <div className="ins-attach-mode">
+          <span className="ins-sub-label">分镜换序归属</span>
+          <div className="ins-seg" role="group" aria-label="音频时间线归属">
+            <button
+              type="button"
+              className={clip.audioAttachMode === 'shot' ? 'active' : ''}
+              disabled={clip.locked}
+              onClick={() => update({ audioAttachMode: 'shot' })}
+            >
+              随镜移动
+            </button>
+            <button
+              type="button"
+              className={clip.audioAttachMode !== 'shot' ? 'active' : ''}
+              disabled={clip.locked}
+              onClick={() => update({ audioAttachMode: 'timeline' })}
+            >
+              固定时间线
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 

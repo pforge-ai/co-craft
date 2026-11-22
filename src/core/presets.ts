@@ -189,6 +189,8 @@ export interface PresetDefinition {
   durationSeconds: number;
   keywords: string[];
   defaultProps: Record<string, PresetValue>;
+  /** Clean defaults used when instantiating a new timeline clip (separates showcase demo metrics from real edits). */
+  instanceDefaults?: Record<string, PresetValue>;
   parameters: PresetParameter[];
   license: string;
 }
@@ -598,6 +600,12 @@ export const presetCatalog: PresetDefinition[] = [
       accent: '#3b82f6',
       surface: 'dark',
     },
+    instanceDefaults: {
+      text: '核心流程标题',
+      subtitle: '',
+      nodes: '阶段一|阶段二|阶段三',
+      metrics: '',
+    },
     parameters: [
       title,
       subtitle,
@@ -752,31 +760,40 @@ export function normalizePresetProps(id: string, overrides: Record<string, unkno
 }
 export function applyStyleTokensToClip(clip: Clip, style: StyleTokens): void {
   if (clip.locked) return;
+  const overrides = Array.isArray(clip.props._styleOverrides)
+    ? new Set((clip.props._styleOverrides as unknown[]).map(String))
+    : new Set<string>();
   const isLight = isLightHex(style.backgroundColor);
   const targetSurface = isLight ? 'light' : 'dark';
   const presetId = clip.props.presetId ? String(clip.props.presetId) : '';
   if (presetId) {
     const preset = getPreset(presetId);
-    clip.props.accent = style.primaryColor;
-    if (preset?.parameters.some((param) => param.key === 'secondary')) {
+    if (!overrides.has('accent')) clip.props.accent = style.primaryColor;
+    if (preset?.parameters.some((param) => param.key === 'secondary') && !overrides.has('secondary')) {
       clip.props.secondary = style.secondaryColor;
     }
-    if (preset?.parameters.some((param) => param.key === 'surface') && clip.props.surface !== 'transparent') {
+    if (
+      preset?.parameters.some((param) => param.key === 'surface') &&
+      clip.props.surface !== 'transparent' &&
+      !overrides.has('surface')
+    ) {
       clip.props.surface = targetSurface;
     }
-    clip.props.color = style.inkColor;
+    if (!overrides.has('color')) clip.props.color = style.inkColor;
     return;
   }
   if (clip.kind === 'title') {
-    clip.props.color = style.inkColor;
-    if (clip.props.background && clip.props.background !== 'transparent') {
+    if (!overrides.has('color')) clip.props.color = style.inkColor;
+    if (clip.props.background && clip.props.background !== 'transparent' && !overrides.has('background')) {
       clip.props.background = style.surfaceColor;
     }
   } else if (clip.kind === 'caption') {
-    clip.props.color = style.captionColor;
-    clip.props.background = isLight ? 'rgba(255,255,255,0.88)' : 'rgba(12,13,16,0.75)';
+    if (!overrides.has('color')) clip.props.color = style.captionColor;
+    if (!overrides.has('background')) {
+      clip.props.background = isLight ? 'rgba(255,255,255,0.88)' : 'rgba(12,13,16,0.75)';
+    }
   } else if (clip.kind === 'shape') {
-    clip.props.color = style.primaryColor;
+    if (!overrides.has('color')) clip.props.color = style.primaryColor;
   }
 }
 
@@ -790,18 +807,25 @@ export function createPresetClip(
   const preset = getPreset(id);
   if (!preset) throw new Error('素材预设不存在');
   const style = resolveProjectStyle(project);
+  const baseOverrides: Record<string, unknown> = {
+    ...(preset.instanceDefaults || {}),
+    ...overrides,
+  };
   const clip: Clip = {
     ...newClip(preset.kind, Math.max(0, Math.round(start))),
     name: preset.name,
     duration: Math.max(1, Math.round(preset.durationSeconds * fps)),
-    props: { ...normalizePresetProps(id, overrides), presetId: id, presetVersion: preset.version },
+    props: { ...normalizePresetProps(id, baseOverrides), presetId: id, presetVersion: preset.version },
   };
   if (style) {
     applyStyleTokensToClip(clip, style);
-    // Re-apply explicit overrides for style keys if caller passed them intentionally
-    if (overrides.accent !== undefined) clip.props.accent = overrides.accent;
-    if (overrides.secondary !== undefined) clip.props.secondary = overrides.secondary;
-    if (overrides.surface !== undefined) clip.props.surface = overrides.surface;
+    // Only re-apply explicit overrides for style keys when caller intentionally deviated from preset defaultProps
+    if (overrides.accent !== undefined && overrides.accent !== preset.defaultProps.accent)
+      clip.props.accent = overrides.accent;
+    if (overrides.secondary !== undefined && overrides.secondary !== preset.defaultProps.secondary)
+      clip.props.secondary = overrides.secondary;
+    if (overrides.surface !== undefined && overrides.surface !== preset.defaultProps.surface)
+      clip.props.surface = overrides.surface;
   }
   return clip;
 }

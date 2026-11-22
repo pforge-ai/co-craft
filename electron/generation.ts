@@ -21,6 +21,9 @@ import {
 } from '../src/core/models';
 import type {
   Asset,
+  ClipTake,
+  EditOperation,
+  GenerationTarget,
   Job,
   ModelAdapter,
   ModelDefinition,
@@ -40,6 +43,7 @@ export interface GenerationRequest {
   voice?: string;
   language?: string;
   parameters?: Record<string, string | number | boolean>;
+  target?: GenerationTarget;
 }
 interface GenerationSnapshot {
   request: GenerationRequest;
@@ -458,6 +462,18 @@ export class GenerationService {
       voice: input.voice,
       language: input.language,
       parameters: modelParameters(model.adapter, input.parameters),
+      ...(input.target &&
+      typeof input.target.sequenceId === 'string' &&
+      typeof input.target.clipId === 'string'
+        ? {
+            target: {
+              sequenceId: input.target.sequenceId,
+              clipId: input.target.clipId,
+              shotLabel: input.target.shotLabel ? String(input.target.shotLabel).slice(0, 80) : undefined,
+              mode: input.target.mode === 'replace' ? 'replace' : 'take',
+            },
+          }
+        : {}),
     };
     if (['image', 'video', 'speech'].includes(req.use) && !req.prompt) throw new Error('请输入创作内容');
     if (['transcription', 'vision'].includes(req.use) && !assets.some((a) => a.id === req.assetId))
@@ -488,19 +504,28 @@ export class GenerationService {
       !req.referenceAssetId
     )
       throw new Error('图生视频模型需要选择一张参考图片，或改用文生视频模型 (如 wan2.6-t2v)');
+    const targetSeq = req.target
+      ? project.sequences.find((s) => s.id === req.target!.sequenceId)
+      : project.sequences.find((s) => s.isMainBranch) || project.sequences[0];
     const job: GenerationJob = {
       id: uid('job'),
-      name: `${label(req.use)} · ${resolved.model.name}`,
+      name: req.target?.shotLabel
+        ? `${label(req.use)}候选 · ${req.target.shotLabel}`
+        : `${label(req.use)} · ${resolved.model.name}`,
       type: req.use === 'transcription' ? 'transcribe' : 'generate',
       status: 'running',
       progress: 0,
       stage: '准备请求',
       createdAt: new Date().toISOString(),
       revision: project.revision,
+      projectId: project.id,
+      projectName: project.name,
+      branchName: targetSeq?.branchName || targetSeq?.name,
       projectPath: store.path,
       providerId: provider.id,
       modelId: model.id,
       inputAssetId: req.assetId,
+      ...(req.target ? { target: req.target } : {}),
       generation: {
         request: req,
         model: structuredClone(resolved.model),
@@ -532,7 +557,7 @@ export class GenerationService {
       return this.jobs.runTask(
         job,
         async (signal) => {
-          if (result.asset) await this.publishAsset(store, result.asset, () => !signal.aborted);
+          if (result.asset) await this.publishAsset(store, result.asset, () => !signal.aborted, job);
           else signal.throwIfAborted();
           return result;
         },
@@ -617,27 +642,83 @@ export class GenerationService {
       await this.jobs.update(job, { result, output: result.asset?.path || resultFile });
       signal.throwIfAborted();
       if (result.asset && job.generation.publish)
-        await this.publishAsset(store, result.asset, () => !signal.aborted);
+        await this.publishAsset(store, result.asset, () => !signal.aborted, job);
       return result;
     } catch (error) {
       throw cleanError(error, provider);
     }
   }
-  private async publishAsset(store: ProjectStore, asset: Asset, active: () => boolean) {
+  private async publishAsset(store: ProjectStore, asset: Asset, active: () => boolean, job?: GenerationJob) {
     // An import does not overwrite existing objects; retry only local base-version contention, never a generation request.
+    const target = job?.target;
+    const canAttachTake = Boolean(target && (asset.kind === 'image' || asset.kind === 'video'));
+    const takeId = canAttachTake ? `take_${job!.id}` : undefined;
     for (let i = 0; i < 5; i++) {
       if (!active()) throw new Error('作业已取消');
       const p = await store.project();
-      if (p.assets.some((existing) => existing.id === asset.id)) return;
+      const assetExists = p.assets.some((existing) => existing.id === asset.id);
+      const ops: EditOperation[] = [];
+      if (!assetExists) ops.push({ type: 'addAsset', asset });
+
+      let attachment: Job['targetAttachment'] | undefined;
+      if (canAttachTake && target) {
+        const targetSeq = p.sequences.find((s) => s.id === target.sequenceId);
+        const targetClip = targetSeq?.clips.find((c) => c.id === target.clipId);
+        const alreadyAttached = Boolean(targetClip?.takes?.some((t) => t.id === takeId));
+        if (!targetSeq) {
+          attachment = { applied: false, reason: '原成片分支已删除，生成结果已收入项目素材库' };
+        } else if (!targetClip) {
+          attachment = { applied: false, reason: '原目标镜头已删除，生成结果已收入项目素材库' };
+        } else if (targetClip.locked) {
+          attachment = { applied: false, reason: `镜头「${targetClip.name}」已锁定，生成结果已收入项目素材库` };
+        } else if (alreadyAttached) {
+          attachment = { applied: true, takeId };
+        } else {
+          const nextNum = (targetClip.takes?.length || 1) + 1;
+          const modelLabel = job?.generation?.model?.name || 'AI';
+          const take: ClipTake = {
+            id: takeId!,
+            label: `T${nextNum} · ${modelLabel}`,
+            kind: asset.kind === 'video' ? 'video' : 'image',
+            sourceIn: 0,
+            assetId: asset.id,
+            props: {
+              fit: 'cover',
+              opacity: 1,
+              scale: 1,
+            },
+            createdAt: new Date().toISOString(),
+          };
+          ops.push({
+            type: 'addClipTake',
+            sequenceId: targetSeq.id,
+            clipId: targetClip.id,
+            take,
+            activate: target.mode === 'replace',
+          });
+          attachment = { applied: true, takeId };
+        }
+      }
+
+      if (ops.length === 0) {
+        if (job && attachment) await this.jobs.update(job, { targetAttachment: attachment });
+        return;
+      }
+
+      const editTitle =
+        attachment?.applied && target
+          ? `为镜头挂载 AI 候选「${asset.name}」`
+          : `添加${asset.kind === 'audio' ? '配音' : '生成素材'}`;
       try {
         const envelope = await store.edit(
           {
             baseRevision: p.revision,
-            name: `添加${asset.kind === 'audio' ? '配音' : '生成素材'}`,
-            operations: [{ type: 'addAsset', asset }],
+            name: editTitle,
+            operations: ops,
           },
           active,
         );
+        if (job && attachment) await this.jobs.update(job, { targetAttachment: attachment });
         await this.changed(store, envelope);
         return;
       } catch (error) {

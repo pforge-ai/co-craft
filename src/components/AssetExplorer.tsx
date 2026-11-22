@@ -31,6 +31,7 @@ import {
 } from '../core/presets';
 import {
   instantiateCompoundVaultItemOperations,
+  inferDefaultAudioAttachMode,
   newClip,
   uid,
 } from '../core/project';
@@ -170,10 +171,12 @@ export const AssetExplorer = React.memo(function AssetExplorer({
 
   const insertMediaAsset = (a: Asset) => {
     const at = currentPlayhead();
+    const dur = Math.max(1, Math.floor((a.kind === 'image' ? 5 : a.duration) * sequence.fps));
     const c: Clip = {
       ...newClip(a.kind === 'model-3d' ? 'shape' : a.kind, at, a.id),
       name: a.name,
-      duration: Math.max(1, Math.floor((a.kind === 'image' ? 5 : a.duration) * sequence.fps)),
+      duration: dur,
+      ...(a.kind === 'audio' ? { audioAttachMode: inferDefaultAudioAttachMode(a, dur, sequence.fps) } : {}),
     };
     void onEdit(`加入「${a.name}」`, [{ type: 'addClip', sequenceId: sequence.id, clip: c }]).then(() =>
       onSelectClip(c.id),

@@ -3,6 +3,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { extractVideoFrame } from './media';
 import type { Asset } from '../src/core/types';
 
 const mime: Record<string, string> = {
@@ -36,6 +37,7 @@ const RENDER_CSP =
 export class MediaServer {
   private studioAssets = new Map<string, Asset>();
   private projectAssets = new Map<string, Asset>();
+  private projectPath = '';
   private renderAssets = new Map<string, { asset: Asset; refs: number }>();
   private server: ReturnType<typeof createServer> | null = null;
   private selfHost = '';
@@ -53,9 +55,10 @@ export class MediaServer {
   }
 
   /** Replaces active project asset scope so switched-away projects cannot be enumerated. */
-  setProjectAssets(assets: Asset[]) {
+  setProjectAssets(assets: Asset[], projectPath?: string) {
     this.projectAssets.clear();
     for (const a of assets) this.projectAssets.set(a.id, a);
+    if (projectPath) this.projectPath = projectPath;
   }
 
   /** Ref-counted registration for in-flight background render jobs or silent component checks. */
@@ -117,7 +120,32 @@ export class MediaServer {
     let file: string | undefined;
     if (route.startsWith('media/')) {
       const asset = this.lookupAsset(route.slice(6));
-      file = url.searchParams.has('thumbnail') ? asset?.thumbnail : asset?.path;
+      if (asset && (url.searchParams.has('frame') || url.searchParams.has('t'))) {
+        if (asset.kind === 'video' && existsSync(asset.path) && this.projectPath) {
+          const fpsParam = Number(url.searchParams.get('fps') || asset.fps || 30);
+          const safeFps = Number.isFinite(fpsParam) && fpsParam > 0 && fpsParam <= 240 ? fpsParam : 30;
+          const tParam = url.searchParams.has('t')
+            ? Number(url.searchParams.get('t')) / 1000
+            : Number(url.searchParams.get('frame')) / safeFps;
+          const timeSec = Number.isFinite(tParam) && tParam >= 0 ? tParam : 0;
+          try {
+            file = await extractVideoFrame(
+              asset.path,
+              this.projectPath,
+              asset.id,
+              timeSec,
+              asset.duration,
+              asset.sha256 || '',
+            );
+          } catch {
+            file = asset.thumbnail;
+          }
+        } else {
+          file = asset.thumbnail || asset.path;
+        }
+      } else {
+        file = url.searchParams.has('thumbnail') ? asset?.thumbnail : asset?.path;
+      }
     } else if (route.startsWith('render/')) {
       const candidate = resolve(this.renderDir, route.slice(7));
       if (candidate.startsWith(resolve(this.renderDir) + '/')) file = candidate;

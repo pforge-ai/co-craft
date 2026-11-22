@@ -12,6 +12,7 @@
     "test:unit": "tsx scripts/unit-phase1.ts",
     "test:v03": "node scripts/phase1-ui-check.mjs && node scripts/v03-full-check.mjs",
     "test:v04": "node scripts/v05-acceptance.mjs",
+    "test:redblue": "node scripts/red-blue-regression.mjs",
     "smoke": "tsx scripts/smoke.ts",
     "package": "npm run build && electron-builder --mac dir --arm64",
     "test:ui": "node scripts/functional-check-v2.mjs",

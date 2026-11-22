@@ -253,6 +253,13 @@ function Preview() {
     : null;
 
   useEffect(() => {
+    if (!paused || !s) return;
+    scheduleMeasure();
+    const timer = window.setTimeout(scheduleMeasure, 120);
+    return () => window.clearTimeout(timer);
+  }, [props?.project.revision, s?.id, s?.clips.length, paused, selectedClipId, scheduleMeasure]);
+
+  useEffect(() => {
     const player = ref.current;
     if (!player || !s) return;
     const frame = (e: any) => {

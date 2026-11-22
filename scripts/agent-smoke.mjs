@@ -12,21 +12,52 @@ let step = 0,
   project,
   component,
   toolResults = [],
+  dashStep = 0,
+  dashToolResults = [],
   dashscopeChatUrl = '',
   dashscopeEnableThinking = undefined;
 const source = `import React from 'react';import {AbsoluteFill,useCurrentFrame} from 'remotion';export default function Scene({text='真实工具链',color='#ffffff'}){const f=useCurrentFrame();return <AbsoluteFill style={{justifyContent:'center',alignItems:'center',fontSize:80,color,opacity:Math.min(1,f/15)}}>{text}</AbsoluteFill>}`;
 const server = createServer(async (req, res) => {
   let raw = '';
   for await (const chunk of req) raw += chunk;
+  if (!raw) {
+    console.log('UNEXPECTED EMPTY REQ:', req.method, req.url);
+    res.writeHead(400);
+    res.end('empty');
+    return;
+  }
   const body = JSON.parse(raw);
   if (req.url?.startsWith('/dash/')) {
     dashscopeChatUrl = req.url;
     dashscopeEnableThinking = body.enable_thinking;
+    dashToolResults = body.messages.filter((m) => m.role === 'tool');
     assert.equal(
       req.url,
       '/dash/compatible-mode/v1/chat/completions',
       'DashScope Agent preset must route to /compatible-mode/v1/chat/completions (never 404 on /api/v1)',
     );
+    const dashDelta =
+      dashStep === 0
+        ? {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: 'dash_bash_0',
+                type: 'function',
+                function: {
+                  name: 'bash',
+                  arguments: JSON.stringify({
+                    command: `python3 -c "import wave,struct,math; w=wave.open('synth.wav','w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100); w.writeframes(b''.join(struct.pack('<h', int(12000*math.sin(2*math.pi*660*i/44100))) for i in range(4410))); w.close(); print('SYNTH_WAV_OK')" && (curl -sS --max-time 2 http://127.0.0.1:${server.address().port}/v1 || echo LOCALHOST_BLOCKED)`,
+                    timeout: 15,
+                  }),
+                },
+              },
+            ],
+          }
+        : { role: 'assistant', content: 'DashScope 兼容端点与允许联网沙箱音频合成均正常。' };
+    const dashFinish = dashStep === 0 ? 'tool_calls' : 'stop';
+    dashStep++;
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.write(
       'data: ' +
@@ -35,7 +66,7 @@ const server = createServer(async (req, res) => {
           object: 'chat.completion.chunk',
           created: Math.floor(Date.now() / 1000),
           model: 'qwen3.5-plus',
-          choices: [{ index: 0, delta: { role: 'assistant', content: 'DashScope 兼容端点连通正常。' }, finish_reason: null }],
+          choices: [{ index: 0, delta: dashDelta, finish_reason: null }],
         }) +
         '\n\n',
     );
@@ -44,7 +75,7 @@ const server = createServer(async (req, res) => {
         JSON.stringify({
           id: 'chat_dash',
           object: 'chat.completion.chunk',
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          choices: [{ index: 0, delta: {}, finish_reason: dashFinish }],
           usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
         }) +
         '\n\n',
@@ -271,16 +302,18 @@ try {
       },
     ],
     defaults: { agent: 'model_qwen_smoke' },
+    allowShell: true,
+    allowNetwork: true,
   });
-  const dashTask = await call('tasks.create', { name: '百炼主模型连通验证', sequenceId: project.sequences[0].id });
+  const dashTask = await call('tasks.create', { name: '百炼主模型与联网沙箱验证', sequenceId: project.sequences[0].id });
   await call('agent.start', {
     taskId: dashTask.id,
-    prompt: '你好',
+    prompt: '合成测试音频并验证联网沙箱',
     context: '',
     thinkingLevel: 'low',
   });
   let dashState;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 60; i++) {
     await new Promise((r) => setTimeout(r, 300));
     dashState = await call('boot');
     const dt = dashState.current.tasks.find((x) => x.id === dashTask.id);
@@ -290,8 +323,16 @@ try {
   assert.equal(dt.status, 'idle', 'DashScope Agent run completed without 404');
   assert.equal(dashscopeChatUrl, '/dash/compatible-mode/v1/chat/completions');
   assert.equal(dashscopeEnableThinking, true, 'Qwen3 thinking maps to enable_thinking=true');
+  assert.ok(
+    dashToolResults.some((m) => JSON.stringify(m).includes('SYNTH_WAV_OK')),
+    'allowNetwork=true sandbox-exec runs Python audio synthesis cleanly (no exit code 65!)',
+  );
+  assert.ok(
+    dashToolResults.some((m) => JSON.stringify(m).includes('LOCALHOST_BLOCKED')),
+    'allowNetwork=true sandbox-exec still blocks localhost loopback access',
+  );
 
-  console.log('PASS · real Pi SDK → read/write/compile/publish + search_assets(style)/setActiveBrand + silent preview_frame fallback + DashScope Agent compat routing; symlink/relink/sandbox escapes blocked');
+  console.log('PASS · real Pi SDK → read/write/compile/publish + search_assets(style)/setActiveBrand + silent preview_frame fallback + DashScope compat + allowNetwork=true sandbox audio synth & localhost block');
   await rm('/tmp/cocraft-symlink-escape.txt', { force: true }).catch(() => {});
   await mkdir(join(root, 'docs/verification'), { recursive: true });
   console.log('DATA', dataDir);

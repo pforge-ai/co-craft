@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Crosshair, Lock, Move, RotateCcw } from 'lucide-react';
 import { pointerDrag } from '../lib/pointerDrag';
 import { getPreset } from '../core/presets';
@@ -17,6 +17,7 @@ export interface StageOverlayProps {
   frame: number;
   playing: boolean;
   scrubbing?: boolean;
+  visible?: boolean;
   selectedId: string | null;
   pinMode: boolean;
   activePin?: { x: number; y: number; frame: number };
@@ -124,6 +125,7 @@ export function StageOverlay({
   frame,
   playing,
   scrubbing = false,
+  visible = true,
   selectedId,
   pinMode,
   activePin,
@@ -153,18 +155,45 @@ export function StageOverlay({
     pitch: number;
   } | null>(null);
 
+  const measureBounds = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const width = el.clientWidth;
+    const height = el.clientHeight;
+    setBounds((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+  }, []);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const measure = () => setBounds({ width: el.clientWidth, height: el.clientHeight });
-    measure();
-    const ro = new ResizeObserver(measure);
+    measureBounds();
+    const ro = new ResizeObserver(measureBounds);
     ro.observe(el);
+    window.addEventListener('resize', measureBounds);
     return () => {
       ro.disconnect();
+      window.removeEventListener('resize', measureBounds);
       cleanupRef.current?.();
     };
-  }, []);
+  }, [measureBounds]);
+
+  // Re-measure whenever stage transitions from hidden/empty/playing to active paused editing (Review #7).
+  useLayoutEffect(() => {
+    measureBounds();
+    const raf = requestAnimationFrame(measureBounds);
+    return () => cancelAnimationFrame(raf);
+  }, [
+    measureBounds,
+    visible,
+    playing,
+    scrubbing,
+    sequence.id,
+    sequence.clips.length,
+    sequence.width,
+    sequence.height,
+    selectedId,
+    pinMode,
+  ]);
 
   useEffect(() => {
     if (playing || scrubbing || editingClipId !== selectedId) {
@@ -206,16 +235,18 @@ export function StageOverlay({
   const presetId = String(selectedClip?.props.presetId || '');
   const is3DStage = Boolean(selectedClip && (presetId === 'teardown-3d' || linkedAsset?.kind === 'model-3d'));
 
-  // Compute fitted stage rectangle inside preview container
+  // Compute fitted stage rectangle inside preview container (with live DOM fallback for first paint after empty -> active)
+  const effectiveW = bounds.width || containerRef.current?.clientWidth || 0;
+  const effectiveH = bounds.height || containerRef.current?.clientHeight || 0;
   const aspect = sequence.width / sequence.height;
-  let stageW = bounds.width;
-  let stageH = bounds.width / aspect;
-  if (stageH > bounds.height) {
-    stageH = bounds.height;
-    stageW = bounds.height * aspect;
+  let stageW = effectiveW;
+  let stageH = effectiveW / aspect;
+  if (stageH > effectiveH) {
+    stageH = effectiveH;
+    stageW = effectiveH * aspect;
   }
-  const stageLeft = (bounds.width - stageW) / 2;
-  const stageTop = (bounds.height - stageH) / 2;
+  const stageLeft = (effectiveW - stageW) / 2;
+  const stageTop = (effectiveH - stageH) / 2;
   const pxRatio = stageW > 0 ? sequence.width / stageW : 1;
 
   const boxForClip = (c: Clip): StageBox => {

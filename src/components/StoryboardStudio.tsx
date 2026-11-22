@@ -20,11 +20,21 @@ import {
   computeCompositeShots,
   moveCompositeShotOperations,
   scriptOutlineToShotOperations,
+  updateShotNotesOperations,
   updateShotScriptOperations,
+  updateSingleCaptionTextOperations,
   type CompositeShot,
 } from '../core/storyboard';
 import { inferAssetRole } from '../core/taxonomy';
-import type { Clip, ClipTake, EditOperation, Project, Sequence, ShotBinding } from '../core/types';
+import type {
+  Clip,
+  ClipTake,
+  EditOperation,
+  GenerationTarget,
+  Project,
+  Sequence,
+  ShotBinding,
+} from '../core/types';
 
 interface StoryboardStudioProps {
   project: Project;
@@ -37,7 +47,7 @@ interface StoryboardStudioProps {
   onEdit: (name: string, ops: EditOperation[]) => Promise<void>;
   onChangeSequence?: (seqId: string) => void;
   onAskAgentForShot?: (clip: Clip, prompt: string) => void;
-  onOpenGenerationForShot?: (prompt: string, referenceAssetId?: string) => void;
+  onOpenGenerationForShot?: (prompt: string, referenceAssetId?: string, target?: GenerationTarget) => void;
   onSwitchToStage?: () => void;
 }
 
@@ -376,6 +386,11 @@ export function StoryboardStudio({
                   {shot.compositeClips.length > 1 && (
                     <span className="shot-track-pill">{shot.compositeClips.length} 层合成</span>
                   )}
+                  {shot.audioClips.length > 0 && (
+                    <span className="shot-track-pill audio" title="随镜移动的声音片段">
+                      +{shot.audioClips.length} 随镜音
+                    </span>
+                  )}
                   {shot.locked && (
                     <span className="shot-lock-pill" title="已锁定版本保护">
                       <Lock size={11} />
@@ -406,25 +421,98 @@ export function StoryboardStudio({
                     </small>
                   </div>
 
-                  {/* Inline Narration / Caption Script */}
-                  <textarea
-                    key={`${shot.id}-${shot.scriptText}`}
-                    className="shot-script-input"
-                    rows={2}
-                    aria-label={`镜头 ${shot.index} 旁白与字幕`}
-                    placeholder="输入本镜旁白台词或字幕（失焦自动同步至字幕轨）…"
-                    defaultValue={shot.scriptText}
-                    disabled={shot.locked}
-                    onClick={(e) => e.stopPropagation()}
-                    onBlur={(e) => {
-                      if (e.currentTarget.value.trim() !== shot.scriptText.trim()) {
-                        void onEdit(
-                          `更新镜头 #${shot.index} 台词`,
-                          updateShotScriptOperations(sequence, shot, e.currentTarget.value),
-                        );
-                      }
-                    }}
-                  />
+                  {/* Inline Narration / Timed Per-Line Subtitles (Review #4: preserve individual SRT timing!) */}
+                  {shot.captionClips.length >= 2 ? (
+                    <div className="shot-timed-captions" onClick={(e) => e.stopPropagation()}>
+                      <div className="shot-timed-head">
+                        <span>已对时字幕（{shot.captionClips.length} 句 · 逐句改字不改时码）</span>
+                        {!shot.locked && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            title="将这几句合并重写为一条整镜字幕"
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `确定将镜头 #${shot.index} 的 ${shot.captionClips.length} 条逐句字幕合并为 1 条整镜字幕？原分句停顿时间将被替换（可 ⌘Z 撤销）。`,
+                                )
+                              ) {
+                                void onEdit(
+                                  `合并重写镜头 #${shot.index} 字幕`,
+                                  updateShotScriptOperations(sequence, shot, shot.scriptText, { resetTiming: true }),
+                                );
+                              }
+                            }}
+                          >
+                            合并重排
+                          </button>
+                        )}
+                      </div>
+                      {shot.captionClips.map((cap, capIdx) => (
+                        <div key={cap.id} className="shot-timed-row">
+                          <span className="shot-timed-tc">
+                            {timecode(cap.start, sequence.fps)}–{timecode(cap.start + cap.duration, sequence.fps)}
+                          </span>
+                          <input
+                            key={`${cap.id}-${String(cap.props.text || '')}`}
+                            type="text"
+                            className="shot-timed-input"
+                            aria-label={`镜头 ${shot.index} 第 ${capIdx + 1} 句字幕`}
+                            defaultValue={String(cap.props.text || '')}
+                            disabled={shot.locked || cap.locked}
+                            onBlur={(e) => {
+                              const nextVal = e.currentTarget.value.trim();
+                              if (nextVal !== String(cap.props.text || '').trim()) {
+                                void onEdit(
+                                  `修改镜头 #${shot.index} 第 ${capIdx + 1} 句字幕`,
+                                  updateSingleCaptionTextOperations(sequence, cap, nextVal),
+                                );
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') e.currentTarget.blur();
+                            }}
+                          />
+                        </div>
+                      ))}
+                      <input
+                        key={`${shot.id}-notes-${c.shotNotes || ''}`}
+                        type="text"
+                        className="shot-notes-input"
+                        aria-label={`镜头 ${shot.index} 旁白备注`}
+                        placeholder="本镜旁白备注（不影响上方逐句字幕时码）…"
+                        defaultValue={c.shotNotes || ''}
+                        disabled={shot.locked}
+                        onBlur={(e) => {
+                          if (e.currentTarget.value.trim() !== (c.shotNotes || '').trim()) {
+                            void onEdit(
+                              `更新镜头 #${shot.index} 旁白备注`,
+                              updateShotNotesOperations(sequence, shot, e.currentTarget.value),
+                            );
+                          }
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <textarea
+                      key={`${shot.id}-${shot.scriptText}`}
+                      className="shot-script-input"
+                      rows={2}
+                      aria-label={`镜头 ${shot.index} 旁白与字幕`}
+                      placeholder="输入本镜旁白台词或字幕（失焦自动同步至字幕轨）…"
+                      defaultValue={shot.scriptText}
+                      disabled={shot.locked}
+                      onClick={(e) => e.stopPropagation()}
+                      onBlur={(e) => {
+                        if (e.currentTarget.value.trim() !== shot.scriptText.trim()) {
+                          void onEdit(
+                            `更新镜头 #${shot.index} 台词`,
+                            updateShotScriptOperations(sequence, shot, e.currentTarget.value),
+                          );
+                        }
+                      }}
+                    />
+                  )}
 
                   {/* Multi-Take Switcher & Inline Producer */}
                   <div className="shot-takes-bar" onClick={(e) => e.stopPropagation()}>
@@ -488,7 +576,12 @@ export function StoryboardStudio({
                                   const genPrompt = [shot.scriptText || c.name, resolved.text]
                                     .filter(Boolean)
                                     .join('，');
-                                  onOpenGenerationForShot(genPrompt, resolved.refAssetId);
+                                  onOpenGenerationForShot(genPrompt, resolved.refAssetId, {
+                                    sequenceId: sequence.id,
+                                    clipId: c.id,
+                                    shotLabel: `镜头 #${shot.index} · ${c.name}`,
+                                    mode: 'take',
+                                  });
                                 }}
                               >
                                 <Sparkles size={12} /> AI 生图/生视频候选（带入绑定主体）

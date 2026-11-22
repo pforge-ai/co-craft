@@ -91,8 +91,10 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
   overlayCount,
   allClips,
   mutedSet,
+  mutedVideoAudio,
   onToggleLock,
   onToggleVisMute,
+  onToggleVideoAudioMute,
 }: {
   labelsRef: React.RefObject<HTMLDivElement | null>;
   fps: number;
@@ -100,8 +102,10 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
   overlayCount: number;
   allClips: Clip[];
   mutedSet: Set<Track>;
+  mutedVideoAudio: boolean;
   onToggleLock: (trackId: Track) => void;
   onToggleVisMute: (trackId: Track) => void;
+  onToggleVideoAudioMute: () => void;
 }) {
   return (
     <div className="track-labels" ref={labelsRef}>
@@ -109,6 +113,7 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
       {rows.map((t) => {
         const isHiddenOrMuted = mutedSet.has(t.id);
         const isAudio = t.id === 'audio';
+        const isVisual = t.id === 'visual';
         const trackClips = allClips.filter((c) => c.track === t.id);
         const trackLocked = trackClips.length > 0 && trackClips.every((c) => c.locked);
         const displayCode =
@@ -133,6 +138,21 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
                 >
                   {trackLocked ? <Lock size={10} /> : <Unlock size={10} />}
                 </button>
+                {isVisual && (
+                  <button
+                    type="button"
+                    className={`track-mute-btn ${mutedVideoAudio ? 'active' : ''}`}
+                    aria-label={mutedVideoAudio ? '恢复视频原声' : '静音视频原声'}
+                    title={
+                      mutedVideoAudio
+                        ? '恢复 V1 视频内嵌同期声（独立于 A1 声音轨）'
+                        : '静音 V1 视频内嵌同期声（不影响 A1 独立声音轨）'
+                    }
+                    onClick={onToggleVideoAudioMute}
+                  >
+                    {mutedVideoAudio ? <VolumeX size={11} /> : <Volume2 size={11} />}
+                  </button>
+                )}
                 <button
                   type="button"
                   className={`track-mute-btn ${isHiddenOrMuted ? 'active' : ''}`}
@@ -143,7 +163,7 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
                   }
                   title={
                     isAudio
-                      ? `${isHiddenOrMuted ? '恢复声音' : '静音'}音频轨`
+                      ? `${isHiddenOrMuted ? '恢复声音' : '静音'} A1 独立声音轨（不影响 V1 视频原声）`
                       : `${isHiddenOrMuted ? '显示' : '隐藏'}${t.label}轨画面`
                   }
                   onClick={() => onToggleVisMute(t.id)}
@@ -328,7 +348,20 @@ const TimelineLanes = React.memo(function TimelineLanes({
                     ) : c.kind === 'code' ? (
                       <span className="mono">{'{}'}</span>
                     ) : null}
+                    {c.muted && <VolumeX size={10} aria-label="片段已静音" />}
                     <span>{c.name}</span>
+                    {c.track === 'audio' && clipPxWidth > 68 && (
+                      <em
+                        className={`clip-attach-pill ${c.audioAttachMode === 'shot' ? 'shot' : 'timeline'}`}
+                        title={
+                          c.audioAttachMode === 'shot'
+                            ? '随镜移动：分镜换序时跟随所属镜头一起移动'
+                            : '固定时间线：分镜换序时保持在原时间位置'
+                        }
+                      >
+                        {c.audioAttachMode === 'shot' ? '随镜' : '固定'}
+                      </em>
+                    )}
                   </div>
                   {showWave && (
                     <WaveformSvg
@@ -336,7 +369,7 @@ const TimelineLanes = React.memo(function TimelineLanes({
                       sourceIn={clip.sourceIn}
                       clipDuration={clip.duration}
                       assetDurationFrames={(asset!.duration || 1) * fps}
-                      volume={Number(clip.props.volume ?? 1)}
+                      volume={c.muted ? 0 : Number(clip.props.volume ?? 1)}
                       bars={waveBars}
                       isVideo={c.kind === 'video'}
                     />
@@ -344,6 +377,9 @@ const TimelineLanes = React.memo(function TimelineLanes({
                   {drag?.id === c.id && (
                     <div className="clip-drag-hud">
                       {timecodeFrames(clip.start, fps)} · {(clip.duration / fps).toFixed(2)}s
+                      {clip.kind !== 'title' && clip.kind !== 'caption' && clip.kind !== 'image'
+                        ? ` · 源 ${timecodeFrames(clip.sourceIn, fps)}`
+                        : ''}
                     </div>
                   )}
                   {isPrimarySelected && !c.locked && toolMode === 'select' && (
@@ -537,6 +573,13 @@ export const Timeline = React.memo(function Timeline({
     },
     [sequence.mutedTracks, sequence.id, onEdit],
   );
+
+  const toggleVideoAudioMute = useCallback(() => {
+    const nextMuted = !sequence.mutedVideoAudio;
+    onEdit(nextMuted ? '静音视频原声' : '恢复视频原声', [
+      { type: 'updateSequence', sequenceId: sequence.id, changes: { mutedVideoAudio: nextMuted } },
+    ]);
+  }, [sequence.mutedVideoAudio, sequence.id, onEdit]);
 
   const toggleTrackLock = useCallback(
     (trackId: Track) => {
@@ -793,8 +836,10 @@ export const Timeline = React.memo(function Timeline({
         overlayCount={overlayCount}
         allClips={sequence.clips}
         mutedSet={mutedSet}
+        mutedVideoAudio={Boolean(sequence.mutedVideoAudio)}
         onToggleLock={toggleTrackLock}
         onToggleVisMute={toggleTrackMuteOrVis}
+        onToggleVideoAudioMute={toggleVideoAudioMute}
       />
       <div
         className={`timeline-overflow ${toolMode === 'razor' ? 'razor-mode' : ''}`}

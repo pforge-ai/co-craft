@@ -158,6 +158,8 @@ export function validateProject(p: Project): void {
         s.mutedTracks.some((t) => !['visual', 'overlay', 'caption', 'audio'].includes(t)))
     )
       throw new Error('静音轨道配置无效');
+    if (s.mutedVideoAudio !== undefined && typeof s.mutedVideoAudio !== 'boolean')
+      throw new Error('视频原声静音配置无效');
     for (const c of s.clips) {
       if (ids.has(c.id)) throw new Error('片段标识重复');
       ids.add(c.id);
@@ -166,6 +168,8 @@ export function validateProject(p: Project): void {
         !['visual', 'overlay', 'caption', 'audio'].includes(c.track)
       )
         throw new Error('片段类型无效');
+      if (c.audioAttachMode !== undefined && !['shot', 'timeline'].includes(c.audioAttachMode))
+        throw new Error('音频附着模式无效');
       if (
         !Number.isInteger(c.start) ||
         !Number.isInteger(c.duration) ||
@@ -274,6 +278,9 @@ export function applyOperations(
         ) {
           throw new Error('超出用户指定的片段修改范围（仅改此处模式下不允许重排其他镜头）');
         }
+        if (op.type === 'updateSequence') {
+          throw new Error('超出用户指定的片段修改范围（仅改此处模式下不允许修改整条成片设置）');
+        }
         if (op.type === 'addClip') {
           const targetSeq = p.sequences.find((sq) => sq.id === op.sequenceId);
           const scopedClips = targetSeq?.clips.filter((cl) => scope.clipIds!.includes(cl.id)) || [];
@@ -316,8 +323,14 @@ export function applyOperations(
       continue;
     }
     if (op.type === 'removeAsset') {
-      if (p.sequences.some((s) => s.clips.some((c) => c.assetId === op.assetId)))
-        throw new Error('该资产仍在成片时间线中使用，请先移除相关片段');
+      if (
+        p.sequences.some((s) =>
+          s.clips.some(
+            (c) => c.assetId === op.assetId || c.takes?.some((t) => t.assetId === op.assetId),
+          ),
+        )
+      )
+        throw new Error('该资产仍在成片时间线或镜头候选中引用，请先移除相关片段');
       if (
         (p.vault || []).some(
           (v) =>
@@ -334,14 +347,34 @@ export function applyOperations(
     if (op.type === 'relinkAsset') {
       const a = p.assets.find((x) => x.id === op.assetId);
       if (!a) throw new Error('待重连的资产不存在');
+      const sameContent = Boolean(a.sha256 && op.sha256 && a.sha256 === op.sha256);
+      const lockedRefs = p.sequences.flatMap((s) =>
+        s.clips.filter(
+          (c) =>
+            c.locked &&
+            (c.assetId === op.assetId || c.takes?.some((t) => t.assetId === op.assetId)),
+        ),
+      );
+      if (!sameContent && lockedRefs.length > 0) {
+        const names = lockedRefs
+          .map((c) => c.name)
+          .slice(0, 3)
+          .join('、');
+        throw new Error(
+          `素材「${a.name}」被已锁定镜头「${names}」引用，禁止替换为不同内容；请找回原文件，或先解锁／仅替换未锁定镜头`,
+        );
+      }
       a.path = op.path;
       a.offline = false;
+      if (op.sha256 !== undefined) a.sha256 = op.sha256;
+      if (op.byteSize !== undefined) a.byteSize = op.byteSize;
       if (op.duration !== undefined) a.duration = op.duration;
       if (op.width !== undefined) a.width = op.width;
       if (op.height !== undefined) a.height = op.height;
       if (op.thumbnail !== undefined) a.thumbnail = op.thumbnail;
       if (op.waveform !== undefined) a.waveform = op.waveform;
       if (op.hasAudio !== undefined) a.hasAudio = op.hasAudio;
+      if (!sameContent || op.clearTranscript) delete a.transcript;
       continue;
     }
     if (op.type === 'updateAssetTranscript') {
@@ -351,8 +384,17 @@ export function applyOperations(
       continue;
     }
     if (op.type === 'putComponent') {
-      if (p.sequences.some((s) => s.clips.some((c) => c.locked && c.componentId === op.component.id)))
-        throw new Error('组件被锁定片段引用，请创建新组件');
+      if (
+        p.sequences.some((s) =>
+          s.clips.some(
+            (c) =>
+              c.locked &&
+              (c.componentId === op.component.id ||
+                c.takes?.some((t) => t.componentId === op.component.id)),
+          ),
+        )
+      )
+        throw new Error('组件被锁定片段或其候选引用，请创建新组件');
       const i = p.components.findIndex((c) => c.id === op.component.id);
       if (i < 0) p.components.push(clone(op.component));
       else p.components[i] = clone(op.component);
@@ -476,6 +518,7 @@ export function applyOperations(
         'fps',
         'background',
         'mutedTracks',
+        'mutedVideoAudio',
         'branchName',
         'workflowIntent',
       ]);
@@ -513,7 +556,9 @@ export function applyOperations(
           const oldEnd = item.start + item.duration;
           const companions = s.clips.filter((cand) => {
             if (targetSet.has(cand.id) || claimedCompanionIds.has(cand.id)) return false;
-            if (cand.track !== 'caption' && cand.kind !== 'caption' && cand.track !== 'overlay') return false;
+            const isShotAudio = cand.track === 'audio' && cand.audioAttachMode === 'shot';
+            if (cand.track !== 'caption' && cand.kind !== 'caption' && cand.track !== 'overlay' && !isShotAudio)
+              return false;
             if (cand.duration > item.duration + 4) return false;
             const mid = cand.start + cand.duration / 2;
             return mid >= oldStart && mid < oldEnd;
@@ -526,7 +571,7 @@ export function applyOperations(
           };
         });
         if (slices.some((sl) => sl.companions.some((c) => c.comp.locked))) {
-          throw new Error('包含已锁定的同步字幕或叠加层，不能重排顺序');
+          throw new Error('包含已锁定的同步字幕、叠加层或随镜声音，不能重排顺序');
         }
         let cursor = Math.min(...slices.map((sl) => sl.oldStart));
         for (const sl of slices) {
@@ -615,6 +660,8 @@ export function applyOperations(
         'assetId',
         'componentId',
         'locked',
+        'audioAttachMode',
+        'muted',
         'transitionIn',
         'takes',
         'activeTakeId',
@@ -650,20 +697,22 @@ export function applyOperations(
 export function splitOperations(sequence: Sequence, clip: Clip, at: number): EditOperation[] {
   const offset = at - clip.start;
   if (offset <= 0 || offset >= clip.duration) throw new Error('将播放头移到片段内部再分割');
+  const secondHalf: Clip = {
+    ...clone(clip),
+    layer: clip.layer ?? 0,
+    id: uid('clip'),
+    name: clip.name + ' · 2',
+    start: at,
+    duration: clip.duration - offset,
+    sourceIn: clip.kind === 'image' ? 0 : clip.sourceIn + offset,
+  };
+  delete secondHalf.transitionIn;
   return [
     { type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes: { duration: offset } },
     {
       type: 'addClip',
       sequenceId: sequence.id,
-      clip: {
-        ...clone(clip),
-        layer: clip.layer ?? 0,
-        id: uid('clip'),
-        name: clip.name + ' · 2',
-        start: at,
-        duration: clip.duration - offset,
-        sourceIn: clip.kind === 'image' ? 0 : clip.sourceIn + offset,
-      },
+      clip: secondHalf,
     },
   ];
 }
@@ -737,9 +786,10 @@ export function preflightSequence(
   }
 
   const missingSet = new Set(missingAssetIds);
+  const componentSet = new Set(project.components.map((c) => c.id));
   const muted = new Set(seq.mutedTracks || []);
 
-  // 1. Offline / Missing assets check (Blocker per PRD R06/R26)
+  // 1. Offline / Missing assets & missing code components check (Blocker per PRD R06/R26)
   for (const c of seq.clips) {
     if (muted.has(c.track)) continue;
     if (c.assetId && missingSet.has(c.assetId)) {
@@ -754,28 +804,84 @@ export function preflightSequence(
         assetId: c.assetId,
       });
     }
+    if (c.kind === 'code' && (!c.componentId || !componentSet.has(c.componentId))) {
+      issues.push({
+        id: `missing-comp-${c.id}`,
+        severity: 'blocker',
+        title: `代码组件缺失：${c.name}`,
+        detail: `片段「${c.name}」（${timecode(c.start, seq.fps)}）引用的代码组件不存在，无法正常渲染。`,
+        frame: c.start,
+        clipId: c.id,
+      });
+    }
   }
 
-  // 2. Uncovered visual black gaps check (Warning)
+  // 2. Complete visual coverage check: empty visual, leading gap, middle gaps, AND trailing gap (Warning)
   const total = durationOf(seq);
+  const gapThreshold = Math.max(1, Math.round(seq.fps * 0.5));
   const visibleClips = seq.clips
     .filter((c) => (c.track === 'visual' || c.track === 'overlay') && !muted.has(c.track) && c.kind !== 'audio')
     .sort((a, b) => a.start - b.start);
 
-  if (visibleClips.length > 0) {
+  if (visibleClips.length === 0) {
+    issues.push({
+      id: 'gap-all-empty',
+      severity: 'warning',
+      title: '全片没有可见画面',
+      detail: `当前成片总长 ${(total / seq.fps).toFixed(1)}s，但视觉轨与叠加轨均为空或已隐藏，导出画面将只有背景色。`,
+      frame: 0,
+    });
+  } else {
     let coveredUntil = 0;
     for (const c of visibleClips) {
-      if (c.start > coveredUntil && c.start - coveredUntil >= Math.round(seq.fps * 0.5)) {
+      if (c.start > coveredUntil && c.start - coveredUntil >= gapThreshold) {
+        const isHead = coveredUntil === 0;
         issues.push({
-          id: `gap-${coveredUntil}`,
+          id: `${isHead ? 'gap-head' : 'gap'}-${coveredUntil}`,
           severity: 'warning',
-          title: '时间线存在无画面区间',
+          title: isHead ? '片头存在无画面区间' : '时间线存在无画面区间',
           detail: `${timecode(coveredUntil, seq.fps)} — ${timecode(c.start, seq.fps)} 没有任何视觉或包装片段覆盖，将呈现纯背景色。`,
           frame: coveredUntil,
         });
       }
       coveredUntil = Math.max(coveredUntil, c.start + c.duration);
     }
+    if (total > coveredUntil && total - coveredUntil >= gapThreshold) {
+      issues.push({
+        id: `gap-tail-${coveredUntil}`,
+        severity: 'warning',
+        title: '片尾存在无画面留白',
+        detail: `${timecode(coveredUntil, seq.fps)} — ${timecode(total, seq.fps)}（约 ${((total - coveredUntil) / seq.fps).toFixed(1)}s）没有任何视觉或包装片段覆盖，将呈现纯背景色（通常由更长的声音或字幕轨拉长所致）。`,
+        frame: coveredUntil,
+      });
+    }
+  }
+
+  // 2b. Muted audio track / embedded video audio notice (Warning)
+  const hasVideoWithAudio = seq.clips.some(
+    (c) =>
+      c.kind === 'video' &&
+      !muted.has(c.track) &&
+      !c.muted &&
+      project.assets.find((a) => a.id === c.assetId)?.hasAudio,
+  );
+  const hasAudioClips = seq.clips.some((c) => c.track === 'audio' && !c.muted);
+  if (seq.mutedVideoAudio && hasVideoWithAudio && (muted.has('audio') || !hasAudioClips)) {
+    issues.push({
+      id: 'muted-all-audio',
+      severity: 'warning',
+      title: '当前视频原声与声音轨均已静音',
+      detail: '导出成片将没有任何声音。如需保留同期声，请在时间线 V1 轨道恢复视频原声。',
+      frame: 0,
+    });
+  } else if (seq.mutedVideoAudio && hasVideoWithAudio) {
+    issues.push({
+      id: 'muted-video-audio',
+      severity: 'warning',
+      title: '视频原声（V1）已静音',
+      detail: '时间线已关闭视频内嵌同期声，导出成片将仅保留 A1 独立声音轨。',
+      frame: 0,
+    });
   }
 
   // 3. Caption overflow check (Warning)
@@ -835,6 +941,8 @@ export function diffSummary(a: Project, b: Project): string[] {
     if (s.width !== old.width || s.height !== old.height) result.push(`调整「${s.name}」画幅`);
     if (JSON.stringify(s.mutedTracks || []) !== JSON.stringify(old.mutedTracks || []))
       result.push(`更新「${s.name}」轨道静音`);
+    if (Boolean(s.mutedVideoAudio) !== Boolean(old.mutedVideoAudio))
+      result.push(`${s.mutedVideoAudio ? '静音' : '恢复'}「${s.name}」视频原声`);
   }
   for (const old of a.sequences) {
     if (!b.sequences.some((s) => s.id === old.id)) result.push(`删除成片「${old.name}」`);
@@ -905,25 +1013,61 @@ export function transcriptToCaptionClips(sequence: Sequence, asset: Asset): Clip
 }
 
 /**
+ * Infer default NLE audio attachment mode for a newly placed audio clip:
+ * - Short SFX / voiceover / cue clips default to 'shot' (move with owning shot on reorder).
+ * - Long BGM / music beds (>10s or tagged/named bgm/music) default to 'timeline' (stay pinned).
+ */
+export function inferDefaultAudioAttachMode(
+  asset?: Pick<Asset, 'name' | 'role' | 'duration'>,
+  durationFrames?: number,
+  fps = 30,
+): 'shot' | 'timeline' {
+  if (asset?.role === 'bgm') return 'timeline';
+  if (asset?.role === 'sfx' || asset?.role === 'voiceover') return 'shot';
+  const name = asset?.name || '';
+  if (/\b(bgm|music|bed|ambience)\b|背景音|底乐|配乐/i.test(name)) return 'timeline';
+  const sec = durationFrames !== undefined ? durationFrames / Math.max(1, fps) : asset?.duration || 0;
+  return sec > 10 ? 'timeline' : 'shot';
+}
+
+/**
  * Snapshot one or more edited timeline clips (including trimmed sourceIn, duration,
- * color adjustments, transitions, styling, overlays & captions) as a reusable Compound Asset.
+ * color adjustments, transitions, styling, overlays, captions & shot-attached audio)
+ * as a reusable Compound Asset.
  */
 export function createCompoundVaultItemFromClips(
   project: Project,
   sequence: Sequence,
   clips: Clip[],
   customName?: string,
+  clipWindow?: { start: number; duration: number },
 ): VaultItem {
   if (!clips.length) throw new Error('请选择至少一个片段以保存为资产');
   const sorted = [...clips].sort((a, b) => a.start - b.start || (a.layer ?? 0) - (b.layer ?? 0));
-  const minStart = Math.min(...sorted.map((c) => c.start));
-  const maxEnd = Math.max(...sorted.map((c) => c.start + c.duration));
-  const normalized: Clip[] = sorted.map((c) => ({
-    ...clone(c),
-    start: Math.max(0, c.start - minStart),
-    locked: false,
-  }));
+  const minStart = clipWindow ? clipWindow.start : Math.min(...sorted.map((c) => c.start));
+  const maxEnd = clipWindow
+    ? clipWindow.start + clipWindow.duration
+    : Math.max(...sorted.map((c) => c.start + c.duration));
+  const normalized: Clip[] = [];
+  for (const c of sorted) {
+    const cEnd = c.start + c.duration;
+    const clampedStart = Math.max(minStart, c.start);
+    const clampedEnd = Math.min(maxEnd, cEnd);
+    const clampedDuration = clampedEnd - clampedStart;
+    if (clampedDuration < 1) continue;
+    const trimDelta = clampedStart - c.start;
+    const cloned = clone(c);
+    normalized.push({
+      ...cloned,
+      start: Math.max(0, clampedStart - minStart),
+      duration: clampedDuration,
+      sourceIn: cloned.kind === 'image' ? 0 : Math.max(0, cloned.sourceIn + trimDelta),
+      locked: false,
+    });
+  }
+  if (!normalized.length) throw new Error('选定区间内没有可沉淀的片段');
   const visualLead =
+    normalized.find((c) => c.track === 'visual' && (c.kind === 'video' || c.kind === 'image') && c.assetId) ||
     normalized.find((c) => (c.kind === 'video' || c.kind === 'image') && c.assetId) ||
     normalized.find((c) => Boolean(c.assetId)) ||
     normalized[0];
@@ -954,15 +1098,26 @@ export function createCompoundVaultItemFromClips(
     (normalized.length > 1
       ? `${primaryTitle} 等${normalized.length}层组合`
       : `${primaryTitle} · ${(durationFrames / sequence.fps).toFixed(1)}s`);
+  const inferredRole =
+    linkedAsset?.role ||
+    (visualLead?.kind === 'audio'
+      ? visualLead.audioAttachMode === 'shot'
+        ? 'sfx'
+        : 'bgm'
+      : visualLead?.kind === 'video' || visualLead?.kind === 'image'
+        ? 'footage'
+        : visualLead?.kind === 'title'
+          ? 'title-chapter'
+          : 'footage');
   return {
     id: uid('pvault'),
     name: label,
     entityKind: 'compound',
-    role: linkedAsset?.role || (visualLead?.kind === 'audio' ? 'bgm' : 'footage'),
+    role: inferredRole,
     tags: ['精剪资产', `${normalized.length}层`],
-    category: 'rig',
+    category: linkedAsset?.kind === 'model-3d' ? 'rig' : 'media',
     subkind: 'compound-clip',
-    description: `包含 ${normalized.length} 个片段（${(durationFrames / sequence.fps).toFixed(1)}s），完整保留裁切入出点、转场与调色样式。`,
+    description: `包含 ${normalized.length} 个片段（${(durationFrames / sequence.fps).toFixed(1)}s），完整保留裁切入出点、转场、字幕与调色样式。`,
     assetId: linkedAsset?.id,
     assetKind: linkedAsset?.kind,
     derivedFrom,
@@ -981,7 +1136,7 @@ export function createCompoundVaultItemFromClips(
 
 /**
  * Instantiate a saved Compound Asset onto a target sequence at `atFrame`,
- * preserving relative offsets, trims, transitions, and styling.
+ * preserving relative offsets, sourceIn trims (scaled across FPS), transitions, and styling.
  */
 export function instantiateCompoundVaultItemOperations(
   sequenceId: string,
@@ -1001,6 +1156,15 @@ export function instantiateCompoundVaultItemOperations(
       id: newId,
       start: Math.max(0, Math.round(atFrame + orig.start * ratio)),
       duration: Math.max(1, Math.round(orig.duration * ratio)),
+      sourceIn: orig.kind === 'image' ? 0 : Math.max(0, Math.round((orig.sourceIn || 0) * ratio)),
+      ...(orig.transitionIn
+        ? {
+            transitionIn: {
+              ...orig.transitionIn,
+              durationFrames: Math.max(1, Math.round(orig.transitionIn.durationFrames * ratio)),
+            },
+          }
+        : {}),
       locked: false,
     };
     if (!primaryClipId || c.track === 'visual') primaryClipId = newId;

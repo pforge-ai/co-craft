@@ -185,7 +185,7 @@ export class JobService {
     project: Project,
     sequenceId: string,
     output: string,
-    options: { scale?: number; still?: boolean; frame?: number; silent?: boolean } = {},
+    options: { scale?: number; still?: boolean; frame?: number; silent?: boolean; projectPath?: string } = {},
   ): Promise<Job> {
     await mkdir(join(output, '..'), { recursive: true });
     if (existsSync(output)) throw new Error('导出文件已存在，请使用新文件名');
@@ -209,6 +209,10 @@ export class JobService {
       output,
       createdAt: new Date().toISOString(),
       revision: project.revision,
+      projectId: project.id,
+      projectName: project.name,
+      branchName: seq.branchName || seq.name,
+      projectPath: options.projectPath,
     };
     if (silent) {
       this.internalJobs.set(job.id, job);

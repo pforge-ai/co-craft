@@ -1,6 +1,6 @@
 # CoCraft
 
-CoCraft 是一款 macOS 视频创作与剪辑协作工作台（`[创造 | 剪辑]` 双模）。你可以直接操作无限节点画布与专业时间线，也可以让编码 Agent 设计画面、调用全模态模型、读写项目文件并发布可撤销的剪辑。当前可运行版本为 **0.4.0**（v0.5.4 Wave A 加固版），面向 Apple Silicon。
+CoCraft 是一款 macOS 视频创作与剪辑协作工作台（`[创造 | 剪辑]` 双模）。你可以直接操作无限节点画布与专业时间线，也可以让编码 Agent 设计画面、调用全模态模型、读写项目文件并发布可撤销的剪辑。当前可运行版本为 **0.4.0**（v0.5.5 Wave B 交付信任与专业 NLE 加固版），面向 Apple Silicon。
 
 ## 直接体验
 
@@ -29,7 +29,8 @@ npm run dev          # 桌面开发；首次自动准备预览与合成 bundle
 npm run smoke        # 工程编辑、锁定、冲突、撤销重做和重开
 npm run smoke:agent  # 本地协议夹具驱动真实 Pi SDK，不调用付费模型
 npm run smoke:models # 本地多媒体协议、入库和作业恢复
-npm run test:ui      # 独立临时工程的 Electron 功能验收
+npm run test:redblue # 固定红蓝片端到端创作者交付信任回归（像素与音轨解码）
+npm run test:v04     # 打包版全流程验收与真实 MP4 导出
 npm run package     # 构建 Apple Silicon .app
 ```
 

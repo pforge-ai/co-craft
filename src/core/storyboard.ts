@@ -9,29 +9,46 @@ export interface CompositeShot {
   duration: number;
   /** Primary visual/stage clip driving this shot's timing & Takes */
   anchorClip: Clip;
-  /** Co-occurring overlay/visual clips composited in the same shot window */
+  /** Shot-local visual & overlay clips composited inside this shot window (move atomically on reorder) */
   compositeClips: Clip[];
+  /** Multi-shot spanning overlays (e.g. corner watermark/logo) rendered in preview/thumbnails but NOT moved per shot */
+  spanningOverlays: Clip[];
   /** Synced caption clips inside this shot window */
   captionClips: Clip[];
-  /** Editable narration / subtitle script for this shot */
+  /** Shot-attached audio clips (audioAttachMode === 'shot') moving atomically with this shot */
+  audioClips: Clip[];
+  /** Editable narration / subtitle script summary for this shot */
   scriptText: string;
   /** Bound @Entity:Variant consistency references */
   bindings: ShotBinding[];
   locked: boolean;
 }
 
-function overlapRatio(aStart: number, aDur: number, bStart: number, bDur: number): number {
-  const ov = Math.min(aStart + aDur, bStart + bDur) - Math.max(aStart, bStart);
-  if (ov <= 0) return 0;
-  return ov / Math.max(1, Math.min(aDur, bDur));
+/**
+ * Strips ONLY explicit list markers (- , * , • , 1. , 1、, 1) , (1) , ① ) while strictly preserving
+ * real numeric prefixes like "2026 年", "3.5 倍", "35mm", "100%", "-15℃", "0.4 版本".
+ */
+export function stripExplicitListMarker(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed) return '';
+  return trimmed
+    .replace(/^(?:[*•·▪▸]\s+|-\s+(?!\d))/u, '')
+    .replace(
+      /^(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]\s*|[（(]\d{1,2}[)）]\s*|\d{1,2}[、)]\s*|\d{1,2}\.\s+)/u,
+      '',
+    )
+    .trim();
 }
 
 /**
- * Groups multi-track timeline clips into contiguous, non-overlapping Composite Scene Shots ("一镜一卡").
- * - Co-occurring visual + overlay + caption at the same window merge into ONE coherent Shot Card.
- * - When multiple short overlays subdivide a long backdrop (e.g. 10s backdrop + 2 short titles),
- *   partitions [v.start, v.end) into non-overlapping head / overlay / gap / tail shot windows so
- *   100% of the backdrop is covered with zero overlapping duplicate cards.
+ * Unified Pro-NLE Primary Storyline Shot Model ("一镜一卡"), shared identically by 「创造」 and 「剪辑」:
+ * - Each V1 `visual` clip defines ONE continuous narrative shot window (overlays never shatter primary visuals).
+ * - Shot-local overlays (contained within the shot window) belong to `compositeClips` and move with the shot.
+ * - Multi-shot spanning overlays (e.g. persistent watermark/logo) go into `spanningOverlays` so they never
+ *   block shot reordering via shared clips.
+ * - Captions whose midpoint lies inside the shot belong to `captionClips` and move with the shot.
+ * - Audio clips explicitly marked `audioAttachMode === 'shot'` whose midpoint lies inside the shot belong
+ *   to `audioClips` and move with the shot; `timeline` audio (e.g. BGM) stays pinned on the timeline.
  */
 export function computeCompositeShots(sequence: Sequence): CompositeShot[] {
   const visuals = sequence.clips
@@ -43,135 +60,103 @@ export function computeCompositeShots(sequence: Sequence): CompositeShot[] {
   const captions = sequence.clips
     .filter((c) => c.kind === 'caption' || c.track === 'caption')
     .sort((a, b) => a.start - b.start);
+  const shotAttachedAudios = sequence.clips
+    .filter((c) => c.track === 'audio' && c.audioAttachMode === 'shot')
+    .sort((a, b) => a.start - b.start);
 
-  const minSlice = Math.min(15, Math.max(6, Math.floor(sequence.fps * 0.4)));
-  const windows: { id: string; start: number; duration: number; anchor: Clip; members: Clip[] }[] = [];
-  const consumedOverlayIds = new Set<string>();
+  const windows: {
+    id: string;
+    start: number;
+    duration: number;
+    anchor: Clip;
+    members: Clip[];
+    spanning: Clip[];
+  }[] = [];
 
-  for (const v of visuals) {
-    const vEnd = v.start + v.duration;
-    // Overlays falling inside v's span
-    const innerOverlays = overlays.filter(
-      (ov) => !consumedOverlayIds.has(ov.id) && ov.start < vEnd - 2 && ov.start + ov.duration > v.start + 2,
-    );
-    const shortSubOverlays = innerOverlays.filter((ov) => ov.duration < v.duration * 0.75);
-
-    // Subdivide v into contiguous non-overlapping intervals if >= 2 short overlays OR 1 very short (<45%) overlay on a long (>=6s) backdrop
-    const shouldPartition =
-      shortSubOverlays.length >= 2 ||
-      (shortSubOverlays.length === 1 &&
-        v.duration >= sequence.fps * 6 &&
-        overlapRatio(v.start, v.duration, shortSubOverlays[0].start, shortSubOverlays[0].duration) < 0.45);
-
-    if (shouldPartition) {
-      // Merge any overlapping shortSubOverlays into disjoint sub-windows clamped to [v.start, vEnd]
-      const merged: { start: number; end: number; ovs: Clip[] }[] = [];
-      for (const ov of shortSubOverlays) {
-        consumedOverlayIds.add(ov.id);
-        const s = Math.max(v.start, ov.start);
-        const e = Math.min(vEnd, ov.start + ov.duration);
-        if (e <= s) continue;
-        const prev = merged.at(-1);
-        if (prev && s < prev.end) {
-          prev.end = Math.max(prev.end, e);
-          prev.ovs.push(ov);
+  if (visuals.length > 0) {
+    const claimedOverlayIds = new Set<string>();
+    for (const v of visuals) {
+      const vEnd = v.start + v.duration;
+      const overlappingOvs = overlays.filter((ov) => ov.start < vEnd - 2 && ov.start + ov.duration > v.start + 2);
+      const localOvs: Clip[] = [];
+      const spanningOvs: Clip[] = [];
+      for (const ov of overlappingOvs) {
+        const ovEnd = ov.start + ov.duration;
+        // Overlay belongs locally to this shot if its midpoint is in [v.start, vEnd) AND it doesn't substantially span across other shots
+        const spansOutside = ov.start < v.start - 4 || ovEnd > vEnd + 4;
+        const mid = ov.start + ov.duration / 2;
+        if (!spansOutside && !claimedOverlayIds.has(ov.id) && mid >= v.start && mid < vEnd) {
+          claimedOverlayIds.add(ov.id);
+          localOvs.push(ov);
         } else {
-          merged.push({ start: s, end: e, ovs: [ov] });
+          spanningOvs.push(ov);
         }
       }
-      // Also attach any full-span overlay covering v
-      const fullSpanOvs = innerOverlays.filter((ov) => !consumedOverlayIds.has(ov.id));
-      for (const fo of fullSpanOvs) consumedOverlayIds.add(fo.id);
-
-      let cursor = v.start;
-      for (let idx = 0; idx < merged.length; idx++) {
-        const seg = merged[idx];
-        if (seg.start - cursor >= minSlice) {
-          windows.push({
-            id: `${v.id}@${cursor}`,
-            start: cursor,
-            duration: seg.start - cursor,
-            anchor: v,
-            members: [v, ...fullSpanOvs],
-          });
-          cursor = seg.start;
-        } else {
-          seg.start = cursor;
-        }
-        const isLast = idx === merged.length - 1;
-        const tailRem = vEnd - seg.end;
-        const segEnd = isLast && tailRem > 0 && tailRem < minSlice ? vEnd : seg.end;
-        const featured = seg.ovs.find((m) => m.props.presetId || m.kind === 'code') || seg.ovs[0];
-        windows.push({
-          id: featured.id,
-          start: seg.start,
-          duration: segEnd - seg.start,
-          anchor: featured,
-          members: [v, ...fullSpanOvs, ...seg.ovs],
-        });
-        cursor = segEnd;
-      }
-      if (vEnd - cursor >= minSlice) {
-        windows.push({
-          id: `${v.id}@${cursor}`,
-          start: cursor,
-          duration: vEnd - cursor,
-          anchor: v,
-          members: [v, ...fullSpanOvs],
-        });
-      }
-      continue;
+      const featured = localOvs.find((m) => m.props.presetId || m.kind === 'code');
+      const vIsBackground =
+        v.kind === 'shape' &&
+        (!v.props.presetId || getPreset(String(v.props.presetId))?.category === 'backgrounds');
+      windows.push({
+        id: v.id,
+        start: v.start,
+        duration: v.duration,
+        anchor: vIsBackground && featured ? featured : v,
+        members: [v, ...localOvs],
+        spanning: spanningOvs,
+      });
     }
-
-    // Standard single composite shot: merge co-occurring overlays (>= 45% overlap) into v
-    const matchingOverlays = innerOverlays.filter(
-      (ov) => overlapRatio(v.start, v.duration, ov.start, ov.duration) >= 0.45,
-    );
-    for (const m of matchingOverlays) consumedOverlayIds.add(m.id);
-    const featured = matchingOverlays.find((m) => m.props.presetId || m.kind === 'code');
-    const vIsBackground =
-      v.kind === 'shape' && (!v.props.presetId || getPreset(String(v.props.presetId))?.category === 'backgrounds');
-    windows.push({
-      id: v.id,
-      start: v.start,
-      duration: v.duration,
-      anchor: vIsBackground && featured ? featured : v,
-      members: [v, ...matchingOverlays],
-    });
-  }
-
-  // Remaining standalone overlay scenes (with no underlying visual clip) — merge overlapping ones too!
-  const remOverlays = overlays.filter((ov) => !consumedOverlayIds.has(ov.id));
-  const standaloneMerged: { start: number; end: number; ovs: Clip[] }[] = [];
-  for (const ov of remOverlays) {
-    const s = ov.start;
-    const e = ov.start + ov.duration;
-    const prev = standaloneMerged.at(-1);
-    if (prev && s < prev.end) {
-      prev.end = Math.max(prev.end, e);
-      prev.ovs.push(ov);
-    } else {
-      standaloneMerged.push({ start: s, end: e, ovs: [ov] });
+  } else {
+    const merged: { start: number; end: number; ovs: Clip[] }[] = [];
+    for (const ov of overlays) {
+      const s = ov.start;
+      const e = ov.start + ov.duration;
+      const prev = merged.at(-1);
+      if (prev && s < prev.end) {
+        prev.end = Math.max(prev.end, e);
+        prev.ovs.push(ov);
+      } else {
+        merged.push({ start: s, end: e, ovs: [ov] });
+      }
     }
-  }
-  for (const seg of standaloneMerged) {
-    const featured = seg.ovs.find((m) => m.props.presetId || m.kind === 'code') || seg.ovs[0];
-    windows.push({
-      id: featured.id,
-      start: seg.start,
-      duration: seg.end - seg.start,
-      anchor: featured,
-      members: seg.ovs,
-    });
+    for (const seg of merged) {
+      const featured = seg.ovs.find((m) => m.props.presetId || m.kind === 'code') || seg.ovs[0];
+      windows.push({
+        id: featured.id,
+        start: seg.start,
+        duration: seg.end - seg.start,
+        anchor: featured,
+        members: seg.ovs,
+        spanning: [],
+      });
+    }
   }
 
   windows.sort((a, b) => a.start - b.start);
 
+  const claimedCaptionIds = new Set<string>();
+  const claimedAudioIds = new Set<string>();
+
   return windows.map((win, i) => {
+    const winEnd = win.start + win.duration;
     const shotCaps = captions.filter((cap) => {
+      if (claimedCaptionIds.has(cap.id)) return false;
       const mid = cap.start + cap.duration / 2;
-      return mid >= win.start && mid < win.start + win.duration;
+      if (mid >= win.start && mid < winEnd) {
+        claimedCaptionIds.add(cap.id);
+        return true;
+      }
+      return false;
     });
+    const shotAudios = shotAttachedAudios.filter((aud) => {
+      if (claimedAudioIds.has(aud.id)) return false;
+      const mid = aud.start + aud.duration / 2;
+      if (mid >= win.start && mid < winEnd) {
+        claimedAudioIds.add(aud.id);
+        return true;
+      }
+      return false;
+    });
+
     const primaryOwner = win.members.find((m) => m.track === 'visual') || win.anchor;
     const legacySubjectBindings: ShotBinding[] = (
       win.anchor.subjectBindings?.length
@@ -199,88 +184,42 @@ export function computeCompositeShots(sequence: Sequence): CompositeShot[] {
       duration: win.duration,
       anchorClip: win.anchor,
       compositeClips: win.members,
+      spanningOverlays: win.spanning,
       captionClips: shotCaps,
+      audioClips: shotAudios,
       scriptText,
       bindings,
-      locked: win.members.some((m) => m.locked) || shotCaps.some((c) => c.locked),
+      locked:
+        win.members.some((m) => m.locked) ||
+        shotCaps.some((c) => c.locked) ||
+        shotAudios.some((a) => a.locked),
     };
   });
 }
 
 /**
- * Computes true narrative Storyboard Shots along the primary V1 visual lane for Create Canvas.
- * Unlike computeCompositeShots (which subdivides long backdrops across short overlay titles),
- * this keeps one visual clip = one continuous shot card so adding overlay text NEVER fragments
- * the underlying visual scene into artificial sub-shots.
+ * Alias for `computeCompositeShots` — guarantees Create Canvas and Edit Storyboard share one canonical shot list.
  */
 export function computePrimaryTimelineShots(sequence: Sequence): CompositeShot[] {
-  const visuals = sequence.clips
-    .filter((c) => c.track === 'visual')
-    .sort((a, b) => a.start - b.start || (a.layer ?? 0) - (b.layer ?? 0));
-  const overlays = sequence.clips
-    .filter((c) => c.track === 'overlay')
-    .sort((a, b) => a.start - b.start || (a.layer ?? 0) - (b.layer ?? 0));
-  const captions = sequence.clips
-    .filter((c) => c.kind === 'caption' || c.track === 'caption')
-    .sort((a, b) => a.start - b.start);
-
-  const bases: { id: string; start: number; duration: number; anchor: Clip; members: Clip[] }[] = [];
-  if (visuals.length > 0) {
-    for (const v of visuals) {
-      const vEnd = v.start + v.duration;
-      const innerOvs = overlays.filter((ov) => ov.start < vEnd - 2 && ov.start + ov.duration > v.start + 2);
-      bases.push({ id: v.id, start: v.start, duration: v.duration, anchor: v, members: [v, ...innerOvs] });
-    }
-  } else {
-    const merged: { start: number; end: number; ovs: Clip[] }[] = [];
-    for (const ov of overlays) {
-      const prev = merged.at(-1);
-      if (prev && ov.start < prev.end) {
-        prev.end = Math.max(prev.end, ov.start + ov.duration);
-        prev.ovs.push(ov);
-      } else {
-        merged.push({ start: ov.start, end: ov.start + ov.duration, ovs: [ov] });
-      }
-    }
-    for (const seg of merged) {
-      const anchor = seg.ovs[0];
-      bases.push({ id: anchor.id, start: seg.start, duration: seg.end - seg.start, anchor, members: seg.ovs });
-    }
-  }
-
-  return bases.map((b, i) => {
-    const shotCaps = captions.filter((cap) => {
-      const mid = cap.start + cap.duration / 2;
-      return mid >= b.start && mid < b.start + b.duration;
-    });
-    const bindings: ShotBinding[] = b.anchor.subjectBindings?.length
-      ? b.anchor.subjectBindings
-      : (b.anchor.subjectIds || []).map((id) => ({ entityId: id }));
-    const scriptText =
-      shotCaps
-        .map((c) => String(c.props.text || '').trim())
-        .filter(Boolean)
-        .join(' ') ||
-      b.anchor.shotNotes ||
-      '';
-    return {
-      id: b.id,
-      index: i + 1,
-      start: b.start,
-      duration: b.duration,
-      anchorClip: b.anchor,
-      compositeClips: b.members,
-      captionClips: shotCaps,
-      scriptText,
-      bindings,
-      locked: b.members.some((m) => m.locked) || shotCaps.some((c) => c.locked),
-    };
-  });
+  return computeCompositeShots(sequence);
 }
 
 /**
- * Atomically swaps two adjacent Composite Shots, shifting ALL visual, overlay, and caption clips
- * belonging to each shot so subtitles and overlays NEVER desync from visuals.
+ * Collects the full shot stack (visual + shot-local overlays + timed captions + shot-attached audio)
+ * for promoting a shot into a reusable Compound Asset without losing trims, subtitles, or synced cues.
+ */
+export function collectShotClipsForCompound(sequence: Sequence, shot: CompositeShot): Clip[] {
+  const map = new Map<string, Clip>();
+  for (const c of [...shot.compositeClips, ...shot.captionClips, ...shot.audioClips]) {
+    const live = sequence.clips.find((x) => x.id === c.id) || c;
+    map.set(live.id, live);
+  }
+  return [...map.values()].sort((a, b) => a.start - b.start || (a.layer ?? 0) - (b.layer ?? 0));
+}
+
+/**
+ * Atomically swaps two adjacent Composite Shots, shifting ALL shot-local visual, overlay,
+ * caption, and `shot`-attached audio clips together while keeping `timeline` BGM and spanning watermarks pinned.
  */
 export function moveCompositeShotOperations(
   sequence: Sequence,
@@ -297,12 +236,19 @@ export function moveCompositeShotOperations(
   const shotB = shots[secondIdx];
   if (shotA.locked || shotB.locked) return [];
 
-  // Prevent swapping sub-windows that share the exact same underlying visual clip
   const sharedClip = shotA.compositeClips.some((ca) => shotB.compositeClips.some((cb) => cb.id === ca.id));
   if (sharedClip) return [];
 
-  const aClips = [...new Map([...shotA.compositeClips, ...shotA.captionClips].map((c) => [c.id, c])).values()];
-  const bClips = [...new Map([...shotB.compositeClips, ...shotB.captionClips].map((c) => [c.id, c])).values()];
+  const aClips = [
+    ...new Map(
+      [...shotA.compositeClips, ...shotA.captionClips, ...shotA.audioClips].map((c) => [c.id, c]),
+    ).values(),
+  ];
+  const bClips = [
+    ...new Map(
+      [...shotB.compositeClips, ...shotB.captionClips, ...shotB.audioClips].map((c) => [c.id, c]),
+    ).values(),
+  ];
 
   const baseStart = shotA.start;
   const gapBetween = Math.max(0, shotB.start - (shotA.start + shotA.duration));
@@ -332,14 +278,60 @@ export function moveCompositeShotOperations(
 }
 
 /**
+ * Edits ONE timed subtitle clip's text while strictly preserving its exact `start` and `duration` frames.
+ */
+export function updateSingleCaptionTextOperations(
+  sequence: Sequence,
+  captionClip: Clip,
+  nextText: string,
+): EditOperation[] {
+  if (captionClip.locked) return [];
+  const trimmed = nextText.trim();
+  if (!trimmed) {
+    return [{ type: 'deleteClip', sequenceId: sequence.id, clipId: captionClip.id }];
+  }
+  return [
+    {
+      type: 'updateClip',
+      sequenceId: sequence.id,
+      clipId: captionClip.id,
+      changes: {
+        name: trimmed.slice(0, 22),
+        props: { text: trimmed },
+      },
+    },
+  ];
+}
+
+/**
+ * Updates only the shot's narration draft note (`shotNotes`) without disturbing existing timed SRT subtitles.
+ */
+export function updateShotNotesOperations(
+  sequence: Sequence,
+  shot: CompositeShot,
+  nextNotes: string,
+): EditOperation[] {
+  if (shot.anchorClip.locked) return [];
+  return [
+    {
+      type: 'updateClip',
+      sequenceId: sequence.id,
+      clipId: shot.anchorClip.id,
+      changes: { shotNotes: nextNotes.trim() },
+    },
+  ];
+}
+
+/**
  * Updates or creates the synced narration caption for a Composite Shot.
- * When a shot previously had multiple subtitle clips, updates the first clip to span the shot
- * and deletes stale extra subtitle clips inside the shot window so no duplicate old lines linger.
+ * - When a shot has 1 caption and `resetTiming` is false (default), preserves its exact original `start`/`duration`.
+ * - When explicitly merging/re-timing multiple captions (`resetTiming: true` or explicit merge), consolidates to [shot.start, shot.duration].
  */
 export function updateShotScriptOperations(
   sequence: Sequence,
   shot: CompositeShot,
   nextScript: string,
+  options: { resetTiming?: boolean } = {},
 ): EditOperation[] {
   const trimmed = nextScript.trim();
   const ops: EditOperation[] = [
@@ -355,6 +347,19 @@ export function updateShotScriptOperations(
     if (!trimmed) {
       for (const cap of shot.captionClips) {
         if (!cap.locked) ops.push({ type: 'deleteClip', sequenceId: sequence.id, clipId: cap.id });
+      }
+    } else if (shot.captionClips.length === 1 && !options.resetTiming) {
+      const onlyCap = shot.captionClips[0];
+      if (!onlyCap.locked) {
+        ops.push({
+          type: 'updateClip',
+          sequenceId: sequence.id,
+          clipId: onlyCap.id,
+          changes: {
+            name: trimmed.slice(0, 22),
+            props: { text: trimmed },
+          },
+        });
       }
     } else {
       const [firstCap, ...extraCaps] = shot.captionClips;
@@ -396,7 +401,12 @@ export function updateShotScriptOperations(
   return ops;
 }
 
-/** Splits multi-line outline or script paragraphs into clean sequential Composite Shots */
+/**
+ * Splits multi-line outline or script paragraphs into clean sequential Composite Shots:
+ * - Preserves numeric data verbatim (only strips explicit list bullets/ordinals).
+ * - Places new shots right after existing visual/overlay/caption content (never pushed behind a 30s BGM).
+ * - Avoids double-rendering identical full copy on both center title and bottom caption.
+ */
 export function scriptOutlineToShotOperations(
   sequence: Sequence,
   outline: string,
@@ -404,24 +414,27 @@ export function scriptOutlineToShotOperations(
 ): EditOperation[] {
   const lines = outline
     .split(/\n+/)
-    .map((l) => l.replace(/^\s*[-*•\d.、)]+\s*/, '').trim())
+    .map(stripExplicitListMarker)
     .filter(Boolean);
   if (!lines.length) return [];
 
   const fps = sequence.fps;
-  let cursor = sequence.clips.length
-    ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
+  const nonAudioClips = sequence.clips.filter((c) => c.track !== 'audio');
+  let cursor = nonAudioClips.length
+    ? Math.max(...nonAudioClips.map((c) => c.start + c.duration))
     : 0;
 
+  const existingShotCount = sequence.clips.filter((c) => c.track === 'visual').length;
   const ops: EditOperation[] = [];
   lines.forEach((line, idx) => {
+    const shotNum = existingShotCount + idx + 1;
     const sec = Math.max(3.5, Math.min(8, line.length * 0.24));
     const dur = Math.round(sec * fps);
     const visualShot: Clip = {
       ...clone(newClip('title', cursor)),
       id: uid('clip'),
       track: 'visual',
-      name: `镜头 ${String(idx + 1).padStart(2, '0')} · ${line.slice(0, 14)}`,
+      name: `镜头 ${String(shotNum).padStart(2, '0')} · ${line.slice(0, 14)}`,
       duration: dur,
       shotNotes: line,
       ...(sourceBinding
@@ -431,9 +444,10 @@ export function scriptOutlineToShotOperations(
           }
         : {}),
       props: {
-        text: line.slice(0, 26),
-        fontSize: 62,
-        color: '#f1f5f9',
+        text: `镜头 ${String(shotNum).padStart(2, '0')}`,
+        subtitle: '分镜占位 · 可替换素材或生成画面',
+        fontSize: 54,
+        color: '#cbd5e1',
         background: '#111318',
         position: 'center',
         align: 'center',

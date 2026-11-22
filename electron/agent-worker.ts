@@ -10,6 +10,7 @@ import {
   createBashToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
+import { mkdirSync } from 'node:fs';
 import { readFile, writeFile, mkdir, realpath, access, lstat, readlink } from 'node:fs/promises';
 import { resolve, dirname, join, extname, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -410,11 +411,22 @@ async function start(data: any) {
                 .join(' ');
               const networkRules = settings.allowNetwork
                 ? [
-                    '(allow network-outbound (remote ip))',
-                    '(deny network-outbound (remote ip "localhost:*") (remote ip "127.0.0.1:*") (remote ip "::1:*"))',
+                    '(allow network-outbound (remote tcp "*:*"))',
+                    '(allow network-outbound (remote udp "*:*"))',
+                    // macOS Seatbelt SBPL only accepts "*" or "localhost" as host in (remote ...);
+                    // "localhost:*" blocks both IPv4 127.0.0.1 and IPv6 ::1 loopback immediately.
+                    '(deny network-outbound (remote ip "localhost:*"))',
+                    '(deny network-outbound (remote tcp "localhost:*"))',
+                    '(deny network-outbound (remote udp "localhost:*"))',
                     '(allow mach-lookup (global-name "com.apple.SystemConfiguration.configd") (global-name "com.apple.trustd.agent") (global-name "com.apple.dnssd.service") (global-name "com.apple.mDNSResponder"))',
                   ].join('\n')
                 : '';
+              const tmpDir = join(cwd, '.tmp');
+              const npmCacheDir = join(cwd, '.npm-cache');
+              try {
+                mkdirSync(tmpDir, { recursive: true });
+                mkdirSync(npmCacheDir, { recursive: true });
+              } catch {}
               const profile = [
                 '(version 1)',
                 '(deny default)',
@@ -444,17 +456,18 @@ async function start(data: any) {
                   '--noprofile',
                   '--norc',
                   '-c',
-                  `${mediaToolsReal ? `export DYLD_LIBRARY_PATH='${mediaToolsReal.replace(/'/g, "'\\''")}'\n` : ''}${command}`,
+                  `${mediaToolsReal ? `export DYLD_FALLBACK_LIBRARY_PATH='${mediaToolsReal.replace(/'/g, "'\\''")}'\n` : ''}${command}`,
                 ],
                 {
                   cwd,
                   env: {
                     PATH:
-                      (mediaToolsReal ? mediaToolsReal + ':' : '') +
-                      '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+                      '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' +
+                      (mediaToolsReal ? ':' + mediaToolsReal : ''),
                     LANG: 'en_US.UTF-8',
-                    TMPDIR: join(cwd, '.tmp'),
-                    npm_config_cache: join(cwd, '.npm-cache'),
+                    HOME: cwd,
+                    TMPDIR: tmpDir,
+                    npm_config_cache: npmCacheDir,
                   },
                   stdio: ['ignore', 'pipe', 'pipe'],
                   detached: true,

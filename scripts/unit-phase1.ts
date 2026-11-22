@@ -241,8 +241,8 @@ assert.ok(
   assert.ok(reorderedShots[0].anchorClip.name.includes('甲镜'));
   assert.equal(reorderedShots[0].scriptText, '甲镜画面与台词', 'Core reorderClips shifted companion captions');
 
-  // 5c. 10s backdrop + 2 overlapping short titles -> full contiguous 0..10s coverage, zero overlaps!
-  let p2 = newProject('长底图分区');
+  // 5c. Unified Pro-NLE Storyboard Model: 10s visual + 2 short overlays stays ONE shot in BOTH computeCompositeShots and computePrimaryTimelineShots!
+  let p2 = newProject('长底图统一分镜');
   const s2 = p2.sequences[0].id;
   const bg = { ...newClip('image', 0, 'bg_1'), id: 'bg_10s', track: 'visual' as const, duration: 300, name: '10秒底图' };
   const t1 = { ...newClip('title', 60), id: 'ov_t1', track: 'overlay' as const, duration: 105, name: '短标题一' };
@@ -261,18 +261,31 @@ assert.ok(
     { type: 'addClip', sequenceId: s2, clip: cOld2 },
   ]);
   const bgShots = computeCompositeShots(p2.sequences[0]);
-  assert.equal(bgShots[0].start, 0, 'Backdrop head 0..2s has its own shot card');
-  assert.equal(bgShots.at(-1)!.start + bgShots.at(-1)!.duration, 300, 'Backdrop tail ..10s has its own shot card');
-  for (let i = 1; i < bgShots.length; i++) {
-    assert.ok(bgShots[i].start >= bgShots[i - 1].start + bgShots[i - 1].duration, 'Zero overlapping shot cards');
-  }
+  assert.equal(bgShots.length, 1, 'Unified NLE model keeps 1 primary visual shot even with 2 short overlays');
+  assert.equal(bgShots[0].start, 0);
+  assert.equal(bgShots[0].duration, 300);
+  assert.equal(bgShots[0].captionClips.length, 2, 'Shot captures both timed captions');
 
-  // 5d. Editing script on a shot with 2 captions updates 1st and deletes stale 2nd!
-  const midShot = bgShots.find((sh) => sh.captionClips.length === 2)!;
-  assert.ok(midShot, 'Middle shot captured both captions');
-  p2 = applyOperations(p2, updateShotScriptOperations(p2.sequences[0], midShot, '整镜合并后的新台词'));
+  // 5d. Per-line timed caption edit preserves start/duration; explicit merge rewrite collapses extras!
+  const { updateSingleCaptionTextOperations, stripExplicitListMarker } = await import('../src/core/storyboard');
+  const pPerLine = applyOperations(
+    p2,
+    updateSingleCaptionTextOperations(p2.sequences[0], cOld1, '第一句改标点。'),
+  );
+  const perLineCaps = pPerLine.sequences[0].clips.filter((c) => c.kind === 'caption').sort((a, b) => a.start - b.start);
+  assert.equal(perLineCaps.length, 2, 'Per-line caption edit keeps both timed lines');
+  assert.equal(perLineCaps[0].start, 60);
+  assert.equal(perLineCaps[0].duration, 50);
+  assert.equal(perLineCaps[0].props.text, '第一句改标点。');
+  assert.equal(perLineCaps[1].start, 120);
+  assert.equal(perLineCaps[1].duration, 60);
+
+  p2 = applyOperations(
+    p2,
+    updateShotScriptOperations(p2.sequences[0], bgShots[0], '整镜合并后的新台词', { resetTiming: true }),
+  );
   const remainingCaps = p2.sequences[0].clips.filter((c) => c.kind === 'caption');
-  assert.equal(remainingCaps.length, 1, 'Stale second caption deleted cleanly');
+  assert.equal(remainingCaps.length, 1, 'Explicit merge rewrite deletes extra captions cleanly');
   assert.equal(remainingCaps[0].props.text, '整镜合并后的新台词');
 
   // 5e. Built-in Style Switch mutates unlocked clips & sequence background while preserving locked clips!
@@ -499,6 +512,97 @@ assert.ok(
   assert.equal(reInserted?.start, 300, 'Instantiated compound placed at target playhead frame');
   assert.equal(reInserted?.sourceIn, 15, 'Instantiated compound preserved trim sourceIn');
   assert.equal(reInserted?.transitionIn?.type, 'dissolve', 'Instantiated compound preserved transitionIn');
+
+  // 6. Wave B Core Regressions: numeric preservation, lock-safe relink, audio attachment, spanning watermark, split transitionIn, trailing preflight, cross-FPS compound
+  // 6a. Review #3: Numeric prefix preservation & explicit list marker stripping
+  assert.equal(stripExplicitListMarker('2026 年首次亮相'), '2026 年首次亮相');
+  assert.equal(stripExplicitListMarker('3.5 倍光学变焦'), '3.5 倍光学变焦');
+  assert.equal(stripExplicitListMarker('35mm 镜头拍摄'), '35mm 镜头拍摄');
+  assert.equal(stripExplicitListMarker('100% 回收材料'), '100% 回收材料');
+  assert.equal(stripExplicitListMarker('-15℃ 低温测试'), '-15℃ 低温测试');
+  assert.equal(stripExplicitListMarker('1. 第一镜开场'), '第一镜开场');
+  assert.equal(stripExplicitListMarker('2、第二镜转折'), '第二镜转折');
+  assert.equal(stripExplicitListMarker('- 要点一'), '要点一');
+
+  // 6b. Review #1: Content-fingerprinted lock-safe relink (same sha256 allowed on locked clip; different sha256 rejected!)
+  let pRelink = newProject('锁定重连');
+  pRelink = applyOperations(pRelink, [
+    {
+      type: 'addAsset',
+      asset: {
+        id: 'ast_blue',
+        name: 'blue.mp4',
+        kind: 'video',
+        path: '/tmp/old-blue.mp4',
+        duration: 4,
+        sha256: 'hash_blue_123',
+        byteSize: 1000,
+        createdAt: '',
+      },
+    },
+    {
+      type: 'addClip',
+      sequenceId: pRelink.sequences[0].id,
+      clip: { ...newClip('video', 0, 'ast_blue'), id: 'clip_blue', duration: 60, locked: true },
+    },
+  ]);
+  const pRelinkSame = applyOperations(pRelink, [
+    { type: 'relinkAsset', assetId: 'ast_blue', path: '/tmp/moved-blue.mp4', sha256: 'hash_blue_123', byteSize: 1000 },
+  ]);
+  assert.equal(pRelinkSame.assets[0].path, '/tmp/moved-blue.mp4', 'Identical SHA-256 recovers transparently on locked clip');
+  assert.throws(
+    () =>
+      applyOperations(pRelink, [
+        { type: 'relinkAsset', assetId: 'ast_blue', path: '/tmp/green.mp4', sha256: 'hash_green_999', byteSize: 1000 },
+      ]),
+    /禁止替换为不同内容/,
+    'Different SHA-256 MUST be rejected when asset is referenced by locked clip',
+  );
+
+  // 6c. Review #5 + Spanning overlay: shot-attached SFX moves atomically, timeline BGM stays pinned, spanning watermark does NOT block reorder!
+  let pAudio = newProject('随镜声音与跨镜水印');
+  const sAud = pAudio.sequences[0].id;
+  pAudio = applyOperations(pAudio, [
+    { type: 'addAsset', asset: { id: 'a_vid', name: 'v.mp4', kind: 'video', path: '/tmp/v.mp4', duration: 10, createdAt: '' } },
+    { type: 'addAsset', asset: { id: 'a_sfx', name: 'cue.wav', kind: 'audio', path: '/tmp/cue.wav', duration: 1, createdAt: '' } },
+    { type: 'addAsset', asset: { id: 'a_bgm', name: 'bgm.wav', kind: 'audio', path: '/tmp/bgm.wav', duration: 10, createdAt: '' } },
+    { type: 'addClip', sequenceId: sAud, clip: { ...newClip('video', 0, 'a_vid'), id: 'v_shot1', duration: 60, sourceIn: 0 } },
+    { type: 'addClip', sequenceId: sAud, clip: { ...newClip('video', 60, 'a_vid'), id: 'v_shot2', duration: 60, sourceIn: 60 } },
+    { type: 'addClip', sequenceId: sAud, clip: { ...newClip('audio', 5, 'a_sfx'), id: 'aud_sfx', duration: 15, audioAttachMode: 'shot' } },
+    { type: 'addClip', sequenceId: sAud, clip: { ...newClip('audio', 0, 'a_bgm'), id: 'aud_bgm', duration: 300, audioAttachMode: 'timeline' } },
+    { type: 'addClip', sequenceId: sAud, clip: { ...newClip('title', 0), id: 'ov_watermark', track: 'overlay', duration: 120, props: { text: 'WM' } } },
+  ]);
+  const audShots = computeCompositeShots(pAudio.sequences[0]);
+  assert.equal(audShots.length, 2);
+  assert.equal(audShots[0].audioClips.length, 1, 'Shot 1 owns shot-attached SFX');
+  assert.equal(audShots[0].spanningOverlays.length, 1, 'Watermark classified as spanning overlay');
+  const swapAudioOps = moveCompositeShotOperations(pAudio.sequences[0], audShots, audShots[0].id, 1);
+  assert.ok(swapAudioOps.length > 0, 'Spanning watermark does NOT block shot reorder');
+  pAudio = applyOperations(pAudio, swapAudioOps);
+  assert.equal(pAudio.sequences[0].clips.find((c) => c.id === 'v_shot1')!.start, 60);
+  assert.equal(pAudio.sequences[0].clips.find((c) => c.id === 'aud_sfx')!.start, 65, 'Shot-attached SFX moved with Shot 1 preserving 5f offset');
+  assert.equal(pAudio.sequences[0].clips.find((c) => c.id === 'aud_bgm')!.start, 0, 'Timeline BGM stayed pinned at 0');
+  assert.equal(pAudio.sequences[0].clips.find((c) => c.id === 'ov_watermark')!.start, 0, 'Spanning watermark stayed pinned at 0');
+
+  // 6d. Review #10: Preflight detects 6s empty tail (4s video + 10s BGM) & splitOperations clears transitionIn on second half
+  const tailIssues = preflightSequence(pAudio, sAud, []);
+  assert.ok(tailIssues.some((i) => i.id.startsWith('gap-tail-')), 'Preflight catches 6s empty tail after 4s visual + 10s BGM');
+  const { splitOperations } = await import('../src/core/project');
+  const clipToSplit = pAudio.sequences[0].clips.find((c) => c.id === 'v_shot1')!;
+  const splitOps = splitOperations(
+    pAudio.sequences[0],
+    { ...clipToSplit, transitionIn: { type: 'dissolve', durationFrames: 15 } },
+    clipToSplit.start + 30,
+  );
+  const secondHalfOp = splitOps[1];
+  assert.equal(secondHalfOp.type, 'addClip');
+  assert.equal(secondHalfOp.clip.transitionIn, undefined, 'splitOperations does not duplicate transitionIn onto second half');
+
+  // 6e. Cross-FPS compound scaling (30fps -> 60fps scales sourceIn & transitionIn.durationFrames)
+  const inst60 = instantiateCompoundVaultItemOperations(sCompId, compItem, 0, 60);
+  const vis60 = (inst60.operations[0] as any).clip;
+  assert.equal(vis60.sourceIn, 30, 'sourceIn 15@30fps scales to 30@60fps');
+  assert.equal(vis60.transitionIn.durationFrames, 30, 'transitionIn 15f@30fps scales to 30f@60fps');
 }
 
-console.log('PASS · all Phase 1 + v0.5 core regression tests (timecode, SRT, ripple, strict reorder scope, shot-caption sync, contiguous partition, style theming, composite anchor, transitions, compound assets, canvasGroups & derivedFrom)');
+console.log('PASS · all Phase 1 + v0.5 + Wave B core regression tests (timecode, SRT, ripple, strict scope, lock-safe relink, numeric breakdown, per-line SRT, unified storyboard, shot audio, spanning watermark, trailing preflight, transitions & cross-FPS compounds)');

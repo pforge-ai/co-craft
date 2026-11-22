@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box, Code2, Film } from 'lucide-react';
-import { mediaUrl } from '../composition/Film';
+import { mediaFrameUrl, mediaUrl } from '../composition/Film';
 import { getPreset } from '../core/presets';
 import { PresetPreview } from './ResourceLibrary';
 import type { CompositeShot } from '../core/storyboard';
@@ -29,8 +29,8 @@ export function ShotCompositeThumb({ project, sequence, shot, previewOrigin }: S
     sequence.background ||
     '#0e1014';
 
-  const sampleFrame = shot.start + Math.floor(shot.duration * 0.45);
-  const activeLayers: Clip[] = [...shot.compositeClips, ...shot.captionClips]
+  const sampleFrame = shot.start + Math.floor(shot.duration * 0.25);
+  const activeLayers: Clip[] = [...shot.compositeClips, ...(shot.spanningOverlays || []), ...shot.captionClips]
     .filter((c) => sampleFrame >= c.start && sampleFrame < c.start + c.duration)
     .sort(
       (a, b) =>
@@ -62,11 +62,19 @@ export function ShotCompositeThumb({ project, sequence, shot, previewOrigin }: S
         }
 
         if (asset) {
-          if (asset.thumbnail && !asset.offline) {
+          if (!asset.offline && (asset.kind === 'video' || asset.thumbnail)) {
+            const sourceSampleFrame =
+              asset.kind === 'video'
+                ? clip.sourceIn + Math.max(0, Math.min(clip.duration - 1, sampleFrame - clip.start))
+                : 0;
+            const thumbSrc =
+              asset.kind === 'video'
+                ? mediaFrameUrl(previewOrigin, asset.id, sourceSampleFrame, sequence.fps, asset.sha256)
+                : mediaUrl(previewOrigin, asset.id, true);
             return (
               <div key={clip.id} className="scs-layer" style={{ opacity }}>
                 <img
-                  src={mediaUrl(previewOrigin, asset.id, true)}
+                  src={thumbSrc}
                   alt={clip.name}
                   style={{
                     width: '100%',

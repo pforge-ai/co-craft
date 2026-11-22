@@ -32,16 +32,34 @@ export function ExportDialog({
     [choose, setChoose] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
-    [issues, setIssues] = useState<PreflightIssue[] | null>(null);
+    [issues, setIssues] = useState<PreflightIssue[] | null>(null),
+    [preflightError, setPreflightError] = useState(''),
+    [preflightRun, setPreflightRun] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
+    setIssues(null);
+    setPreflightError('');
     void window.cocraft
       .call<PreflightIssue[]>('export.preflight', { sequenceId: sequence.id })
-      .then(setIssues)
-      .catch(() => setIssues([]));
-  }, [sequence.id, revision]);
+      .then((res) => {
+        if (!cancelled) setIssues(res);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPreflightError(
+            String(err instanceof Error ? err.message : err).replace(/^Error:.*?Error: /, '') ||
+              '无法完成交付前检查，请重试',
+          );
+          setIssues(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sequence.id, revision, preflightRun]);
 
-  const hasBlocker = issues?.some((i) => i.severity === 'blocker') ?? false;
+  const hasBlocker = (issues?.some((i) => i.severity === 'blocker') ?? false) || Boolean(preflightError);
 
   return (
     <Modal
@@ -67,16 +85,33 @@ export function ExportDialog({
         </div>
       </div>
 
-      {issues !== null && (
+      {(issues !== null || preflightError) && (
         <div className="preflight-box" role="region" aria-label="交付前检查">
-          {issues.length === 0 ? (
+          {preflightError ? (
+            <div className="preflight-list">
+              <div className="preflight-item blocker">
+                <AlertTriangle size={13} />
+                <div>
+                  <b>交付预检未完成</b>
+                  <p>{preflightError}</p>
+                </div>
+                <button
+                  type="button"
+                  className="button tiny subtle"
+                  onClick={() => setPreflightRun((n) => n + 1)}
+                >
+                  重试检查
+                </button>
+              </div>
+            </div>
+          ) : issues && issues.length === 0 ? (
             <div className="preflight-ok">
               <CheckCircle2 size={14} />
-              <span>交付预检通过：素材均在线，未发现空洞或溢出风险</span>
+              <span>交付预检通过：素材均在线，未发现画面空洞或溢出风险</span>
             </div>
           ) : (
             <div className="preflight-list">
-              {issues.map((issue) => (
+              {(issues || []).map((issue) => (
                 <div
                   key={issue.id}
                   className={`preflight-item ${issue.severity}`}

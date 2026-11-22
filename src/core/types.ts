@@ -127,6 +127,8 @@ export interface Asset {
   subkind?: VaultSubkind;
   path: string;
   duration: number;
+  sha256?: string;
+  byteSize?: number;
   hasAudio?: boolean;
   fps?: number;
   offline?: boolean;
@@ -277,6 +279,10 @@ export interface Clip {
   assetId?: string;
   componentId?: string;
   locked: boolean;
+  /** Audio clip attachment behavior during storyboard reorder: 'shot' moves with owning shot; 'timeline' stays pinned (e.g. BGM). */
+  audioAttachMode?: 'shot' | 'timeline';
+  /** Per-clip audio mute (applies to video embedded audio or independent audio clips in preview & export). */
+  muted?: boolean;
   transitionIn?: ClipTransition | null;
   takes?: ClipTake[];
   activeTakeId?: string;
@@ -316,6 +322,8 @@ export interface Sequence {
   clips: Clip[];
   background: string;
   mutedTracks?: Track[];
+  /** Independently mute embedded video audio on V1/V2 tracks (separate from A1 track mute and preview monitor mute). */
+  mutedVideoAudio?: boolean;
   /** Film Version Tree & Parallel Branch metadata */
   branchName?: string;
   parentSequenceId?: string;
@@ -440,6 +448,13 @@ export interface PreflightIssue {
   assetId?: string;
 }
 
+export interface GenerationTarget {
+  sequenceId: string;
+  clipId: string;
+  shotLabel?: string;
+  mode: 'take' | 'replace';
+}
+
 export interface Job {
   id: string;
   type: 'export' | 'import' | 'transcribe' | 'generate';
@@ -451,10 +466,15 @@ export interface Job {
   error?: string;
   createdAt: string;
   revision?: number;
+  projectId?: string;
+  projectName?: string;
+  branchName?: string;
   projectPath?: string;
   modelId?: string;
   providerId?: string;
   inputAssetId?: string;
+  target?: GenerationTarget;
+  targetAttachment?: { applied: boolean; takeId?: string; reason?: string };
   result?: { asset?: Asset; text?: string; segments?: { start: number; end: number; text: string }[] };
   remote?: {
     id: string;
@@ -557,12 +577,15 @@ export type EditOperation =
       type: 'relinkAsset';
       assetId: string;
       path: string;
+      sha256?: string;
+      byteSize?: number;
       duration?: number;
       width?: number;
       height?: number;
       thumbnail?: string;
       waveform?: number[];
       hasAudio?: boolean;
+      clearTranscript?: boolean;
     }
   | { type: 'updateAssetTranscript'; assetId: string; transcript: TranscriptData }
   | { type: 'putComponent'; component: CodeComponent }
