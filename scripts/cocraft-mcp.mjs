@@ -198,6 +198,42 @@ const TOOLS = [
     },
   },
   {
+    name: 'cocraft_search_assets',
+    description: 'Search assets across the current project, personal cross-project library, built-in visual styles, and bundled studio media by kind, role, tags, or keyword.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string' },
+        role: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        query: { type: 'string' },
+        scope: { type: 'string', enum: ['project', 'personal', 'studio'] },
+      },
+    },
+  },
+  {
+    name: 'cocraft_pull_vault_item',
+    description: 'Pull an asset, character entity, style, component, or compound clip from the personal cross-project library into the current project.',
+    inputSchema: {
+      type: 'object',
+      required: ['itemId'],
+      properties: { itemId: { type: 'string' } },
+    },
+  },
+  {
+    name: 'cocraft_inspect_media',
+    description: 'Ask the configured vision model inside CoCraft to inspect an image or sampled video frames and return a visual critique/description.',
+    inputSchema: {
+      type: 'object',
+      required: ['assetId'],
+      properties: {
+        assetId: { type: 'string' },
+        modelId: { type: 'string' },
+        prompt: { type: 'string' },
+      },
+    },
+  },
+  {
     name: 'cocraft_preview_frame',
     description: 'Render a real PNG still frame of the published sequence at an integer frame and return the image for visual inspection.',
     inputSchema: {
@@ -277,6 +313,9 @@ const TOOL_TO_ACTION = {
   cocraft_compile_component: 'component.compile',
   cocraft_import_asset: 'media.import',
   cocraft_generate_media: 'media.generate',
+  cocraft_search_assets: 'assets.search',
+  cocraft_pull_vault_item: 'vault.pull',
+  cocraft_inspect_media: 'media.inspect',
   cocraft_preview_frame: 'preview.frame',
   cocraft_preflight: 'export.preflight',
   cocraft_export: 'export.start',

@@ -109,15 +109,23 @@ try {
   const init = await mcp.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'smoke', version: '1.0' } });
   assert.equal(init.serverInfo.name, 'cocraft-mcp');
   const listed = await mcp.request('tools/list');
-  assert.ok(listed.tools.length >= 20, `Expected >=20 MCP tools, got ${listed.tools.length}`);
+  assert.ok(listed.tools.length >= 25, `Expected >=25 MCP tools (unified with core service), got ${listed.tools.length}`);
+  const toolNames = new Set(listed.tools.map((t) => t.name));
+  for (const required of ['cocraft_search_assets', 'cocraft_pull_vault_item', 'cocraft_inspect_media']) {
+    assert.ok(toolNames.has(required), `Missing newly unified MCP tool: ${required}`);
+  }
   console.log(`✓ 2. MCP stdio handshake & ${listed.tools.length} tools registered`);
 
-  // 4. Create isolated project + list models (assert ZERO secret leakage)
+  // 4. Create isolated project + list models (assert ZERO secret leakage) + search_assets parity
   const created = JSON.parse((await mcp.callTool('cocraft_create_project', { name: 'MCP Smoke 短片' })).content[0].text);
   assert.ok(created.id && created.sequenceId);
   const modelsText = (await mcp.callTool('cocraft_list_models')).content[0].text;
   assert.ok(!modelsText.includes('apiKey') && !modelsText.includes('sk-'), 'cocraft_list_models must never leak apiKey fields');
-  console.log('✓ 3. Project creation & zero-secret cocraft_list_models verified');
+  const studioHits = JSON.parse(
+    (await mcp.callTool('cocraft_search_assets', { scope: 'studio', query: '底乐' })).content[0].text,
+  );
+  assert.ok(Array.isArray(studioHits) && studioHits.length >= 2, `Expected >=2 studio BGM hits via cocraft_search_assets, got ${studioHits?.length}`);
+  console.log('✓ 3. Project creation, zero-secret cocraft_list_models & cocraft_search_assets verified');
 
   // 5. Build a 3-shot mini film via MCP: PBR 3D + RoughJS Whiteboard + Custom TSX cocraft/rough + Ken Burns keyframes!
   const c1 = JSON.parse(

@@ -56,5 +56,6 @@ Keep responses brief: report actual changes, what to preview, and any remaining 
 - 用户需要生成素材时，用 `generate_media` 选择 `image`、`video` 或 `speech`。图像和视频接受项目内图片的 `referenceAssetId`。工具返回 `{jobId, asset}` 后，可把 `{type:"addAsset", asset:{id:asset.id}}` 和引用该 ID 的片段放入同一次发布。遇到已提交但中断的视频作业，请引用作业编号，由后台作业继续查询已有结果。
 - `transcribe_asset({assetId, language?})` 返回实际识别文本。若模型提供分段时间，`segments` 使用源素材秒数。制作字幕时用所选片段的 `start`、`sourceIn`、裁切范围与成片帧率换算位置。只返回文本的模型可用于文稿和摘要。
 - `inspect_media({assetId,prompt?})` 会把图片或视频的三个采样帧交给视觉模型，返回文字及采样位置。音频内容请调用转录。文本型剪辑 Agent 使用 `preview_frame` 时，宿主会把实际渲染帧交给视觉模型，并将分析文字送回当前任务。
+- 专业剪辑快捷工具：`apply_keyframe_preset({clipId, preset: "zoom-in"|"zoom-out"|"pan-right"|"fade-in-out"|"auto-duck", duckVolume?, rampFrames?})` 一键生成关键帧动画或人声自动闪避；`detach_audio({clipId})` 一键实现 J/L Cut 音画分离；当用户明确要求导出成片时，先运行 `preflight_sequence` 确认无阻断项，再调用 `export_sequence({fileName?, scale?})` 输出真实 MP4。
 
 New clips are composited above earlier clips on the same track, including across a later cut. Use the optional integer clip.layer to set a different same-track order. Preserve layer on splits.

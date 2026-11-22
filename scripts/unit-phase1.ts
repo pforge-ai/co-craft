@@ -914,6 +914,41 @@ assert.ok(
   assert.equal(inferModelFromId('wan2.6-t2v', 'dashscope').adapter, 'dashscope-video');
   assert.equal(inferModelFromId('my-custom-flux-t2i', 'dashscope').adapter, 'dashscope-image');
   assert.deepEqual(inferModelFromId('custom-private-llm', 'openai').capabilities, ['agent']);
+
+  // 10. Unified Core Tool Service parity between Built-in Agent & MCP Server
+  const { readFileSync } = await import('node:fs');
+  const toolServiceSrc = readFileSync('electron/tool-service.ts', 'utf8');
+  const coreMatch = toolServiceSrc.match(/export const COCRAFT_CORE_TOOLS = \[([\s\S]*?)\] as const;/);
+  assert.ok(coreMatch, 'COCRAFT_CORE_TOOLS exported in electron/tool-service.ts');
+  const coreTools = [...coreMatch[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  assert.equal(coreTools.length, 19, `Expected 19 canonical shared core tools, got ${coreTools.length}`);
+  const workerSrc = readFileSync('electron/agent-worker.ts', 'utf8');
+  const mcpSrc = readFileSync('scripts/cocraft-mcp.mjs', 'utf8');
+  for (const tool of coreTools) {
+    assert.ok(workerSrc.includes(`'${tool}'`), `Built-in Agent worker missing core tool: ${tool}`);
+  }
+  for (const mcpTool of [
+    'cocraft_read_project',
+    'cocraft_publish_edit',
+    'cocraft_list_models',
+    'cocraft_list_presets',
+    'cocraft_add_preset_clip',
+    'cocraft_list_studio_media',
+    'cocraft_prepare_studio_media',
+    'cocraft_search_assets',
+    'cocraft_pull_vault_item',
+    'cocraft_apply_keyframe_preset',
+    'cocraft_detach_audio',
+    'cocraft_compile_component',
+    'cocraft_import_asset',
+    'cocraft_generate_media',
+    'cocraft_inspect_media',
+    'cocraft_preview_frame',
+    'cocraft_preflight',
+    'cocraft_export',
+  ]) {
+    assert.ok(mcpSrc.includes(`'${mcpTool}'`), `MCP server missing core tool: ${mcpTool}`);
+  }
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 core regression tests');
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools core regression tests');

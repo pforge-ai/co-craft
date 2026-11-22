@@ -79,7 +79,7 @@ const parameterKeys: Record<ModelAdapter, string[]> = {
   'openai-transcription': ['language', 'response_format', 'temperature'],
   'dashscope-transcription': ['language', 'temperature'],
 };
-function modelParameters(adapter: ModelAdapter, raw?: Record<string, string | number | boolean>) {
+export function modelParameters(adapter: ModelAdapter, raw?: Record<string, string | number | boolean>) {
   return Object.fromEntries(
     Object.entries(raw || {}).filter(
       ([key, value]) =>

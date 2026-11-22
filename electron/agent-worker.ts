@@ -370,6 +370,33 @@ async function start(data: any) {
       },
     },
     hostTool(
+      'apply_keyframe_preset',
+      '应用关键帧曲线与自动闪避',
+      'Apply one-click keyframe animation or voice-aware auto-ducking to a clip: zoom-in, zoom-out, pan-right, fade-in-out, or auto-duck (for BGM audio). Respects clip locks and active scope.',
+      Type.Object({
+        sequenceId: optionalText,
+        clipId: Type.String(),
+        preset: Type.Union([
+          Type.Literal('zoom-in'),
+          Type.Literal('zoom-out'),
+          Type.Literal('pan-right'),
+          Type.Literal('fade-in-out'),
+          Type.Literal('auto-duck'),
+        ]),
+        duckVolume: Type.Optional(Type.Number()),
+        rampFrames: Type.Optional(Type.Integer({ minimum: 1 })),
+      }),
+    ),
+    hostTool(
+      'detach_audio',
+      '音画分离 (J/L Cut)',
+      'Detach a video clip audio track: mutes the video clip native audio and creates a frame-aligned timeline audio clip on A1.',
+      Type.Object({
+        sequenceId: optionalText,
+        clipId: Type.String(),
+      }),
+    ),
+    hostTool(
       'pull_vault_item',
       '从个人库引入资产',
       'Pull an asset, character entity, style, component, or compound clip from the personal cross-project library (discovered via search_assets scope="personal") into the current project.',
@@ -380,6 +407,16 @@ async function start(data: any) {
       '交付预检检查',
       'Run export preflight checks on a sequence to detect missing/offline media, visual black gaps, caption overflow, or audio clipping risks before finishing.',
       Type.Object({ sequenceId: optionalText }),
+    ),
+    hostTool(
+      'export_sequence',
+      '导出 MP4 成片',
+      'Run preflight and render the published sequence to a real H.264/AAC MP4 file inside the project exports directory. Use only when the user explicitly asks to export/render the video.',
+      Type.Object({
+        sequenceId: optionalText,
+        scale: Type.Optional(Type.Number({ minimum: 0.25, maximum: 2 })),
+        fileName: optionalText,
+      }),
     ),
   ];
   const skillsReal = await realpath(skillsPath);
@@ -577,7 +614,7 @@ async function start(data: any) {
     noThemes: true,
     noContextFiles: true,
     appendSystemPrompt: [
-      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Call pull_vault_item to adopt assets from the personal library, and preflight_sequence to verify export readiness. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
+      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, apply_keyframe_preset for smooth Ken Burns / fade / BGM auto-ducking, detach_audio for J/L cut audio separation, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Call pull_vault_item to adopt assets from the personal library, preflight_sequence to verify export readiness, and export_sequence when the user asks to render MP4. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
     ],
   });
   await loader.reload();
