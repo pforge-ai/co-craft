@@ -61,6 +61,7 @@ export interface CanvasGroup {
   name: string;
   nodeIds: string[];
   color?: string;
+  collapsed?: boolean;
 }
 
 export interface ChatContextRef {
@@ -349,6 +350,8 @@ export interface Project {
   customTags?: CustomTagDef[];
   canvasLayout?: Record<string, { x: number; y: number }>;
   canvasGroups?: CanvasGroup[];
+  /** Node keys stowed off the Create Canvas desktop (underlying project assets stay intact). */
+  canvasHiddenNodeIds?: string[];
   workflowIntent?: 'product-demo' | 'explainer' | 'story-film' | 'blank';
   modelDefaults?: Partial<Record<ModelUse, string>>;
 }
@@ -557,6 +560,7 @@ export type EditOperation =
         activeSkillIds?: string[];
         canvasLayout?: Record<string, { x: number; y: number }>;
         canvasGroups?: CanvasGroup[];
+        canvasHiddenNodeIds?: string[];
         modelDefaults?: Partial<Record<ModelUse, string>>;
       };
     }

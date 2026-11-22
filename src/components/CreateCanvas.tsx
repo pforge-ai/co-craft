@@ -38,11 +38,26 @@ import {
   Undo2,
   Redo2,
   ClipboardPaste,
+  Eye,
+  EyeOff,
+  ChevronDown,
+  ChevronRight,
+  RotateCcw,
+  LayoutList,
   X,
 } from 'lucide-react';
 import { pointerDrag } from '../lib/pointerDrag';
+import {
+  CANVAS_LANE_TOP,
+  computeTidyCanvasLayout,
+  estimateCanvasNodeSize,
+  formatAssetCardMeta,
+  formatCanvasDisplayName,
+  resolveNonOverlappingCanvasLayout,
+} from '../lib/canvasLayout';
 import { mediaUrl } from '../composition/Film';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
+import { CanvasQuickLook } from './CanvasQuickLook';
 import { PresetPreview } from './PresetControls';
 import { ShotCompositeThumb } from './ShotCompositeThumb';
 import { createPresetClip, getPreset } from '../core/presets';
@@ -298,6 +313,15 @@ export function CreateCanvas({
     y2: number;
   }>(null);
   const [wireHoverKey, setWireHoverKey] = useState<string | null>(null);
+  const [hoveredNodeKey, setHoveredNodeKey] = useState<string | null>(null);
+  const [assetFilter, setAssetFilter] = useState<'all' | 'used' | 'visual'>('all');
+  const [hiddenPopoverOpen, setHiddenPopoverOpen] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [groupNameDraft, setGroupNameDraft] = useState('');
+  const [quickLookKey, setQuickLookKey] = useState<string | null>(null);
+  const spaceDownRef = useRef<{ time: number; panned: boolean } | null>(null);
+  const lastGroupDownRef = useRef<{ id: string; time: number } | null>(null);
+  const lastCardDownRef = useRef<{ key: string; time: number; x: number; y: number } | null>(null);
   const suppressNextClickRef = useRef(false);
 
   const shots = useMemo(() => computePrimaryTimelineShots(sequence), [sequence]);
@@ -332,37 +356,173 @@ export function CreateCanvas({
     return project.components.filter((c) => !boundCompIds.has(c.id));
   }, [project.components, upstreamEntities]);
 
+  const hiddenNodeIds = useMemo(
+    () => project.canvasHiddenNodeIds || [],
+    [project.canvasHiddenNodeIds],
+  );
+  const hiddenNodeSet = useMemo(() => new Set(hiddenNodeIds), [hiddenNodeIds]);
+
+  const collapsedNodeSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const grp of project.canvasGroups || []) {
+      if (grp.collapsed) {
+        for (const id of grp.nodeIds) set.add(id);
+      }
+    }
+    return set;
+  }, [project.canvasGroups]);
+
+  const usedNodeSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const sh of shots) {
+      for (const b of sh.bindings) set.add(`ent:${b.entityId}`);
+      for (const c of sh.compositeClips) {
+        if (c.assetId) set.add(`asset:${c.assetId}`);
+        if (c.componentId) set.add(`comp:${c.componentId}`);
+      }
+    }
+    for (const c of sequence.clips) {
+      if (c.assetId) set.add(`asset:${c.assetId}`);
+      if (c.componentId) set.add(`comp:${c.componentId}`);
+    }
+    for (const grp of project.canvasGroups || []) {
+      for (const id of grp.nodeIds) set.add(id);
+    }
+    for (const a of standaloneAssets) {
+      if (a.derivedFrom?.length) {
+        set.add(`asset:${a.id}`);
+        for (const d of a.derivedFrom) {
+          if (d.assetId) set.add(`asset:${d.assetId}`);
+          if (d.vaultItemId) set.add(`ent:${d.vaultItemId}`);
+        }
+      }
+    }
+    for (const ent of upstreamEntities) {
+      if (ent.entityKind === 'text' || ent.derivedFrom?.length) set.add(`ent:${ent.id}`);
+    }
+    return set;
+  }, [shots, sequence.clips, project.canvasGroups, standaloneAssets, upstreamEntities]);
+
+  const visibleUpstreamEntities = useMemo(
+    () =>
+      upstreamEntities.filter((ent) => {
+        const key = `ent:${ent.id}`;
+        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key)) return false;
+        if (assetFilter === 'used' && !usedNodeSet.has(key)) return false;
+        return true;
+      }),
+    [upstreamEntities, hiddenNodeSet, collapsedNodeSet, assetFilter, usedNodeSet],
+  );
+  const visibleStandaloneAssets = useMemo(
+    () =>
+      standaloneAssets.filter((a) => {
+        const key = `asset:${a.id}`;
+        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key)) return false;
+        if (assetFilter === 'visual' && a.kind === 'audio') return false;
+        if (assetFilter === 'used' && !usedNodeSet.has(key)) return false;
+        return true;
+      }),
+    [standaloneAssets, hiddenNodeSet, collapsedNodeSet, assetFilter, usedNodeSet],
+  );
+  const visibleStandaloneComponents = useMemo(
+    () =>
+      standaloneComponents.filter((c) => {
+        const key = `comp:${c.id}`;
+        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key)) return false;
+        if (assetFilter === 'used' && !usedNodeSet.has(key)) return false;
+        return true;
+      }),
+    [standaloneComponents, hiddenNodeSet, collapsedNodeSet, assetFilter, usedNodeSet],
+  );
+
   const totalAssetCount = upstreamEntities.length + standaloneAssets.length + standaloneComponents.length;
-  const assetCols = totalAssetCount > 3 ? 2 : 1;
-  const shotLaneX = totalAssetCount > 0 ? (assetCols === 2 ? 684 : 372) : 80;
+  const visibleAssetCount =
+    visibleUpstreamEntities.length + visibleStandaloneAssets.length + visibleStandaloneComponents.length;
+  const hiddenAssetEntries = useMemo(() => {
+    const items: { key: string; label: string }[] = [];
+    for (const key of hiddenNodeIds) {
+      if (key.startsWith('asset:')) {
+        const a = standaloneAssets.find((x) => `asset:${x.id}` === key);
+        if (a) items.push({ key, label: formatCanvasDisplayName(a.name) });
+      } else if (key.startsWith('ent:')) {
+        const e = upstreamEntities.find((x) => `ent:${x.id}` === key);
+        if (e) items.push({ key, label: formatCanvasDisplayName(e.name, e.entityKind === 'compound') });
+      } else if (key.startsWith('comp:')) {
+        const c = standaloneComponents.find((x) => `comp:${x.id}` === key);
+        if (c) items.push({ key, label: c.name });
+      }
+    }
+    return items;
+  }, [hiddenNodeIds, standaloneAssets, upstreamEntities, standaloneComponents]);
+
+  const assetCols = visibleAssetCount > 8 ? 3 : visibleAssetCount > 3 ? 2 : 1;
+  const shotLaneX = visibleAssetCount > 0 ? 40 + assetCols * 304 + 68 : 80;
+
+  const nodeSizeFor = useCallback(
+    (key: string): { w: number; h: number } =>
+      estimateCanvasNodeSize(key, { assets: project.assets, entities: upstreamEntities }),
+    [project.assets, upstreamEntities],
+  );
+
+  const collapsedGroups = useMemo(() => {
+    return (project.canvasGroups || [])
+      .filter((grp) => grp.collapsed)
+      .map((grp, gIdx) => {
+        const savedPts = grp.nodeIds
+          .map((id) => nodePositions[id])
+          .filter((p): p is Pt => Boolean(p));
+        // Anchor stack directly at its first member's real position (never a checkerboard minX/minY corner!)
+        const anchor = savedPts.length
+          ? savedPts[0]
+          : { x: 40 + (gIdx % 2) * 304, y: CANVAS_LANE_TOP + Math.floor(gIdx / 2) * 214 };
+        const previews: string[] = [];
+        for (const id of grp.nodeIds) {
+          if (previews.length >= 3) break;
+          if (id.startsWith('asset:')) {
+            const a = project.assets.find((x) => `asset:${x.id}` === id);
+            if (a && a.thumbnail && !a.offline) previews.push(mediaUrl(previewOrigin, a.id, true));
+          } else if (id.startsWith('ent:')) {
+            const e = upstreamEntities.find((x) => `ent:${x.id}` === id);
+            const aid = e?.variants?.[0]?.assetId || e?.assetId;
+            const a = aid ? project.assets.find((x) => x.id === aid) : undefined;
+            if (a && a.thumbnail && !a.offline) previews.push(mediaUrl(previewOrigin, a.id, true));
+          }
+        }
+        return { grp, x: anchor.x, y: anchor.y, previews };
+      });
+  }, [project.canvasGroups, nodePositions, project.assets, upstreamEntities, previewOrigin]);
 
   const layout = useMemo(() => {
-    const map: Record<string, Pt> = {};
-    let idx = 0;
-    const placeAsset = (key: string) => {
-      const col = assetCols === 2 ? idx % 2 : 0;
-      const row = assetCols === 2 ? Math.floor(idx / 2) : idx;
-      map[key] = nodePositions[key] || {
-        x: 40 + col * 308,
-        y: 48 + row * 226,
-      };
-      idx++;
-    };
-    upstreamEntities.forEach((ent) => placeAsset(`ent:${ent.id}`));
-    standaloneAssets.forEach((a) => placeAsset(`asset:${a.id}`));
-    standaloneComponents.forEach((comp) => placeAsset(`comp:${comp.id}`));
-
-    const cols = 6;
-    shots.forEach((sh, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      map[`shot:${sh.id}`] = nodePositions[`shot:${sh.id}`] || {
-        x: shotLaneX + col * 316,
-        y: 44 + row * 246,
-      };
+    const assetNodeKeys = [
+      ...visibleUpstreamEntities.map((e) => `ent:${e.id}`),
+      ...visibleStandaloneAssets.map((a) => `asset:${a.id}`),
+      ...visibleStandaloneComponents.map((c) => `comp:${c.id}`),
+    ];
+    const shotNodeKeys = shots.map((sh) => `shot:${sh.id}`);
+    const occupiedRects = collapsedGroups.map((cg) => ({
+      pos: { x: cg.x, y: cg.y },
+      sz: { w: 248, h: 178 },
+    }));
+    return resolveNonOverlappingCanvasLayout({
+      assetNodeKeys,
+      shotNodeKeys,
+      savedPositions: nodePositions,
+      occupiedRects,
+      assetCols,
+      shotLaneX,
+      getSize: nodeSizeFor,
     });
-    return map;
-  }, [upstreamEntities, standaloneAssets, standaloneComponents, assetCols, shotLaneX, shots, nodePositions]);
+  }, [
+    visibleUpstreamEntities,
+    visibleStandaloneAssets,
+    visibleStandaloneComponents,
+    collapsedGroups,
+    assetCols,
+    shotLaneX,
+    shots,
+    nodePositions,
+    nodeSizeFor,
+  ]);
 
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -380,18 +540,6 @@ export function CreateCanvas({
     prevPropSelectedClipRef.current = selectedClipId;
   }, [selectedClipId, shots]);
 
-  const nodeSizeFor = useCallback(
-    (key: string): { w: number; h: number } => {
-      if (key.startsWith('shot:')) return { w: 284, h: 204 };
-      if (key.startsWith('asset:')) {
-        const a = project.assets.find((x) => `asset:${x.id}` === key);
-        if (a?.kind === 'audio') return { w: 244, h: 82 };
-      }
-      return { w: 244, h: 174 };
-    },
-    [project.assets],
-  );
-
   const viewportCenterWorld = useCallback((): Pt => {
     const box = viewportRef.current?.getBoundingClientRect();
     const w = box ? box.width : 900;
@@ -408,6 +556,7 @@ export function CreateCanvas({
     setAddMenuOpen(false);
     setContextMenu(null);
     setDropMenu(null);
+    setHiddenPopoverOpen(false);
     setTakeMenuFor(null);
     setRigPopoverFor(null);
   }, [onSelectClip]);
@@ -486,6 +635,101 @@ export function CreateCanvas({
     setZoom(roundedZoom);
     setPan({ x: nextPanX, y: nextPanY });
   }
+
+  /** Stows asset/entity/component cards off the canvas desktop WITHOUT deleting underlying project files (undoable). */
+  const hideNodeKeysFromCanvas = useCallback(
+    async (keys: string[]) => {
+      const hideable = keys.filter(
+        (k) => k.startsWith('asset:') || k.startsWith('ent:') || k.startsWith('comp:'),
+      );
+      if (!hideable.length) return;
+      const nextHidden = [...new Set([...hiddenNodeIds, ...hideable])];
+      setSelectedNodeIds((prev) => prev.filter((k) => !hideable.includes(k)));
+      await onEdit(
+        hideable.length === 1 ? '将素材移出画布（保留工程资产）' : `将 ${hideable.length} 项素材移出画布`,
+        [{ type: 'updateProject', changes: { canvasHiddenNodeIds: nextHidden } }],
+      );
+    },
+    [hiddenNodeIds, onEdit],
+  );
+
+  const restoreNodeKeysToCanvas = useCallback(
+    async (keys?: string[]) => {
+      const nextHidden = keys ? hiddenNodeIds.filter((k) => !keys.includes(k)) : [];
+      setHiddenPopoverOpen(false);
+      await onEdit(
+        keys && keys.length === 1 ? '将素材放回画布' : '恢复画布已收起素材',
+        [{ type: 'updateProject', changes: { canvasHiddenNodeIds: nextHidden } }],
+      );
+    },
+    [hiddenNodeIds, onEdit],
+  );
+
+  const tidyCanvasNodes = useCallback(async () => {
+    const assetNodeKeys = [
+      ...visibleUpstreamEntities.map((e) => `ent:${e.id}`),
+      ...visibleStandaloneAssets.map((a) => `asset:${a.id}`),
+      ...visibleStandaloneComponents.map((c) => `comp:${c.id}`),
+    ];
+    const shotNodeKeys = shots.map((sh) => `shot:${sh.id}`);
+    const { positions } = computeTidyCanvasLayout({
+      assetNodeKeys,
+      shotNodeKeys,
+      groups: project.canvasGroups || [],
+      getSize: nodeSizeFor,
+    });
+    const merged = { ...nodePositionsRef.current, ...positions };
+    nodePositionsRef.current = merged;
+    setNodePositions(merged);
+    await onEdit('整理画布排版', [{ type: 'updateProject', changes: { canvasLayout: merged } }]);
+    requestAnimationFrame(() => fitCanvasToNodes());
+  }, [
+    visibleUpstreamEntities,
+    visibleStandaloneAssets,
+    visibleStandaloneComponents,
+    shots,
+    project.canvasGroups,
+    nodeSizeFor,
+    onEdit,
+  ]);
+
+  const renameCanvasGroup = useCallback(
+    async (groupId: string, nextName: string) => {
+      const trimmed = nextName.trim();
+      setEditingGroupId(null);
+      if (!trimmed) return;
+      const existing = project.canvasGroups || [];
+      const target = existing.find((g) => g.id === groupId);
+      if (!target || target.name === trimmed) return;
+      const nextGroups = existing.map((g) => (g.id === groupId ? { ...g, name: trimmed } : g));
+      await onEdit(`重命名分组「${trimmed}」`, [{ type: 'updateProject', changes: { canvasGroups: nextGroups } }]);
+    },
+    [project.canvasGroups, onEdit],
+  );
+
+  const toggleCollapseGroup = useCallback(
+    async (groupId: string) => {
+      const existing = project.canvasGroups || [];
+      const target = existing.find((g) => g.id === groupId);
+      if (!target) return;
+      const nextCollapsed = !target.collapsed;
+      // Save current member positions before collapsing so expanding returns every card accurately
+      const nextLayout = { ...nodePositionsRef.current };
+      if (nextCollapsed) {
+        for (const id of target.nodeIds) {
+          if (layoutRef.current[id]) nextLayout[id] = layoutRef.current[id];
+        }
+        nodePositionsRef.current = nextLayout;
+        setNodePositions(nextLayout);
+        setSelectedNodeIds((prev) => prev.filter((id) => !target.nodeIds.includes(id)));
+      }
+      const nextGroups = existing.map((g) => (g.id === groupId ? { ...g, collapsed: nextCollapsed } : g));
+      await onEdit(`${nextCollapsed ? '折叠' : '展开'}分组「${target.name}」`, [
+        { type: 'updateProject', changes: { canvasGroups: nextGroups, canvasLayout: nextLayout } },
+      ]);
+    },
+    [project.canvasGroups, onEdit],
+  );
 
   function resolveShotGenContext(shot: CompositeShot): { prompt: string; refAssetId?: string } {
     const b =
@@ -737,15 +981,20 @@ export function CreateCanvas({
     [shots, upstreamEntities, standaloneAssets, sequence.id, sequence.fps, onEdit],
   );
 
-  // Keyboard shortcuts while Canvas active (Escape deselect, T new text node, S new subject, Cmd+A select all, Cmd+G group, Space pan)
+  // Keyboard shortcuts while Canvas active (Escape deselect, Space tap Quick Look / Space hold pan, T new text node, S new subject, Cmd+A select all, Cmd+G group)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (modalOpen || subjectModal) return;
+      if (modalOpen || subjectModal || quickLookKey || editingGroupId) return;
       if (e.isComposing) return;
-      if (e.code === 'Space' && !(e.target as HTMLElement)?.closest('input, textarea, select')) {
-        setSpaceHeld(true);
-      }
       const inField = Boolean((e.target as HTMLElement)?.closest('input, textarea, select, [contenteditable]'));
+      if (e.code === 'Space' && !inField) {
+        if (!e.repeat) {
+          spaceDownRef.current = { time: Date.now(), panned: false };
+        }
+        e.preventDefault();
+        setSpaceHeld(true);
+        return;
+      }
       if (e.key === 'Escape') {
         if (inField) {
           (e.target as HTMLElement).blur();
@@ -780,9 +1029,27 @@ export function CreateCanvas({
       if (!mod && e.key.toLowerCase() === 'h') setCanvasTool('pan');
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') setSpaceHeld(false);
+      if (e.code === 'Space') {
+        setSpaceHeld(false);
+        const down = spaceDownRef.current;
+        spaceDownRef.current = null;
+        if (
+          down &&
+          !down.panned &&
+          Date.now() - down.time < 320 &&
+          !modalOpen &&
+          !subjectModal &&
+          !editingGroupId &&
+          selectedIdsRef.current.length === 1
+        ) {
+          setQuickLookKey(selectedIdsRef.current[0]);
+        }
+      }
     };
-    const onBlur = () => setSpaceHeld(false);
+    const onBlur = () => {
+      setSpaceHeld(false);
+      spaceDownRef.current = null;
+    };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
@@ -791,7 +1058,16 @@ export function CreateCanvas({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [modalOpen, subjectModal, clearSelection, selectAllNodes, createGroupFromNodeKeys, createTextNode]);
+  }, [
+    modalOpen,
+    subjectModal,
+    quickLookKey,
+    editingGroupId,
+    clearSelection,
+    selectAllNodes,
+    createGroupFromNodeKeys,
+    createTextNode,
+  ]);
 
   async function addQuickCanvasRigNode(presetId: string, role: VaultItem['role'], label: string) {
     setAddMenuOpen(false);
@@ -1290,6 +1566,23 @@ export function CreateCanvas({
     if (e.shiftKey || e.metaKey || e.ctrlKey) {
       return;
     }
+    const targetEl = e.target as HTMLElement;
+    const isPreviewArea = Boolean(targetEl.closest('.cc-node-visual, .cc-node-card.asset-card'));
+    const now = Date.now();
+    if (
+      isPreviewArea &&
+      lastCardDownRef.current?.key === nodeKey &&
+      now - lastCardDownRef.current.time < 260 &&
+      Math.hypot(e.clientX - lastCardDownRef.current.x, e.clientY - lastCardDownRef.current.y) < 8
+    ) {
+      e.preventDefault();
+      lastCardDownRef.current = null;
+      setQuickLookKey(nodeKey);
+      return;
+    }
+    lastCardDownRef.current = isPreviewArea
+      ? { key: nodeKey, time: now, x: e.clientX, y: e.clientY }
+      : null;
     const movingKeys = selectedIdsRef.current.includes(nodeKey) ? selectedIdsRef.current : [nodeKey];
     const origMap = new Map<string, Pt>();
     for (const k of movingKeys) {
@@ -1514,6 +1807,7 @@ export function CreateCanvas({
 
   const groupBoxes = useMemo(() => {
     return (project.canvasGroups || [])
+      .filter((grp) => !grp.collapsed)
       .map((grp) => {
         const pts = grp.nodeIds
           .map((id) => ({ id, pos: layout[id], sz: nodeSizeFor(id) }))
@@ -1527,6 +1821,15 @@ export function CreateCanvas({
       })
       .filter((x): x is { grp: CanvasGroup; x: number; y: number; w: number; h: number } => Boolean(x));
   }, [project.canvasGroups, layout, nodeSizeFor]);
+
+  const quickLookNavKeys = useMemo(
+    () => [
+      ...visibleUpstreamEntities.map((e) => `ent:${e.id}`),
+      ...visibleStandaloneAssets.map((a) => `asset:${a.id}`),
+      ...shots.map((sh) => `shot:${sh.id}`),
+    ],
+    [visibleUpstreamEntities, visibleStandaloneAssets, shots],
+  );
 
   const minimapDots = useMemo(() => {
     const entries = Object.entries(layout);
@@ -1553,7 +1856,7 @@ export function CreateCanvas({
   return (
     <div
       ref={viewportRef}
-      className={`create-canvas-viewport ${activePanMode ? 'pan-mode' : 'select-mode'}`}
+      className={`create-canvas-viewport ${activePanMode ? 'pan-mode' : 'select-mode'} ${wireDrag ? 'is-wiring' : ''}`}
       onWheel={(e) => {
         if ((e.target as HTMLElement).closest('textarea, input, select, .cc-popover')) return;
         if (e.metaKey || e.ctrlKey) {
@@ -1585,7 +1888,7 @@ export function CreateCanvas({
       onDoubleClick={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-popover, .cc-multi-bar, .cc-group-frame',
+            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-popover, .cc-multi-bar, .cc-group-frame, .cc-group-stack, .cc-lane-label, .cc-hidden-popover, .cc-quicklook-backdrop',
           )
         ) {
           return;
@@ -1599,7 +1902,7 @@ export function CreateCanvas({
       onPointerDown={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-popover, .cc-empty-hero, .cc-multi-bar, .cc-lane-action, .cc-group-header, button, input, textarea, select, audio',
+            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-popover, .cc-empty-hero, .cc-multi-bar, .cc-lane-label, .cc-lane-action, .cc-hidden-popover, .cc-group-header, .cc-group-stack, .cc-quicklook-backdrop, button, input, textarea, select, audio',
           )
         ) {
           return;
@@ -1610,11 +1913,13 @@ export function CreateCanvas({
         setDropMenu(null);
         setTakeMenuFor(null);
         setRigPopoverFor(null);
+        setHiddenPopoverOpen(false);
 
         const vp = viewportRef.current?.getBoundingClientRect();
         const shouldPan = activePanMode || e.button === 1;
 
         if (shouldPan) {
+          if (spaceDownRef.current) spaceDownRef.current.panned = true;
           const startX = e.clientX - panRef.current.x;
           const startY = e.clientY - panRef.current.y;
           startManagedDrag(
@@ -1686,10 +1991,20 @@ export function CreateCanvas({
           } else if (assetToken.startsWith('vault:')) {
             const vId = assetToken.split(':')[1];
             const found = (project.vault || []).find((v) => v.id === vId);
+            if (hiddenNodeSet.has(`ent:${vId}`)) {
+              void restoreNodeKeysToCanvas([`ent:${vId}`]);
+            }
             if (found) void appendShotFromRigOrBlank(undefined, found);
           } else {
             const media = project.assets.find((a) => a.id === assetToken);
             if (media) {
+              const ops: EditOperation[] = [];
+              if (hiddenNodeSet.has(`asset:${media.id}`)) {
+                ops.push({
+                  type: 'updateProject',
+                  changes: { canvasHiddenNodeIds: hiddenNodeIds.filter((k) => k !== `asset:${media.id}`) },
+                });
+              }
               const tail = sequence.clips.length
                 ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
                 : 0;
@@ -1698,7 +2013,8 @@ export function CreateCanvas({
                 name: media.name,
                 duration: Math.max(1, Math.floor((media.kind === 'image' ? 5 : media.duration) * sequence.fps)),
               };
-              void onEdit(`拖入镜头「${media.name}」`, [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
+              ops.push({ type: 'addClip', sequenceId: sequence.id, clip: c });
+              void onEdit(`拖入镜头「${media.name}」`, ops);
             }
           }
         }
@@ -1730,6 +2046,15 @@ export function CreateCanvas({
           <button type="button" onClick={() => void appendSelectedNodesToTimeline(selectedNodeIds)}>
             <Film size={11} /> 串入时间线
           </button>
+          {selectedNodeIds.some((k) => k.startsWith('asset:') || k.startsWith('ent:') || k.startsWith('comp:')) && (
+            <button
+              type="button"
+              title="从画布收起所选素材（不删除工程文件，随时可恢复）"
+              onClick={() => void hideNodeKeysFromCanvas(selectedNodeIds)}
+            >
+              <EyeOff size={11} /> 移出画布
+            </button>
+          )}
           {selectedNodeIds.some((k) => k.startsWith('shot:')) && onSaveClipsAsAsset && (
             <button
               type="button"
@@ -2142,49 +2467,167 @@ export function CreateCanvas({
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
         }}
       >
-        {/* Spatial Canvas Groups Layer */}
-        {groupBoxes.map(({ grp, x, y, w, h }) => (
-          <div
-            key={grp.id}
-            className="cc-group-frame"
-            style={{ left: x, top: y, width: w, height: h }}
-          >
+        {/* Spatial Canvas Groups Layer (expanded frames + collapsed card decks) */}
+        {groupBoxes.map(({ grp, x, y, w, h }) => {
+          const isEditingName = editingGroupId === grp.id;
+          return (
             <div
-              className="cc-group-header"
-              onPointerDown={(e) => {
-                if ((e.target as HTMLElement).closest('button, input')) return;
-                e.stopPropagation();
-                const origMap = new Map<string, Pt>();
-                for (const id of grp.nodeIds) {
-                  if (layoutRef.current[id]) origMap.set(id, { ...layoutRef.current[id] });
-                }
-                const sx = e.clientX;
-                const sy = e.clientY;
-                startManagedDrag(
-                  pointerDrag(
-                    e,
-                    (mx, my) => {
-                      const dx = Math.round((mx - sx) / zoomRef.current);
-                      const dy = Math.round((my - sy) / zoomRef.current);
-                      const next = { ...nodePositionsRef.current };
-                      for (const [k, op] of origMap) next[k] = { x: op.x + dx, y: op.y + dy };
-                      nodePositionsRef.current = next;
-                      setNodePositions(next);
-                    },
-                    (mx, my) => {
-                      if (mx !== sx || my !== sy) {
-                        void onEdit('移动画布分组', [
-                          { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
-                        ]);
-                      }
-                    },
-                    'grabbing',
-                  ),
-                );
-              }}
+              key={grp.id}
+              className="cc-group-frame"
+              style={{ left: x, top: y, width: w, height: h }}
             >
-              <Group size={11} />
-              <span>{grp.name}</span>
+              <div
+                className="cc-group-header"
+                onPointerDown={(e) => {
+                  if ((e.target as HTMLElement).closest('button, input')) return;
+                  e.stopPropagation();
+                  const now = Date.now();
+                  if (lastGroupDownRef.current?.id === grp.id && now - lastGroupDownRef.current.time < 380) {
+                    e.preventDefault();
+                    lastGroupDownRef.current = null;
+                    setEditingGroupId(grp.id);
+                    setGroupNameDraft(grp.name);
+                    return;
+                  }
+                  lastGroupDownRef.current = { id: grp.id, time: now };
+                  const origMap = new Map<string, Pt>();
+                  for (const id of grp.nodeIds) {
+                    if (layoutRef.current[id]) origMap.set(id, { ...layoutRef.current[id] });
+                  }
+                  const sx = e.clientX;
+                  const sy = e.clientY;
+                  startManagedDrag(
+                    pointerDrag(
+                      e,
+                      (mx, my) => {
+                        const dx = Math.round((mx - sx) / zoomRef.current);
+                        const dy = Math.round((my - sy) / zoomRef.current);
+                        const next = { ...nodePositionsRef.current };
+                        for (const [k, op] of origMap) next[k] = { x: op.x + dx, y: op.y + dy };
+                        nodePositionsRef.current = next;
+                        setNodePositions(next);
+                      },
+                      (mx, my) => {
+                        if (mx !== sx || my !== sy) {
+                          void onEdit('移动画布分组', [
+                            { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
+                          ]);
+                        }
+                      },
+                      'grabbing',
+                    ),
+                  );
+                }}
+              >
+                <button
+                  type="button"
+                  className="cc-group-fold-btn"
+                  title="折叠分组为紧凑卡叠"
+                  aria-label={`折叠分组 ${grp.name}`}
+                  onClick={() => void toggleCollapseGroup(grp.id)}
+                >
+                  <ChevronDown size={11} />
+                </button>
+                <Group size={11} />
+                {isEditingName ? (
+                  <input
+                    className="cc-group-rename-input"
+                    aria-label="重命名分组"
+                    autoFocus
+                    value={groupNameDraft}
+                    onChange={(e) => setGroupNameDraft(e.target.value)}
+                    onBlur={() => void renameCanvasGroup(grp.id, groupNameDraft)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void renameCanvasGroup(grp.id, groupNameDraft);
+                      if (e.key === 'Escape') setEditingGroupId(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    title="双击重命名分组"
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingGroupId(grp.id);
+                      setGroupNameDraft(grp.name);
+                    }}
+                  >
+                    {grp.name}
+                  </span>
+                )}
+                <div className="cc-group-acts">
+                  <button
+                    type="button"
+                    title="将整组节点添加到对话"
+                    onClick={() => {
+                      const refs = collectRefsFromNodeKeys(grp.nodeIds);
+                      if (onAddRefsToChat && refs.length) onAddRefsToChat(refs, true);
+                    }}
+                  >
+                    <AtSign size={10} />
+                  </button>
+                  <button
+                    type="button"
+                    title="整组打成素材包"
+                    onClick={() => void packNodeKeys(grp.nodeIds, false)}
+                  >
+                    <Package size={10} />
+                  </button>
+                  <button
+                    type="button"
+                    title="解散此分组"
+                    onClick={() =>
+                      void onEdit('解散分组', [
+                        {
+                          type: 'updateProject',
+                          changes: { canvasGroups: (project.canvasGroups || []).filter((g) => g.id !== grp.id) },
+                        },
+                      ])
+                    }
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {collapsedGroups.map(({ grp, x, y, previews }) => (
+          <div
+            key={`stack-${grp.id}`}
+            className="cc-group-stack"
+            style={{ left: x, top: y }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="cc-group-stack-layers" onClick={() => void toggleCollapseGroup(grp.id)}>
+              <div className="cc-stack-back layer-2" />
+              <div className="cc-stack-back layer-1" />
+              <div className="cc-stack-front">
+                {previews.length > 0 ? (
+                  <div className={`cc-stack-mosaic count-${previews.length}`}>
+                    {previews.map((src, i) => (
+                      <img key={i} src={src} alt="" draggable={false} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="cc-stack-empty">
+                    <Group size={20} />
+                  </div>
+                )}
+                <span className="cc-stack-badge">{grp.nodeIds.length} 项</span>
+              </div>
+            </div>
+            <div className="cc-group-stack-foot">
+              <button
+                type="button"
+                className="cc-stack-expand-btn"
+                title="展开此分组"
+                aria-label={`展开分组 ${grp.name}`}
+                onClick={() => void toggleCollapseGroup(grp.id)}
+              >
+                <ChevronRight size={11} />
+                <b>{grp.name}</b>
+              </button>
               <div className="cc-group-acts">
                 <button
                   type="button"
@@ -2222,18 +2665,23 @@ export function CreateCanvas({
           </div>
         ))}
 
-        {/* 1px Curved Bezier Relationship Wires */}
+        {/* 1px Curved Bezier Relationship Wires (On-Demand Focus: subtle when idle, bright on hover/select) */}
         <svg className="cc-wires-svg" width="4000" height="3000">
           {wires.map((w) => {
             const d = bezierPathFor(w.x1, w.y1, w.x2, w.y2, w.s1, w.s2);
+            const highlighted =
+              w.active ||
+              hoveredNodeKey === w.fromKey ||
+              hoveredNodeKey === w.toKey ||
+              Boolean(wireDrag);
             return (
-              <g key={w.key} className="cc-wire-group">
+              <g key={w.key} className={`cc-wire-group ${highlighted ? 'highlighted' : ''}`}>
                 <path
                   d={d}
-                  className={`cc-wire-path ${w.isLineage ? 'lineage' : ''} ${w.active ? 'active' : ''}`}
+                  className={`cc-wire-path ${w.isLineage ? 'lineage' : ''} ${w.active ? 'active' : ''} ${highlighted ? 'highlighted' : ''}`}
                 />
-                <circle cx={w.x1} cy={w.y1} r={3.5} className="cc-wire-dot" />
-                <circle cx={w.x2} cy={w.y2} r={3.5} className="cc-wire-dot" />
+                <circle cx={w.x1} cy={w.y1} r={3} className="cc-wire-dot" />
+                <circle cx={w.x2} cy={w.y2} r={3} className="cc-wire-dot" />
               </g>
             );
           })}
@@ -2252,10 +2700,70 @@ export function CreateCanvas({
           )}
         </svg>
 
-        {/* Zone Label Headers */}
+        {/* Zone Label Headers (positioned at top: 10px, cleanly separated from row-0 cards at y: 82px) */}
         {totalAssetCount > 0 && (
-          <div className="cc-lane-label" style={{ left: 40, top: 14 }}>
-            <span>资产区 ({totalAssetCount})</span>
+          <div
+            className="cc-lane-label"
+            style={{ left: 40, top: 10 }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <span>
+              画布资产 ({visibleAssetCount}
+              {visibleAssetCount !== totalAssetCount ? ` / ${totalAssetCount}` : ''})
+            </span>
+            <div className="cc-lane-filter" role="tablist" aria-label="画布资产视图筛选">
+              {(
+                [
+                  ['all', '全部'],
+                  ['used', '在用'],
+                  ['visual', '仅画面'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={assetFilter === id}
+                  className={assetFilter === id ? 'active' : ''}
+                  onClick={() => setAssetFilter(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {hiddenAssetEntries.length > 0 && (
+              <div className="cc-hidden-restore-wrap">
+                <button
+                  type="button"
+                  className="cc-lane-action"
+                  onClick={() => setHiddenPopoverOpen((v) => !v)}
+                >
+                  <RotateCcw size={10} /> 已收起 {hiddenAssetEntries.length} 项
+                </button>
+                {hiddenPopoverOpen && (
+                  <div className="cc-hidden-popover" role="menu" aria-label="已移出画布的素材">
+                    <div className="cc-hidden-pop-head">
+                      <b>已移出画布（工程资产保留）</b>
+                      <button type="button" onClick={() => void restoreNodeKeysToCanvas()}>
+                        全部放回
+                      </button>
+                    </div>
+                    <div className="cc-hidden-pop-list">
+                      {hiddenAssetEntries.map((item) => (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => void restoreNodeKeysToCanvas([item.key])}
+                        >
+                          <span>{item.label}</span>
+                          <small>+ 放回</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <button
               type="button"
               className="cc-lane-action"
@@ -2266,7 +2774,7 @@ export function CreateCanvas({
           </div>
         )}
         {shots.length > 0 && (
-          <div className="cc-lane-label" style={{ left: shotLaneX, top: 14 }}>
+          <div className="cc-lane-label" style={{ left: shotLaneX, top: 10 }}>
             <span>
               成片分镜序列 ({sequence.name} · 共 {shots.length} 镜 ·{' '}
               {(shots.reduce((sum, s) => sum + s.duration, 0) / sequence.fps).toFixed(1)}s)
@@ -2278,7 +2786,7 @@ export function CreateCanvas({
         )}
 
         {/* Vault Entities: Text Nodes, Compound Saved Clips, Consistency Subjects & Dynamic Rigs */}
-        {upstreamEntities.map((ent) => {
+        {visibleUpstreamEntities.map((ent) => {
           const nodeKey = `ent:${ent.id}`;
           const pos = layout[nodeKey] || { x: 40, y: 44 };
           const selected = selectedNodeIds.includes(nodeKey);
@@ -2298,6 +2806,8 @@ export function CreateCanvas({
               data-node-id={nodeKey}
               className={`cc-node upstream ${isTextNote ? 'text-note' : ''} ${isCompound ? 'compound' : ''} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
               style={{ left: pos.x, top: pos.y }}
+              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
+              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
               onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
             >
@@ -2433,6 +2943,22 @@ export function CreateCanvas({
                   )}
                   <button
                     type="button"
+                    title="快速大图预览 (Space)"
+                    aria-label={`预览 ${ent.name}`}
+                    onClick={() => setQuickLookKey(nodeKey)}
+                  >
+                    <Eye size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    title="移出画布（保留工程资产）"
+                    aria-label={`将 ${ent.name} 移出画布`}
+                    onClick={() => void hideNodeKeysFromCanvas([nodeKey])}
+                  >
+                    <EyeOff size={11} />
+                  </button>
+                  <button
+                    type="button"
                     title="移除节点"
                     onClick={() =>
                       void onEdit(`删除「${ent.name}」`, [{ type: 'removeVaultItem', itemId: ent.id }])
@@ -2462,7 +2988,11 @@ export function CreateCanvas({
                   <ImageIcon size={11} />
                 )}
                 <span>
-                  {isTextNote ? ent.name : isCompound ? `精剪 · ${ent.name}` : `${ROLE_LABELS[inferAssetRole(ent)]} · ${ent.name}`}
+                  {isTextNote
+                    ? ent.name
+                    : isCompound
+                      ? `精剪 · ${formatCanvasDisplayName(ent.name, true)}`
+                      : `${ROLE_LABELS[inferAssetRole(ent)]} · ${formatCanvasDisplayName(ent.name)}`}
                 </span>
                 <small>
                   {isCompound && ent.compound
@@ -2518,7 +3048,13 @@ export function CreateCanvas({
                   />
                 ) : (
                   <>
-                    <div className="cc-node-visual">
+                    <div
+                      className="cc-node-visual"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setQuickLookKey(nodeKey);
+                      }}
+                    >
                       {hasRig ? (
                         <PresetPreview
                           presetId={ent.rig!.presetId!}
@@ -2703,9 +3239,9 @@ export function CreateCanvas({
         })}
 
         {/* Standalone Project Media / Audio / 3D Asset Nodes */}
-        {standaloneAssets.map((a) => {
+        {visibleStandaloneAssets.map((a) => {
           const nodeKey = `asset:${a.id}`;
-          const pos = layout[nodeKey] || { x: 40, y: 44 };
+          const pos = layout[nodeKey] || { x: 40, y: CANVAS_LANE_TOP };
           const selected = selectedNodeIds.includes(nodeKey);
           const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
           const isAudio = a.kind === 'audio';
@@ -2721,6 +3257,8 @@ export function CreateCanvas({
               data-node-id={nodeKey}
               className={`cc-node asset ${a.kind} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
               style={{ left: pos.x, top: pos.y }}
+              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
+              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
               onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
             >
@@ -2828,10 +3366,26 @@ export function CreateCanvas({
                   )}
                   <button
                     type="button"
+                    title="快速大图预览 / 播放 (Space)"
+                    aria-label={`预览 ${a.name}`}
+                    onClick={() => setQuickLookKey(nodeKey)}
+                  >
+                    <Eye size={11} />
+                  </button>
+                  <button
+                    type="button"
                     title="发布至跨项目个人库"
                     onClick={() => void onPublishToLibrary({ assetId: a.id })}
                   >
                     ↑个人库
+                  </button>
+                  <button
+                    type="button"
+                    title="移出画布（不删除工程文件，随时可恢复）"
+                    aria-label={`将 ${a.name} 移出画布`}
+                    onClick={() => void hideNodeKeysFromCanvas([nodeKey])}
+                  >
+                    <EyeOff size={11} />
                   </button>
                   <button
                     type="button"
@@ -2855,13 +3409,19 @@ export function CreateCanvas({
 
               <div className="cc-node-header">
                 {isAudio ? <AudioLines size={11} /> : a.kind === 'model-3d' ? <Box size={11} /> : <ImageIcon size={11} />}
-                <span>
-                  {kindLabel} · {a.name}
+                <span title={a.name}>
+                  {kindLabel} · {formatCanvasDisplayName(a.name, true)}
                 </span>
-                <small>{a.duration > 0 ? `${a.duration.toFixed(1)}s` : a.width ? `${a.width}px` : ''}</small>
+                <small>{formatAssetCardMeta(a)}</small>
               </div>
 
-              <div className="cc-node-card asset-card">
+              <div
+                className="cc-node-card asset-card"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setQuickLookKey(nodeKey);
+                }}
+              >
                 {isAudio ? (
                   <div className="cc-audio-card-body">
                     <AudioWaveformPlayer
@@ -2896,9 +3456,9 @@ export function CreateCanvas({
         })}
 
         {/* Standalone Custom Code Components */}
-        {standaloneComponents.map((comp) => {
+        {visibleStandaloneComponents.map((comp) => {
           const nodeKey = `comp:${comp.id}`;
-          const pos = layout[nodeKey] || { x: 40, y: 44 };
+          const pos = layout[nodeKey] || { x: 40, y: CANVAS_LANE_TOP };
           const selected = selectedNodeIds.includes(nodeKey);
           const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
           const tail = sequence.clips.length
@@ -2910,6 +3470,8 @@ export function CreateCanvas({
               data-node-id={nodeKey}
               className={`cc-node asset component ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
               style={{ left: pos.x, top: pos.y }}
+              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
+              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
               onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
             >
@@ -2941,6 +3503,13 @@ export function CreateCanvas({
                     onClick={() => void onPublishToLibrary({ componentId: comp.id })}
                   >
                     ↑个人库
+                  </button>
+                  <button
+                    type="button"
+                    title="移出画布（保留工程组件）"
+                    onClick={() => void hideNodeKeysFromCanvas([nodeKey])}
+                  >
+                    <EyeOff size={11} />
                   </button>
                 </div>
               )}
@@ -2993,6 +3562,8 @@ export function CreateCanvas({
               data-shot-node-id={shot.id}
               className={`cc-node shot ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
               style={{ left: pos.x, top: pos.y }}
+              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
+              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
               onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
               onClick={(e) => handleNodeCardClick(e, nodeKey, c.id)}
               onDragOver={(e) => {
@@ -3201,7 +3772,13 @@ export function CreateCanvas({
               </div>
 
               <div className="cc-node-card shot-card-body">
-                <div className="cc-shot-thumb">
+                <div
+                  className="cc-shot-thumb"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setQuickLookKey(nodeKey);
+                  }}
+                >
                   <ShotCompositeThumb
                     project={project}
                     sequence={sequence}
@@ -3430,7 +4007,7 @@ export function CreateCanvas({
             className="cc-append-shot-node"
             style={{
               left: shotLaneX + (shots.length % 6) * 316,
-              top: 64 + Math.floor(shots.length / 6) * 246,
+              top: CANVAS_LANE_TOP + 20 + Math.floor(shots.length / 6) * 246,
             }}
             onClick={() => void appendShotFromRigOrBlank()}
           >
@@ -3439,16 +4016,21 @@ export function CreateCanvas({
           </button>
         )}
 
-        {/* Clickable Bezier Wire Label Pills */}
+        {/* Clickable Bezier Wire Label Pills (only visible when related node/wire is hovered or selected) */}
         <svg className="cc-wires-svg cc-wire-pills-layer" width="4000" height="3000">
           {wires.map((w) => {
             const mx = (w.x1 + w.x2) / 2;
             const my = (w.y1 + w.y2) / 2;
             const pillW = Math.min(180, Math.max(64, w.label.length * 8.5 + 22));
+            const highlighted =
+              w.active ||
+              hoveredNodeKey === w.fromKey ||
+              hoveredNodeKey === w.toKey ||
+              Boolean(wireDrag);
             return (
               <g
                 key={w.key}
-                className={`cc-wire-pill ${w.isLineage ? 'lineage-pill' : ''}`}
+                className={`cc-wire-pill ${w.isLineage ? 'lineage-pill' : ''} ${highlighted ? 'highlighted' : ''}`}
                 transform={`translate(${mx}, ${my})`}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -3565,6 +4147,14 @@ export function CreateCanvas({
             onClick={() => setZoom((z) => Math.max(0.45, Math.round((z - 0.1) * 100) / 100))}
           >
             <ZoomOut size={12} />
+          </button>
+          <button
+            type="button"
+            title="一键整理画布排版（自动消除重叠）"
+            aria-label="整理画布排版"
+            onClick={() => void tidyCanvasNodes()}
+          >
+            <LayoutList size={12} />
           </button>
           <button
             type="button"
@@ -3874,6 +4464,25 @@ export function CreateCanvas({
             </div>
           );
         })()}
+
+      {/* Space / Double-Click Quick Look Lightbox */}
+      {quickLookKey && (
+        <CanvasQuickLook
+          nodeKey={quickLookKey}
+          navigableKeys={quickLookNavKeys}
+          project={project}
+          sequence={sequence}
+          shots={shots}
+          previewOrigin={previewOrigin}
+          onNavigate={setQuickLookKey}
+          onClose={() => setQuickLookKey(null)}
+          onJumpToEdit={(clipId, startFrame) => {
+            onSelectClip(clipId);
+            onSeek(startFrame);
+            onSwitchToEdit();
+          }}
+        />
+      )}
     </div>
   );
 }

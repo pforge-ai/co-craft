@@ -28,6 +28,7 @@
   --z-stage-pin: 9;
   --z-canvas-node: 10;
   --z-stage-editor: 12;
+  --z-canvas-pill-active: 15;
   --z-canvas-hero: 20;
   --z-canvas-node-selected: 25;
   --z-hud: 30;

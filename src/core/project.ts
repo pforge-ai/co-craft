@@ -304,6 +304,7 @@ export function applyOperations(
         'modelDefaults',
         'canvasLayout',
         'canvasGroups',
+        'canvasHiddenNodeIds',
       ]);
       Object.assign(p, op.changes);
       continue;
@@ -951,6 +952,9 @@ export function diffSummary(a: Project, b: Project): string[] {
   if (b.assets.length < a.assets.length) result.push(`移除 ${a.assets.length - b.assets.length} 个资产`);
   if (a.activeBrandId !== b.activeBrandId) result.push(b.activeBrandId ? '切换视觉风格' : '恢复默认视觉风格');
   if (JSON.stringify(a.canvasLayout || {}) !== JSON.stringify(b.canvasLayout || {})) result.push('更新画布节点布局');
+  if (JSON.stringify(a.canvasGroups || []) !== JSON.stringify(b.canvasGroups || [])) result.push('更新画布分组');
+  if (JSON.stringify(a.canvasHiddenNodeIds || []) !== JSON.stringify(b.canvasHiddenNodeIds || []))
+    result.push('更新画布可见资产');
   if (JSON.stringify(a.components) !== JSON.stringify(b.components)) result.push('更新代码组件');
   if (JSON.stringify(a.vault || []) !== JSON.stringify(b.vault || [])) result.push('更新项目资产库');
   return result.length ? result : ['更新工程'];

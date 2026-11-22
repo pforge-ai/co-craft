@@ -29,6 +29,14 @@ import {
   matchMentionTrigger,
   parseTimecodeInput,
 } from '../src/lib/workbenchState';
+import {
+  CANVAS_LANE_TOP,
+  computeTidyCanvasLayout,
+  estimateCanvasNodeSize,
+  formatAssetCardMeta,
+  formatCanvasDisplayName,
+  resolveNonOverlappingCanvasLayout,
+} from '../src/lib/canvasLayout';
 
 console.log('Running Phase 1 Core & Store Unit Suite...');
 
@@ -670,6 +678,84 @@ assert.ok(
     detectActiveLayoutPreset({ showNav: false, showBottom: true, showRight: true, rightTab: 'agent' }),
     'collab',
   );
+
+  // 7e. CreateCanvas Option B: collision-free layout, card meta, tidy layout & group/hidden persistence
+  assert.equal(formatCanvasDisplayName('海岸公路.svg'), '海岸公路');
+  assert.equal(formatCanvasDisplayName('山脊柔光晨雾 · 18.4s', true), '山脊柔光晨雾');
+  assert.equal(
+    formatAssetCardMeta({
+      id: 'img1',
+      name: '海岸公路.svg',
+      kind: 'image',
+      path: '/a/coast.svg',
+      duration: 8,
+      createdAt: '',
+    }),
+    'SVG',
+    'Image cards must NEVER show bogus 8.0s duration',
+  );
+  assert.equal(
+    formatAssetCardMeta({
+      id: 'img2',
+      name: 'frame.png',
+      kind: 'image',
+      path: '/a/frame.png',
+      duration: 5,
+      width: 1920,
+      height: 1080,
+      createdAt: '',
+    }),
+    '1920×1080',
+  );
+  assert.equal(
+    estimateCanvasNodeSize('ent:cmp', { assets: [], entities: [] }).h,
+    162,
+    'Compound/visual card height matches real 162px DOM geometry (no floating wire dot)',
+  );
+
+  // Collision-free auto-layout: saved position at (40, CANVAS_LANE_TOP) must NOT be overlapped by newly added ent!
+  const nonOverlap = resolveNonOverlappingCanvasLayout({
+    assetNodeKeys: ['ent:new_compound', 'asset:existing_svg'],
+    shotNodeKeys: [],
+    savedPositions: { 'asset:existing_svg': { x: 40, y: CANVAS_LANE_TOP } },
+    assetCols: 2,
+    shotLaneX: 700,
+    getSize: () => ({ w: 248, h: 162 }),
+  });
+  assert.deepEqual(nonOverlap['asset:existing_svg'], { x: 40, y: CANVAS_LANE_TOP });
+  assert.notDeepEqual(
+    nonOverlap['ent:new_compound'],
+    nonOverlap['asset:existing_svg'],
+    'New entity never stacks onto existing saved asset coordinate',
+  );
+  // Legacy exact stack repair
+  const repaired = resolveNonOverlappingCanvasLayout({
+    assetNodeKeys: ['ent:a', 'asset:b'],
+    shotNodeKeys: [],
+    savedPositions: { 'ent:a': { x: 40, y: 274 }, 'asset:b': { x: 42, y: 276 } },
+    assetCols: 2,
+    shotLaneX: 700,
+    getSize: () => ({ w: 248, h: 162 }),
+  });
+  assert.ok(
+    Math.hypot(repaired['ent:a'].x - repaired['asset:b'].x, repaired['ent:a'].y - repaired['asset:b'].y) > 100,
+    'Legacy stacked cards are automatically separated',
+  );
+
+  const tidy = computeTidyCanvasLayout({
+    assetNodeKeys: ['asset:1', 'asset:2', 'asset:3', 'asset:4'],
+    shotNodeKeys: ['shot:s1'],
+    groups: [{ id: 'g1', name: '组1', nodeIds: ['asset:3', 'asset:4'] }],
+    getSize: () => ({ w: 248, h: 162 }),
+  });
+  assert.ok(tidy.positions['asset:3'].y >= CANVAS_LANE_TOP);
+  assert.ok(tidy.positions['shot:s1'].x > tidy.positions['asset:2'].x + 248);
+
+  // Verify canvasHiddenNodeIds persists through applyOperations
+  const pHide = applyOperations(newProject('HideTest'), [
+    { type: 'updateProject', changes: { canvasHiddenNodeIds: ['asset:foo'] } },
+  ]);
+  assert.deepEqual(pHide.canvasHiddenNodeIds, ['asset:foo']);
 }
 
 console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C core regression tests (timecode, SRT, ripple, strict scope, lock-safe relink, numeric breakdown, per-line SRT, unified storyboard, shot audio, spanning watermark, trailing preflight, transitions, cross-FPS compounds, unified catalog & workbench state)');

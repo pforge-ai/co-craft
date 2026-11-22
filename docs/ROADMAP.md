@@ -91,6 +91,11 @@
   - **3. 3 套工作区布局预设与 `1080×720` 小屏适配（Review #19）**：顶栏面板控制区与 `⌘K` 命令面板均内置 **「看画面 / 精剪 / 协作」** 3 套工作区布局预设；`window.innerWidth <= 1140` 切入剪辑模式默认收起左栏（实测 `1080×720` 中心舞台宽度由 `524px` 提升至 `802px`），同时通过 `@media (max-width: 1220px)` 收紧三栏上限与 `10px` 裁切手柄，三栏全开仍保留 `586px` 舞台宽且零横向溢出。
   - **4. CSS 去债与权威 `--z-*` 层级标尺**：在 `src/styles.css` `:root` 建立统一 `--z-*` 令牌梯队，将两份样式表全部 **49 处裸数字 `z-index` 归零**；经全仓 AST/正则核查安全清除 228 处 v0.1–v0.3 历史死规则及 60 条阴影重复属性（`src/styles.css` `2,993 → 2,245` 行、`src/workbench.css` `7,033 → 6,518` 行，合计净削减 `1,263` 行；主样式产物收窄至 `145.17 kB / gzip 26.68 kB`）。
   - **5. 打包版 8 套全量验收结果**：`test:unit`、`smoke`、`smoke:models`、打包版 `smoke:agent`、打包版 `test:redblue`、打包版 `verify_wave_a.mjs`、打包版 `test:v04`（`823,563 bytes / 5.01s` MP4）及 Wave C 专项打包验证（含 `1080×720` 双布局实拍视觉复审，0 console/page errors）全部 100% PASS。
+- **v0.5.7 创造画布视觉降噪与桌面级交互升级（Option B，已通过打包版 6 套全量验收 ✅，耗时约 25 分钟）**：
+  - **1. 端口与连线按需显影**：`.cc-port` 端口圆点默认隐藏（`opacity: 0`），仅在 hover/选中卡片或拖线期间平滑浮现；连线与胶囊默认压轻降噪，仅当关联节点被 hover/选中时高亮浮现于非选中卡片上方（`--z-canvas-pill-active: 15`），静默态完全不拦截拖拽；未聚焦卡片顶栏降噪（`opacity: 0.64`）。
+  - **2. 根治卡片叠压、锚点悬空、元数据失准与分区冲突**：新增纯布局与格式模块 [src/lib/canvasLayout.ts](../src/lib/canvasLayout.ts)，自动排格严格避让已保存位置与折叠卡叠（并自动拆解历史叠压坐标），精准匹配 `162px` 卡片渲染高度消除底端连线白点悬空，图片显示 `SVG`/`宽×高` 而非误标 `8.0s`、剥离重复时长与后缀，首行起始纵坐标留足 `104px` 让首行分组标题不再吞并「画布资产」分区栏；右下角新增一键「整理画布排版（Tidy Up）」。
+  - **3. 画布与资产仓库解耦、分组双击改名/折叠卡叠与 `Space` 灯箱快看**：`Project` 新增可撤销持久化字段 `canvasHiddenNodeIds`、`CanvasGroup` 新增 `collapsed`，支持按「全部 / 在用 / 仅画面」筛选、单选/多选「移出画布（保留工程资产）」与一键放回；分组支持双击内联改名与一键折叠为三图拼接紧凑卡叠；新增 [src/components/CanvasQuickLook.tsx](../src/components/CanvasQuickLook.tsx)，选中卡片轻按 `Space` 或双击画面即开大图/视频/音频波形快看并支持 `← →` 切换。
+  - **4. 打包版全量验收**：`test:unit`、画布 B 方案 7 项打包专项验证（含静默态/折叠卡叠/`Space` 灯箱实拍复审，0 console/page errors）、Wave A、Wave C、`test:v04`（`824,029 bytes / 5.01s` MP4）与 `test:redblue` 全部 PASS。
 
 ---
 
