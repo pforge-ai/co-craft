@@ -16,7 +16,7 @@
     "smoke": "tsx scripts/smoke.ts",
     "package": "npm run build && electron-builder --mac dir --arm64",
     "package:dmg": "npm run build && electron-builder --mac dmg --arm64",
-    "package:signed": "npm run build && electron-builder --mac dmg --arm64 -c.mac.identity= -c.mac.hardenedRuntime=true -c.mac.gatekeeperAssess=false",
+    "package:release": "node scripts/release-mac.mjs",
     "test:ui": "node scripts/functional-check-v2.mjs",
     "smoke:agent": "node scripts/agent-smoke.mjs",
     "smoke:models": "node scripts/generation-smoke.mjs",

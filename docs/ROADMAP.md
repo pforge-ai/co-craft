@@ -1,6 +1,6 @@
 # CoCraft 迭代与重构计划（ROADMAP）
 
-更新日期：2026 年 11 月 22 日（完成专业 NLE 关键帧与音画分离、PBR 3D + RoughJS 确定性手绘引擎升级、内置受控本地 MCP 服务端，并通过 MCP 驱动真实云端模型 `wan2.6-t2v + qwen3-tts-flash + deepseek-flash` 从零制作导出 1080p 导演剪辑版短片《光，没有时间》）。
+更新日期：2026 年 11 月 24 日（完成 macOS Apple Silicon 正式发布管线：`Developer ID Application` 由内而外 Mach-O 精准签名 + Apple Notarization 公证 + `.dmg/.app` 双端票据装订 + Hardened Runtime 干净挂载实测全绿）。
 
 遵循小时级可运行、可演示、可验证增量交付约定。每次交付包含实际构建、可复现步骤、自动化与真机验证结果、已知边界和下一项最小目标。
 
@@ -112,6 +112,7 @@
   - **3. 真实云端模型从零制作短片验收**：通过内置 MCP 在独立新工程中实机调用 **`wan2.6-t2v`**（5.01s 暗房光学棱镜折射视频）、**`qwen3-tts-flash`**（4 段真实中文配音）与 **`deepseek-flash`** 内置 Agent，结合定制编译的闵可夫斯基时空光锥、Three.js PBR 迈克尔逊光学干涉仪、暗曜石 RoughJS 物理三联图、双光圈光子落版尾卡及四段底乐 Auto-Ducking，逐帧视觉复审 5 幕后导出 `36.885s / 1920×1080 / 30fps / 16.88 MB` 真实 H.264/AAC MP4（`light-has-no-time-directors-cut-1080p.mp4`）。
   - **4. 设置页模型选择与手动新增体验升级**：重构 [src/components/SettingsDialog.tsx](../src/components/SettingsDialog.tsx) 与 [src/core/models.ts](../src/core/models.ts)，将裸文本 `模型 ID` 升级为可搜索下拉选择器 + 行内「拉取在线模型列表」+ 一键推荐模型快捷标签（含 `qwen-image-2.0-pro` / `qwen-image-2.0` / `qwen-image-max` / `wan2.6-t2i` 等各厂商按接口匹配的常用模型）+ 自由输入自定义 ID 并自动推断接口适配与默认能力；打包版 Playwright 交互与视觉截图验收通过。
   - **5. 「一核两口」统一工具服务层 + 内置影院级音效重建 & 样片混音重制**：新增 [electron/tool-service.ts](../electron/tool-service.ts) 统一内置 Pi Agent 与本地 MCP 全部 19 项核心能力（消除 `agents.ts` 与 `main.ts` 合计 755 行重复分发代码，内置 Agent 新增 `apply_keyframe_preset` / `detach_audio` / `export_sequence`，MCP 扩至 25 项工具补齐 `cocraft_search_assets` / `cocraft_pull_vault_item` / `cocraft_inspect_media` 并保留内置沙箱与作用域隔离）；重写 [scripts/create-studio-audio.mjs](../scripts/create-studio-audio.mjs) 以粉红噪声状态变量扫频、毛毡电钢/马林巴合成与 Freeverb 立体声混响全面替换原纯正弦测试音，并重制《光，没有时间》样片配乐与转场混音。
+  - **6. macOS 正式分发管线（Developer ID 签名 + Apple 公证 + 票据装订，已验收 ✅）**：新增 [scripts/release-mac.mjs](../scripts/release-mac.mjs) 与 [build/entitlements.mac.plist](../build/entitlements.mac.plist)（`npm run package:release`），自动读取钥匙串 `Developer ID Application` 证书与 `notarytool` 凭证（仓库零硬编码密钥），跳过非 Mach-O 语言包冗余签名，以由内而外精准签名 38 个 Mach-O 二进制与 8 个嵌套 Bundle + TSA 瞬断重试完成 Hardened Runtime 签名、DMG 封装、Apple Notarization（`Accepted`）及 `.dmg`/`.app` 双端装订；经 `xcrun stapler validate`、`spctl`（`source=Notarized Developer ID`）及干净挂载 DMG 启动（内置 `ffmpeg/ffprobe` 正常执行、0 控制台/页面报错）全量验收通过。
 
 ---
 
@@ -123,7 +124,7 @@
 ## 下一阶段最小目标
 
 1. **多轨自由增删与关键帧时间线曲线展开抽屉**：支持在时间线片段下方就地展开关键帧值曲线（贝塞尔手柄微调），以及从固定四轨演进到自由命名增删的多层视音频轨。
-2. **安装包分发与 `CreateCanvas.tsx` 持续拆解**：提供 `.dmg` 一键打包脚本，并继续将 `CreateCanvas.tsx` 剩余节点卡片/弹窗拆分为独立模块。
+2. **`CreateCanvas.tsx` 持续拆解与安装包体瘦身**：继续将 `CreateCanvas.tsx` 剩余节点卡片/弹窗拆分为独立模块，并评估精简 Electron 未用小语种 `.lproj` 与去重 `media-tools` 以收窄 DMG 体积。
 
 ---
 
