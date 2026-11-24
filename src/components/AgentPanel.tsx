@@ -344,7 +344,7 @@ export function AgentPanel({
           </button>
         )}
         <div
-          className="composer"
+          className={`composer ${isBusy ? 'ai-active' : ''}`}
           onDragOver={(e) => {
             if (e.dataTransfer?.types?.includes('Files')) {
               e.preventDefault();

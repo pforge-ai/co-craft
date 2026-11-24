@@ -28,6 +28,8 @@ export const defaults: Settings = {
   hasTranscriptionKey: false,
   theme: 'dark',
   glass: true,
+  glow: 'subtle',
+  motionEffects: true,
   allowShell: false,
   allowNetwork: false,
   mcpBridgeEnabled: false,
@@ -194,7 +196,15 @@ export class SettingsStore {
   save(input: Partial<Settings>) {
     const work = this.queue.then(async () => {
       const raw = await this.raw();
-      for (const key of ['theme', 'glass', 'allowShell', 'allowNetwork', 'mcpBridgeEnabled'] as const)
+      for (const key of [
+        'theme',
+        'glass',
+        'glow',
+        'motionEffects',
+        'allowShell',
+        'allowNetwork',
+        'mcpBridgeEnabled',
+      ] as const)
         if (input[key] !== undefined) raw[key] = input[key];
       const encrypt = async (s: string) => {
         if (!(await safeStorage.isAsyncEncryptionAvailable()))

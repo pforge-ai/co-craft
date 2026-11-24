@@ -115,6 +115,7 @@ interface CreateCanvasProps {
   leftOpen: boolean;
   rightOpen: boolean;
   rightAgentOpen?: boolean;
+  aiBusy?: boolean;
   floatingPrompt: string;
   onFloatingPromptChange: (val: string) => void;
   onFloatingSubmit: () => void;
@@ -167,6 +168,7 @@ export function CreateCanvas({
   previewOrigin,
   modalOpen = false,
   rightAgentOpen = false,
+  aiBusy = false,
   floatingPrompt,
   onFloatingPromptChange,
   onToggleRightAgent,
@@ -1809,6 +1811,15 @@ export function CreateCanvas({
     <div
       ref={viewportRef}
       className={`create-canvas-viewport ${activePanMode ? 'pan-mode' : 'select-mode'} ${wireDrag ? 'is-wiring' : ''}`}
+      onPointerMove={(e) => {
+        if (document.documentElement.dataset.glow === 'off') return;
+        const card = (e.target as HTMLElement | null)?.closest('.cc-node-card') as HTMLElement | null;
+        if (!card) return;
+        const rect = card.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        card.style.setProperty('--mx', `${((e.clientX - rect.left) / rect.width) * 100}%`);
+        card.style.setProperty('--my', `${((e.clientY - rect.top) / rect.height) * 100}%`);
+      }}
       onWheel={(e) => {
         if ((e.target as HTMLElement).closest('textarea, input, select, .cc-popover')) return;
         if (e.metaKey || e.ctrlKey) {
@@ -4044,7 +4055,7 @@ export function CreateCanvas({
 
           return (
             <div className="cc-bottom-dock" onPointerDown={(e) => e.stopPropagation()}>
-              <form className="cc-ai-omnibar" onSubmit={(e) => void handleOmnibarSubmit(e)}>
+              <form className={`cc-ai-omnibar ${aiBusy ? 'ai-active' : ''}`} onSubmit={(e) => void handleOmnibarSubmit(e)}>
                 <div className="cc-omni-top">
                   <div className="cc-omni-modes" role="tablist" aria-label="AI 画布创作模式">
                     {omniModes.map((m) => {

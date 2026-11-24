@@ -615,6 +615,8 @@ export function App() {
   useEffect(() => {
     if (!settings) return;
     document.documentElement.dataset.glass = settings.glass ? 'on' : 'off';
+    document.documentElement.dataset.glow = settings.glow || 'subtle';
+    document.documentElement.dataset.motion = settings.motionEffects === false ? 'off' : 'on';
     document.documentElement.dataset.theme =
       settings.theme === 'system'
         ? matchMedia('(prefers-color-scheme: dark)').matches
@@ -628,7 +630,7 @@ export function App() {
     };
     media.addEventListener('change', change);
     return () => media.removeEventListener('change', change);
-  }, [settings?.theme, settings?.glass]);
+  }, [settings?.theme, settings?.glass, settings?.glow, settings?.motionEffects]);
 
   useEffect(() => {
     if (env && !playing) setPreviewProject(env.project);
@@ -2108,7 +2110,12 @@ export function App() {
 
           <span className="titlebar-divider" />
 
-          <IconButton label="后台作业" active={jobsOpen} onClick={() => setJobsOpen((v) => !v)}>
+          <IconButton
+            label="后台作业"
+            active={jobsOpen}
+            className={runningJob ? 'jobs-active-glow' : ''}
+            onClick={() => setJobsOpen((v) => !v)}
+          >
             {runningJob ? <Spinner /> : <Clock3 size={14} />}
           </IconButton>
           <button className="export-button" onClick={() => setDialog('export')}>
@@ -2259,6 +2266,7 @@ export function App() {
                 leftOpen={showNav}
                 rightOpen={showRight}
                 rightAgentOpen={showRight && right === 'agent'}
+                aiBusy={Boolean(runningJob || task?.status === 'running' || connectingTask)}
                 floatingPrompt={prompt}
                 onFloatingPromptChange={setPrompt}
                 onFloatingSubmit={() => void send()}

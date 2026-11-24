@@ -1,0 +1,552 @@
+/* ============================================================================
+ * CoCraft A+B Optical Lighting System
+ * ----------------------------------------------------------------------------
+ * A (Base): Optical Darkroom · Silver Liquid Glass specular rims & ambient depth
+ * B (AI Active): Apple-Intelligence-style 1px prism flow ONLY on AI focus/active
+ * Controlled via :root[data-glow="off"|"subtle"|"vivid"] & [data-motion="on"|"off"]
+ * 100% GPU-composited (CSS custom properties, transform, opacity); zero video tint.
+ * ============================================================================ */
+
+@property --cc-prism-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes cc-prism-spin {
+  to {
+    --cc-prism-angle: 360deg;
+  }
+}
+
+@keyframes cc-prism-breathe {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(0.992);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.008);
+  }
+}
+
+@keyframes cc-wire-photon {
+  from {
+    stroke-dashoffset: 220;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes cc-micro-sheen {
+  0% {
+    transform: translateX(-140%) skewX(-22deg);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(240%) skewX(-22deg);
+    opacity: 0;
+  }
+}
+
+/* ── Optical Tokens: Darkroom Default (Subtle) ───────────────────────────── */
+:root {
+  --rim-top: rgba(255, 255, 255, 0.14);
+  --rim-edge: rgba(255, 255, 255, 0.08);
+  --rim-focus: rgba(176, 206, 246, 0.36);
+  --glass-depth-shadow: 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.24);
+  --specular-ring: rgba(235, 244, 255, 0.44);
+  --specular-wash: rgba(214, 232, 255, 0.045);
+  --node-select-glow: rgba(154, 192, 246, 0.22);
+  --canvas-ambient: rgba(146, 178, 228, 0.06);
+  --canvas-ambient-2: rgba(176, 152, 230, 0.032);
+  --stage-halo: rgba(142, 178, 232, 0.10);
+  --playhead-glow: rgba(182, 214, 255, 0.56);
+  --clip-select-rim: rgba(232, 242, 255, 0.46);
+  --clip-select-glow: rgba(150, 190, 246, 0.24);
+  --kf-glow: rgba(196, 222, 255, 0.72);
+  --prism-alpha: 0.64;
+  --prism-focus-alpha: 0.34;
+  --prism-glow: rgba(146, 178, 248, 0.15);
+  --prism-grad: conic-gradient(
+    from var(--cc-prism-angle),
+    rgba(138, 184, 255, 0.92),
+    rgba(184, 152, 252, 0.88),
+    rgba(242, 196, 134, 0.84),
+    rgba(126, 214, 248, 0.88),
+    rgba(138, 184, 255, 0.92)
+  );
+  --wire-pulse-opacity: 0.86;
+  --sheen-color: rgba(255, 255, 255, 0.19);
+}
+
+:root[data-glow='vivid'] {
+  --rim-top: rgba(255, 255, 255, 0.24);
+  --rim-edge: rgba(206, 226, 255, 0.15);
+  --rim-focus: rgba(168, 206, 255, 0.56);
+  --glass-depth-shadow: 0 18px 46px rgba(0, 0, 0, 0.50), 0 0 24px rgba(132, 172, 238, 0.08);
+  --specular-ring: rgba(236, 246, 255, 0.72);
+  --specular-wash: rgba(186, 216, 255, 0.085);
+  --node-select-glow: rgba(154, 196, 255, 0.38);
+  --canvas-ambient: rgba(142, 180, 242, 0.11);
+  --canvas-ambient-2: rgba(182, 150, 244, 0.06);
+  --stage-halo: rgba(138, 178, 244, 0.19);
+  --playhead-glow: rgba(190, 222, 255, 0.86);
+  --clip-select-rim: rgba(240, 248, 255, 0.68);
+  --clip-select-glow: rgba(152, 196, 255, 0.42);
+  --kf-glow: rgba(214, 234, 255, 0.94);
+  --prism-alpha: 0.94;
+  --prism-focus-alpha: 0.58;
+  --prism-glow: rgba(152, 178, 255, 0.28);
+  --wire-pulse-opacity: 1;
+  --sheen-color: rgba(255, 255, 255, 0.30);
+}
+
+/* ── Optical Tokens: Light Theme (Alabaster Specular) ────────────────────── */
+:root[data-theme='light'] {
+  --rim-top: rgba(255, 255, 255, 0.94);
+  --rim-edge: rgba(255, 255, 255, 0.72);
+  --rim-focus: rgba(74, 122, 196, 0.40);
+  --glass-depth-shadow: 0 14px 36px rgba(20, 34, 54, 0.13), 0 2px 6px rgba(20, 34, 54, 0.06);
+  --specular-ring: rgba(76, 124, 198, 0.46);
+  --specular-wash: rgba(88, 134, 208, 0.05);
+  --node-select-glow: rgba(74, 122, 196, 0.22);
+  --canvas-ambient: rgba(96, 142, 212, 0.065);
+  --canvas-ambient-2: rgba(146, 120, 212, 0.035);
+  --stage-halo: rgba(78, 122, 192, 0.11);
+  --playhead-glow: rgba(66, 114, 190, 0.46);
+  --clip-select-rim: rgba(255, 255, 255, 0.88);
+  --clip-select-glow: rgba(74, 122, 196, 0.24);
+  --kf-glow: rgba(70, 122, 204, 0.65);
+  --prism-alpha: 0.62;
+  --prism-focus-alpha: 0.34;
+  --prism-glow: rgba(86, 132, 216, 0.15);
+  --prism-grad: conic-gradient(
+    from var(--cc-prism-angle),
+    rgba(68, 126, 232, 0.9),
+    rgba(136, 98, 224, 0.85),
+    rgba(218, 142, 66, 0.82),
+    rgba(52, 162, 212, 0.86),
+    rgba(68, 126, 232, 0.9)
+  );
+  --wire-pulse-opacity: 0.84;
+  --sheen-color: rgba(255, 255, 255, 0.55);
+}
+
+:root[data-theme='light'][data-glow='vivid'] {
+  --rim-top: rgba(255, 255, 255, 1);
+  --rim-focus: rgba(66, 118, 202, 0.58);
+  --specular-ring: rgba(68, 120, 204, 0.68);
+  --specular-wash: rgba(84, 134, 216, 0.09);
+  --node-select-glow: rgba(72, 122, 202, 0.34);
+  --canvas-ambient: rgba(94, 144, 220, 0.11);
+  --canvas-ambient-2: rgba(146, 118, 224, 0.06);
+  --stage-halo: rgba(74, 122, 202, 0.20);
+  --prism-alpha: 0.88;
+  --prism-focus-alpha: 0.54;
+  --prism-glow: rgba(88, 132, 224, 0.24);
+  --sheen-color: rgba(255, 255, 255, 0.76);
+}
+
+/* ── Settings Inline Segmented Control (Glow Intensity) ──────────────────── */
+.segmented-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  flex-shrink: 0;
+}
+.segmented-inline button {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: transparent;
+}
+.segmented-inline button:hover {
+  color: var(--text);
+  background: transparent;
+}
+.segmented-inline button.active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: inset 0 1px 0 var(--rim-top), 0 1px 3px rgba(0, 0, 0, 0.22);
+}
+
+/* ============================================================================
+ * ZONE 3: Liquid Glass Rim Light (Titlebar, Modals, Popovers, Floating Docks)
+ * ============================================================================ */
+:root:not([data-glow='off']) .titlebar {
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    inset 0 -1px 0 var(--line-soft);
+}
+
+:root:not([data-glow='off']) .modal,
+:root:not([data-glow='off']) .cc-multi-bar,
+:root:not([data-glow='off']) .cc-utility-pill,
+:root:not([data-glow='off']) .cc-popover,
+:root:not([data-glow='off']) .jobs-popover,
+:root:not([data-glow='off']) .composer-popover,
+:root:not([data-glow='off']) .model-picker-popover,
+:root:not([data-glow='off']) .layout-preset-popover,
+:root:not([data-glow='off']) .agent-session-popover,
+:root:not([data-glow='off']) .toast {
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    inset 0 0 0 0.5px var(--rim-edge),
+    var(--glass-depth-shadow);
+}
+
+:root:not([data-glow='off']) .cc-fab-btn {
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    0 8px 24px rgba(0, 0, 0, 0.34);
+}
+:root:not([data-glow='off']) .cc-fab-btn:hover {
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    0 0 0 1px var(--rim-focus),
+    0 10px 28px rgba(0, 0, 0, 0.42),
+    0 0 18px var(--node-select-glow);
+}
+
+/* ============================================================================
+ * ZONE 1: AI Omnibar, Agent Composer & Active Jobs Pill (A Base + B Prism Flow)
+ * ============================================================================ */
+:root:not([data-glow='off']) .cc-ai-omnibar,
+:root:not([data-glow='off']) .composer {
+  position: relative;
+  isolation: isolate;
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    inset 0 0 0 0.5px var(--rim-edge),
+    var(--glass-depth-shadow);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.22s ease;
+}
+
+/* 1px Masked Prism Ring (does not clip child popovers!) */
+:root:not([data-glow='off']) .cc-ai-omnibar::before,
+:root:not([data-glow='off']) .composer::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--prism-grad);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  z-index: 2;
+}
+
+/* Soft ambient halo strictly behind the box */
+:root:not([data-glow='off']) .cc-ai-omnibar::after,
+:root:not([data-glow='off']) .composer::after {
+  content: '';
+  position: absolute;
+  inset: -4px -2px -6px;
+  border-radius: inherit;
+  background: radial-gradient(ellipse 75% 58% at 50% 100%, var(--prism-glow), transparent 72%);
+  filter: blur(10px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.28s ease;
+  z-index: -1;
+}
+
+/* Focused state: calm optical highlight + delicate prism hint */
+:root:not([data-glow='off']) .cc-ai-omnibar:focus-within,
+:root:not([data-glow='off']) .composer:focus-within {
+  border-color: var(--rim-focus);
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    0 0 0 1px color-mix(in srgb, var(--rim-focus) 50%, transparent),
+    var(--glass-depth-shadow);
+}
+:root:not([data-glow='off']) .cc-ai-omnibar:focus-within::before,
+:root:not([data-glow='off']) .composer:focus-within::before {
+  opacity: var(--prism-focus-alpha);
+  animation: cc-prism-spin 7.5s linear infinite;
+}
+:root:not([data-glow='off']) .cc-ai-omnibar:focus-within::after,
+:root:not([data-glow='off']) .composer:focus-within::after {
+  opacity: 0.65;
+}
+
+/* AI Active state (Agent running / Cloud generation running): full B Prism Flow */
+:root:not([data-glow='off']) .cc-ai-omnibar.ai-active::before,
+:root:not([data-glow='off']) .composer.ai-active::before {
+  opacity: var(--prism-alpha);
+  animation: cc-prism-spin 3.8s linear infinite;
+}
+:root:not([data-glow='off']) .cc-ai-omnibar.ai-active::after,
+:root:not([data-glow='off']) .composer.ai-active::after {
+  opacity: 1;
+  animation: cc-prism-breathe 2.6s ease-in-out infinite;
+}
+
+/* Active Jobs Button in Titlebar */
+:root:not([data-glow='off']) .icon-button.jobs-active-glow {
+  position: relative;
+  color: var(--text);
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    0 0 0 1px var(--rim-focus),
+    0 0 14px var(--prism-glow);
+}
+:root:not([data-glow='off']) .icon-button.jobs-active-glow::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--prism-grad);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: var(--prism-alpha);
+  animation: cc-prism-spin 3.2s linear infinite;
+}
+
+/* ============================================================================
+ * ZONE 2: Create Canvas — Darkroom Ambient, Specular Cards & Wire Photons
+ * ============================================================================ */
+:root:not([data-glow='off']) .create-canvas-viewport {
+  background-image:
+    radial-gradient(ellipse 68% 46% at 50% 14%, var(--canvas-ambient), transparent 72%),
+    radial-gradient(ellipse 46% 38% at 78% 82%, var(--canvas-ambient-2), transparent 74%),
+    radial-gradient(circle, var(--dot-grid) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    20px 20px;
+}
+
+:root:not([data-glow='off']) .cc-node-card {
+  position: relative;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--rim-top) 75%, transparent);
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.2s ease;
+}
+
+/* Cursor-tracking 1px specular border ring on node cards (zero React re-renders) */
+:root:not([data-glow='off']) .cc-node-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 11px;
+  padding: 1px;
+  background: radial-gradient(
+    200px circle at var(--mx, 50%) var(--my, 15%),
+    var(--specular-ring),
+    transparent 68%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  z-index: 3;
+}
+
+/* Subtle interior specular wash under cursor */
+:root:not([data-glow='off']) .cc-node-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    180px circle at var(--mx, 50%) var(--my, 15%),
+    var(--specular-wash),
+    transparent 70%
+  );
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: 2;
+}
+
+:root:not([data-glow='off']) .cc-node-card:hover::after,
+:root:not([data-glow='off']) .cc-node-card:hover::before {
+  opacity: 1;
+}
+
+:root:not([data-glow='off']) .cc-node.selected .cc-node-card {
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    0 0 0 1px var(--rim-focus),
+    0 10px 28px rgba(0, 0, 0, 0.34),
+    0 0 22px var(--node-select-glow);
+}
+
+:root:not([data-glow='off']) .cc-node.wire-target .cc-node-card {
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    0 0 0 1.5px var(--rim-focus),
+    0 0 26px var(--prism-glow);
+}
+
+/* SVG Bezier Wire Photon Pulse */
+.cc-wire-pulse {
+  fill: none;
+  stroke: url(#cc-wire-photon-grad);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 28 192;
+  stroke-dashoffset: 220;
+  opacity: 0;
+  pointer-events: none;
+}
+
+:root:not([data-glow='off']) .cc-wire-group.highlighted .cc-wire-pulse,
+:root:not([data-glow='off']) .cc-wire-pulse.dragging {
+  opacity: var(--wire-pulse-opacity);
+  filter: drop-shadow(0 0 4px rgba(164, 206, 255, 0.72));
+  animation: cc-wire-photon 1.9s linear infinite;
+}
+
+/* ============================================================================
+ * ZONE 4: Edit Mode — Darkroom Stage Bezel, Luminous Playhead & Selected Clips
+ * (Strictly OUTSIDE preview iframe so video color grading remains 100% pure!)
+ * ============================================================================ */
+:root:not([data-glow='off']) .viewer-area {
+  background-image: radial-gradient(
+    ellipse 64% 58% at 50% 48%,
+    var(--stage-halo),
+    transparent 74%
+  );
+}
+
+:root:not([data-glow='off']) .preview-canvas {
+  box-shadow:
+    0 0 0 1px var(--rim-edge),
+    0 18px 54px rgba(0, 0, 0, 0.44),
+    0 0 54px var(--stage-halo);
+}
+
+:root:not([data-glow='off']) .playhead {
+  box-shadow: 0 0 9px var(--playhead-glow);
+}
+
+:root:not([data-glow='off']) .playhead > span {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    0 0 10px var(--playhead-glow);
+}
+
+:root:not([data-glow='off']) .timeline-clip.selected {
+  box-shadow:
+    inset 0 1px 0 var(--clip-select-rim),
+    0 0 0 1px var(--rim-focus),
+    0 0 16px var(--clip-select-glow);
+}
+
+:root:not([data-glow='off']) .clip-kf-diamond:hover,
+:root:not([data-glow='off']) .clip-kf-diamond.selected {
+  box-shadow: 0 0 8px var(--kf-glow);
+}
+
+/* ============================================================================
+ * ZONE 5: Micro-Sheen Completion Sweep (Toasts & Primary Actions)
+ * ============================================================================ */
+:root:not([data-glow='off']) .toast:not(.error) {
+  overflow: hidden;
+}
+:root:not([data-glow='off']) .toast:not(.error)::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 48%;
+  background: linear-gradient(90deg, transparent, var(--sheen-color), transparent);
+  pointer-events: none;
+  animation: cc-micro-sheen 0.72s cubic-bezier(0.22, 1, 0.36, 1) 1 forwards;
+}
+
+:root:not([data-glow='off']) .export-button,
+:root:not([data-glow='off']) .button.primary {
+  position: relative;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 var(--rim-top);
+}
+:root:not([data-glow='off']) .export-button::after,
+:root:not([data-glow='off']) .button.primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 52%;
+  background: linear-gradient(90deg, transparent, var(--sheen-color), transparent);
+  transform: translateX(-160%) skewX(-22deg);
+  pointer-events: none;
+  opacity: 0;
+}
+:root:not([data-glow='off']) .export-button:hover:not(:disabled)::after,
+:root:not([data-glow='off']) .button.primary:hover:not(:disabled)::after {
+  animation: cc-micro-sheen 0.62s cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+/* ============================================================================
+ * Motion Effects Off & OS prefers-reduced-motion Guard
+ * Keeps static liquid-glass rims & specular borders, stops all animations!
+ * ============================================================================ */
+:root[data-motion='off'] .cc-ai-omnibar::before,
+:root[data-motion='off'] .composer::before,
+:root[data-motion='off'] .cc-ai-omnibar::after,
+:root[data-motion='off'] .composer::after,
+:root[data-motion='off'] .icon-button.jobs-active-glow::before,
+:root[data-motion='off'] .toast::after,
+:root[data-motion='off'] .export-button::after,
+:root[data-motion='off'] .button.primary::after {
+  animation: none !important;
+}
+
+:root[data-motion='off'] .toast::after,
+:root[data-motion='off'] .export-button::after,
+:root[data-motion='off'] .button.primary::after,
+:root[data-motion='off'] .cc-wire-pulse,
+:root[data-glow='off'] .cc-wire-pulse {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-ai-omnibar::before,
+  .composer::before,
+  .cc-ai-omnibar::after,
+  .composer::after,
+  .icon-button.jobs-active-glow::before,
+  .toast::after,
+  .export-button::after,
+  .button.primary::after {
+    animation: none !important;
+  }
+  .cc-wire-pulse {
+    display: none !important;
+  }
+}

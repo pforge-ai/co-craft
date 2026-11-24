@@ -571,6 +571,8 @@ export interface Settings {
   transcriptionKey?: string;
   hasTranscriptionKey: boolean;
   theme: 'dark' | 'light' | 'system';
+  glow?: 'off' | 'subtle' | 'vivid';
+  motionEffects?: boolean;
   allowShell: boolean;
   allowNetwork: boolean;
   mcpBridgeEnabled?: boolean;

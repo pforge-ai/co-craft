@@ -104,6 +104,13 @@ export function CanvasWiresSvg({
 }) {
   return (
     <svg className="cc-wires-svg" width="4000" height="3000">
+      <defs>
+        <linearGradient id="cc-wire-photon-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#90b8f8" stopOpacity="0.95" />
+          <stop offset="50%" stopColor="#e8efff" stopOpacity="1" />
+          <stop offset="100%" stopColor="#c4a6ff" stopOpacity="0.95" />
+        </linearGradient>
+      </defs>
       {wires.map((w) => {
         const d = bezierPathFor(w.x1, w.y1, w.x2, w.y2, w.s1, w.s2);
         const highlighted =
@@ -114,24 +121,28 @@ export function CanvasWiresSvg({
               d={d}
               className={`cc-wire-path ${w.isLineage ? 'lineage' : ''} ${w.active ? 'active' : ''} ${highlighted ? 'highlighted' : ''}`}
             />
+            {highlighted && <path d={d} className="cc-wire-pulse" />}
             <circle cx={w.x1} cy={w.y1} r={3} className="cc-wire-dot" />
             <circle cx={w.x2} cy={w.y2} r={3} className="cc-wire-dot" />
           </g>
         );
       })}
-      {wireDrag && (
-        <path
-          d={bezierPathFor(
-            wireDrag.x1,
-            wireDrag.y1,
-            wireDrag.x2,
-            wireDrag.y2,
-            wireDrag.side,
-            wireDrag.x2 >= wireDrag.x1 ? 'left' : 'right',
-          )}
-          className="cc-wire-path dragging"
-        />
-      )}
+      {wireDrag && (() => {
+        const dragPath = bezierPathFor(
+          wireDrag.x1,
+          wireDrag.y1,
+          wireDrag.x2,
+          wireDrag.y2,
+          wireDrag.side,
+          wireDrag.x2 >= wireDrag.x1 ? 'left' : 'right',
+        );
+        return (
+          <g className="cc-wire-group highlighted">
+            <path d={dragPath} className="cc-wire-path dragging" />
+            <path d={dragPath} className="cc-wire-pulse dragging" />
+          </g>
+        );
+      })()}
     </svg>
   );
 }

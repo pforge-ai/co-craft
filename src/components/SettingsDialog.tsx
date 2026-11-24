@@ -118,6 +118,19 @@ export function SettingsDialog({
       .then((res) => setMcpInfo(res))
       .catch(() => {});
   }, [settings.mcpBridgeEnabled]);
+
+  // Live-preview appearance toggles (glass / glow / motion) while editing; restore saved values if closed without saving
+  useEffect(() => {
+    const el = document.documentElement;
+    el.dataset.glass = draft.glass ? 'on' : 'off';
+    el.dataset.glow = draft.glow || 'subtle';
+    el.dataset.motion = draft.motionEffects === false ? 'off' : 'on';
+    return () => {
+      el.dataset.glass = settings.glass ? 'on' : 'off';
+      el.dataset.glow = settings.glow || 'subtle';
+      el.dataset.motion = settings.motionEffects === false ? 'off' : 'on';
+    };
+  }, [draft.glass, draft.glow, draft.motionEffects, settings.glass, settings.glow, settings.motionEffects]);
   const provider = draft.providers.find((p) => p.id === providerId),
     model = draft.models.find((m) => m.id === modelId);
   const field = <K extends keyof Settings>(key: K, value: Settings[K]) =>
@@ -493,6 +506,45 @@ export function SettingsDialog({
                     type="checkbox"
                     checked={draft.glass}
                     onChange={(e) => field('glass', e.target.checked)}
+                  />
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>界面光效</b>
+                    <p>暗房银白液态折射边与 AI 活跃态棱镜微光（预览视频画框内绝不染色）。</p>
+                  </div>
+                  <div className="segmented-inline" role="group" aria-label="界面光效强度">
+                    {(
+                      [
+                        ['off', '关闭'],
+                        ['subtle', '细腻'],
+                        ['vivid', '灵动'],
+                      ] as const
+                    ).map(([val, text]) => (
+                      <button
+                        key={val}
+                        type="button"
+                        aria-pressed={(draft.glow || 'subtle') === val}
+                        className={(draft.glow || 'subtle') === val ? 'active' : ''}
+                        onClick={() => field('glow', val)}
+                      >
+                        {text}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>光效动画</b>
+                    <p>控制 AI 旋转流光边、画布连线光脉冲与完成扫光动效；关闭后保留静态光学折射。</p>
+                  </div>
+                  <input
+                    className="switch"
+                    aria-label="光效动画"
+                    type="checkbox"
+                    disabled={(draft.glow || 'subtle') === 'off'}
+                    checked={draft.motionEffects !== false}
+                    onChange={(e) => field('motionEffects', e.target.checked)}
                   />
                 </div>
                 <div className="setting-row">
