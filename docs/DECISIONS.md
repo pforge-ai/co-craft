@@ -1,6 +1,6 @@
 # CoCraft 决策记录
 
-更新日期：2026 年 11 月 22 日（完成专业 NLE 关键帧与音画分离、PBR 3D + RoughJS 渲染引擎升级及内置本地受控 MCP 服务端落地与实机短片验收）。
+更新日期：2026 年 11 月 24 日（完成自有插件式多提供商驱动架构 `electron/providers/`、阿里百炼新代含 HappyHorse 快乐马/Wan 3.0/Wan 2.7/Qwen-Image 3.0/Z-Image、火山方舟 Seedream 5.5/Seedance 2.5 与 MiniMax 全模态直连，以及「素材工作室」B 方案多图参考与首尾帧升级）。
 
 “已对齐”记录用户明确表达或拍板的方向；“当前建议”保留技术评估方案与待验证条件；“已替代”防止后续沿用旧前提。能力是否已经实现，以 [迭代计划](ROADMAP.md) 的验收记录为准。
 
@@ -31,6 +31,7 @@
 | 11 月 22 日 | **Three.js PBR `RoomEnvironment` 环境光、实时 3D 舞台交互运镜与 `roughjs` 确定性手绘引擎（Milestone 2）** | `ThreeStage.tsx` 全量接入 `PMREMGenerator + RoomEnvironment` IBL 环境反射及 `studio / dramatic / soft` 三档布光预设（卸载严格释放 GPU 纹理防 WebGL 泄漏）；`StageOverlay.tsx` 打通 3D 实时 `live-transform` 拖拽旋转并自动写入已有关键帧；引入 `roughjs` 与固定 `seed` 确定性 SVG 渲染原语 `RoughPrimitives`（同步开放 `cocraft/rough` 与 `roughjs` 给用户/Agent TSX 组件），升级 `tinycharts-state` 并新增 `whiteboard-sketch` 预设 |
 | 11 月 22 日 | **内置 Opt-in 本地受控 MCP 服务端（Milestone 3）** | 在设置页提供默认关闭、用户按需启用的本地 MCP 桥接服务（`electron/mcp-bridge.ts` + 独立零依赖 stdio 服务端 `scripts/cocraft-mcp.mjs`）：仅监听 `127.0.0.1` 随机端口、32 字节随机 Bearer Token 以 `0600` 权限落盘 `<userData>/mcp-bridge.json`（退出自动清理）、`timingSafeEqual` 鉴权、零 API 密钥暴露，全部编辑经统一 `ProjectStore` 版本锁与实时 UI 推送；外部 MCP 客户端可直接协同创作、预览帧、编译 TSX、调用已配置模型并导出 MP4 |
 | 11 月 22 日 | **「一核两口」统一工具服务层（`CoCraftToolService`）与内置影院级音效重建** | 消除内置剪辑 Agent（`electron/agents.ts`）与外部 MCP（`electron/main.ts`）的能力漂移，统一收拢至 `electron/tool-service.ts` 共享 19 项核心工具实现：内置 Agent 走进程内 IPC 保留 `run.scope` 严格隔离、停止即撤销提交资格与 `sandbox-exec` 封死本机回环的安全边界（同步补齐 `apply_keyframe_preset` / `detach_audio` / `export_sequence`），外部 MCP 作为轻薄适配器自动对齐 `search_assets` / `pull_vault_item` / `inspect_media`（25 项工具）；同步重写 `scripts/create-studio-audio.mjs` 彻底淘汰纯正弦占位音，升级为粉红噪声带通扫频、毛毡电钢/马林巴与 Freeverb 立体声混响 |
+| 11 月 24 日 | **自有插件式多提供商驱动层（不接 fal / 不引入重封装 SDK）× 声明式模型能力 × B 方案多图/首尾帧** | 保留 CoCraft 作业持久化、`remote.id` 崩溃续传、SSRF 防护与流式下载底座，将厂商协议从 `electron/generation.ts` 拆分为纯 Node 独立驱动 `electron/providers/{dashscope,ark,minimax,openai}.ts`；新增纯函数 `modelInputCapabilities(model)` 统一驱动前端表单与后端校验；官方直连升级 **阿里百炼**（Qwen-Image 3.0/2.1/Edit、Wan 2.7 Image、Z-Image Turbo、Wan 3.0、Wan 2.7、**HappyHorse 1.1/1.0 快乐马**、百炼托管可灵 v3）、**火山方舟**（Seedream 5.5/5.0/4.5 含多图与透明底 PNG、Seedance 2.5/2.0/1.5）与新增 **MiniMax**（国内/国际双区、H3 v2、Hailuo 2.3/02 v1 两步取回、H3-Image、image-01、Speech 2.8/2.6、M2.5/M2.7）；「素材工作室」、内置 Agent 与 MCP 工具同步支持多图参考（`referenceAssetIds`）、视频首尾帧（`lastFrameAssetId`）、清晰度/画幅比例、原生音画同步与透明底 PNG |
 
 ## 已替代的前提
 

@@ -512,6 +512,8 @@ export interface Job {
     providerId: string;
     prompt: string;
     status?: string;
+    apiVersion?: string;
+    pollPath?: string;
   };
 }
 
@@ -528,12 +530,15 @@ export type ModelAdapter =
   | 'dashscope-video'
   | 'dashscope-speech'
   | 'dashscope-transcription'
+  | 'minimax-image'
+  | 'minimax-video'
+  | 'minimax-speech'
   | 'system-speech';
 
 export interface ProviderConnection {
   id: string;
   name: string;
-  protocol: 'openai' | 'anthropic' | 'google' | 'ark' | 'dashscope' | 'system';
+  protocol: 'openai' | 'anthropic' | 'google' | 'ark' | 'dashscope' | 'minimax' | 'system';
   baseUrl: string;
   apiKey?: string;
   hasApiKey: boolean;

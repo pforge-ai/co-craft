@@ -27,6 +27,7 @@ import {
   suggestedModelsFor,
   inferModelFromId,
   DASHSCOPE_VOICES,
+  MINIMAX_VOICES,
   type CuratedModelOption,
 } from '../core/models';
 import { uid } from '../core/project';
@@ -604,9 +605,10 @@ export function SettingsDialog({
                       >
                         <option value="openai">OpenAI 兼容</option>
                         <option value="dashscope">阿里百炼 / 千问 (DashScope)</option>
+                        <option value="ark">火山方舟 (Seedream / Seedance)</option>
+                        <option value="minimax">MiniMax 开放平台 (海螺 / H3 / Speech)</option>
                         <option value="anthropic">Anthropic</option>
                         <option value="google">Google Gemini</option>
-                        <option value="ark">火山方舟</option>
                       </select>
                     </label>
                     <label className="field full">
@@ -827,7 +829,7 @@ export function SettingsDialog({
                             });
                             setModelPickerOpen(true);
                           }}
-                          placeholder="点击选择模型，或手动输入模型 ID（如 qwen-image-2.0-pro）"
+                          placeholder="点击选择模型，或手动输入 ID（如 qwen-image-3.0-pro / happyhorse-1.1-t2v / doubao-seedance-2-5 / MiniMax-H3）"
                         />
                         <button
                           type="button"
@@ -919,7 +921,7 @@ export function SettingsDialog({
 
                       {curatedForAdapter.length > 0 && (
                         <div className="model-quick-chips" aria-label="快捷选用常用模型">
-                          {curatedForAdapter.slice(0, 6).map((item) => (
+                          {curatedForAdapter.slice(0, 8).map((item) => (
                             <button
                               key={item.modelId}
                               type="button"
@@ -982,7 +984,9 @@ export function SettingsDialog({
                   <p className="help-copy">
                     能力以服务商实际支持为准。对话兼容接口不代表同时支持图片、音频或视频生成。
                   </p>
-                  {(model.adapter === 'ark-video' || model.adapter === 'dashscope-video') && (
+                  {(model.adapter === 'ark-video' ||
+                    model.adapter === 'dashscope-video' ||
+                    model.adapter === 'minimax-video') && (
                     <div className="settings-fields">
                       <label className="field">
                         <span>默认分辨率</span>
@@ -995,42 +999,48 @@ export function SettingsDialog({
                           <option value="">模型默认</option>
                           {(model.adapter === 'dashscope-video'
                             ? ['480P', '720P', '1080P']
-                            : ['480p', '720p', '1080p']
+                            : model.adapter === 'minimax-video'
+                              ? ['720P', '768P', '1080P', '2K']
+                              : ['480p', '720p', '1080p']
                           ).map((v) => (
                             <option key={v}>{v}</option>
                           ))}
                         </select>
                       </label>
-                      {model.adapter === 'ark-video' && (
-                        <label className="field">
-                          <span>默认宽高比</span>
-                          <select
-                            value={String(model.parameters.ratio || '')}
-                            onChange={(e) =>
-                              updateModel({ parameters: { ...model.parameters, ratio: e.target.value } })
-                            }
-                          >
-                            <option value="">模型默认</option>
-                            {['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].map((v) => (
-                              <option key={v}>{v}</option>
-                            ))}
-                          </select>
-                        </label>
-                      )}
+                      <label className="field">
+                        <span>默认宽高比</span>
+                        <select
+                          value={String(model.parameters.ratio || model.parameters.aspect_ratio || '')}
+                          onChange={(e) => {
+                            const key =
+                              model.adapter === 'dashscope-video' && /^(wan3\.0|kling\/)/i.test(model.modelId)
+                                ? 'aspect_ratio'
+                                : 'ratio';
+                            updateModel({ parameters: { ...model.parameters, [key]: e.target.value } });
+                          }}
+                        >
+                          <option value="">模型默认</option>
+                          {['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'].map((v) => (
+                            <option key={v}>{v}</option>
+                          ))}
+                        </select>
+                      </label>
                     </div>
                   )}
                   {(model.capabilities.includes('image') || model.capabilities.includes('video')) && (
                     <div className="settings-fields">
-                      {model.adapter !== 'ark-video' && (
+                      {model.adapter !== 'ark-video' && model.adapter !== 'minimax-video' && (
                         <label className="field">
                           <span>默认画面尺寸</span>
                           <input
                             placeholder={
                               model.adapter === 'dashscope-image'
-                                ? '例如 1280*720'
-                                : model.capabilities.includes('image')
-                                  ? '例如 1024x1024'
-                                  : '例如 1280x720'
+                                ? '例如 1280*720 或 2K'
+                                : model.adapter === 'ark-image'
+                                  ? '例如 2K 或 2048x2048'
+                                  : model.capabilities.includes('image')
+                                    ? '例如 1024x1024'
+                                    : '例如 1280x720'
                             }
                             value={String(model.parameters.size || '')}
                             onChange={(e) =>
@@ -1047,7 +1057,9 @@ export function SettingsDialog({
                             min={1}
                             value={String(
                               model.parameters[
-                                model.adapter === 'ark-video' || model.adapter === 'dashscope-video'
+                                model.adapter === 'ark-video' ||
+                                model.adapter === 'dashscope-video' ||
+                                model.adapter === 'minimax-video'
                                   ? 'duration'
                                   : 'seconds'
                               ] || '',
@@ -1056,7 +1068,9 @@ export function SettingsDialog({
                               updateModel({
                                 parameters: {
                                   ...model.parameters,
-                                  [model.adapter === 'ark-video' || model.adapter === 'dashscope-video'
+                                  [model.adapter === 'ark-video' ||
+                                  model.adapter === 'dashscope-video' ||
+                                  model.adapter === 'minimax-video'
                                     ? 'duration'
                                     : 'seconds']: Number(e.target.value) || '',
                                 },
@@ -1076,7 +1090,9 @@ export function SettingsDialog({
                         placeholder={
                           model.adapter === 'dashscope-speech'
                             ? `例如 ${DASHSCOPE_VOICES.join(' / ')}`
-                            : '例如 alloy，或提供商的音色 ID'
+                            : model.adapter === 'minimax-speech'
+                              ? `例如 ${MINIMAX_VOICES.slice(0, 4).join(' / ')}`
+                              : '例如 alloy，或提供商的音色 ID'
                         }
                         onChange={(e) =>
                           updateModel({ parameters: { ...model.parameters, voice: e.target.value } })

@@ -12,12 +12,21 @@ import { binary, importMedia, run } from './media';
 import { ProjectStore, atomicJSON } from './store';
 import type { SettingsStore } from './settings';
 import type { JobService } from './jobs';
+import {
+  detectAudioExtension,
+  getProviderDriver,
+  type EncodedReferenceImage,
+  type ProviderHttp,
+  type ProviderRequestOptions,
+} from './providers';
 import { uid } from '../src/core/project';
 import {
   modelUses,
   selectedModel,
   normalizeProviderUrl as providerBase,
   dashscopeEndpoints,
+  minimaxEndpoints,
+  modelInputCapabilities,
 } from '../src/core/models';
 import type {
   Asset,
@@ -38,13 +47,20 @@ export interface GenerationRequest {
   modelId?: string;
   assetId?: string;
   referenceAssetId?: string;
+  referenceAssetIds?: string[];
+  lastFrameAssetId?: string;
   size?: string;
+  resolution?: string;
+  aspectRatio?: string;
   seconds?: number;
+  generateAudio?: boolean;
+  background?: 'auto' | 'opaque' | 'transparent';
   voice?: string;
   language?: string;
   parameters?: Record<string, string | number | boolean>;
   target?: GenerationTarget;
 }
+
 interface GenerationSnapshot {
   request: GenerationRequest;
   model: ModelDefinition;
@@ -52,11 +68,14 @@ interface GenerationSnapshot {
   publish: boolean;
   assets: Pick<Asset, 'id' | 'kind' | 'path' | 'name' | 'duration'>[];
 }
+
 type GenerationJob = Job & { generation: GenerationSnapshot };
 type Resolved = { model: ModelDefinition; provider: ProviderConnection };
+
 const label = (use: ModelUse) => modelUses.find((x) => x.id === use)?.name || use;
 const parameters = (p: Record<string, unknown>, keys: string[]) =>
   Object.fromEntries(keys.filter((k) => p[k] !== undefined && p[k] !== '').map((k) => [k, p[k]]));
+
 const parameterKeys: Record<ModelAdapter, string[]> = {
   chat: ['temperature', 'maxTokens', 'contextWindow'],
   'ark-image': ['size', 'seed', 'watermark', 'guidance_scale', 'output_format', 'background'],
@@ -69,16 +88,31 @@ const parameterKeys: Record<ModelAdapter, string[]> = {
     'output_compression',
     'moderation',
   ],
-  'dashscope-image': ['size', 'seed', 'watermark', 'prompt_extend', 'negative_prompt'],
+  'dashscope-image': ['size', 'seed', 'watermark', 'prompt_extend', 'negative_prompt', 'thinking_mode'],
+  'minimax-image': ['size', 'aspect_ratio', 'seed', 'prompt_optimizer'],
   'ark-video': ['resolution', 'ratio', 'duration', 'seed', 'watermark', 'generate_audio', 'camera_fixed'],
   'openai-video': ['size', 'seconds'],
-  'dashscope-video': ['resolution', 'size', 'duration', 'seed', 'watermark', 'prompt_extend', 'negative_prompt', 'audio'],
+  'dashscope-video': [
+    'resolution',
+    'ratio',
+    'aspect_ratio',
+    'size',
+    'duration',
+    'seed',
+    'watermark',
+    'prompt_extend',
+    'negative_prompt',
+    'audio',
+  ],
+  'minimax-video': ['resolution', 'ratio', 'duration', 'generate_audio', 'prompt_optimizer', 'fast_pretreatment'],
   'openai-speech': ['voice', 'speed', 'instructions'],
   'dashscope-speech': ['voice', 'language_type'],
+  'minimax-speech': ['voice', 'speed', 'vol', 'pitch', 'emotion'],
   'system-speech': ['voice', 'rate'],
   'openai-transcription': ['language', 'response_format', 'temperature'],
   'dashscope-transcription': ['language', 'temperature'],
 };
+
 export function modelParameters(adapter: ModelAdapter, raw?: Record<string, string | number | boolean>) {
   return Object.fromEntries(
     Object.entries(raw || {}).filter(
@@ -87,30 +121,41 @@ export function modelParameters(adapter: ModelAdapter, raw?: Record<string, stri
     ),
   );
 }
-const dashscopeSize = (s?: unknown) =>
-  typeof s === 'string' && /^\d+x\d+$/i.test(s.trim()) ? s.trim().replace(/x/i, '*') : s ? String(s) : undefined;
+
 // Pi's Anthropic SDK adds /v1 itself; the Google SDK treats the configured base as already versioned.
 export function chatEndpoint(protocol: string, baseUrl: string, modelId: string) {
   let base = providerBase(baseUrl);
   if (protocol === 'anthropic') base = base.replace(/\/v1$/, '');
   if (protocol === 'google' && new URL(base).pathname === '/') base += '/v1beta';
   if (protocol === 'dashscope') base = dashscopeEndpoints(base).compatBase;
+  if (protocol === 'minimax') base = minimaxEndpoints(base).v1Base;
   return { baseUrl: base, modelId: protocol === 'google' ? modelId.replace(/^models\//, '') : modelId };
 }
-function endpoint(provider: ProviderConnection, path: string, useNative = false) {
+
+function endpoint(
+  provider: ProviderConnection,
+  path: string,
+  baseKind: ProviderRequestOptions['baseKind'] = 'default',
+) {
   if (provider.protocol === 'dashscope') {
     const { nativeBase, compatBase } = dashscopeEndpoints(provider.baseUrl);
-    return (useNative ? nativeBase : compatBase) + '/' + path;
+    return (baseKind === 'native' ? nativeBase : compatBase) + '/' + path;
+  }
+  if (provider.protocol === 'minimax') {
+    const { v1Base, v2Base } = minimaxEndpoints(provider.baseUrl);
+    return (baseKind === 'v2' ? v2Base : v1Base) + '/' + path;
   }
   const { baseUrl } = chatEndpoint(provider.protocol, provider.baseUrl, '');
   return baseUrl + (provider.protocol === 'anthropic' ? '/v1/' : '/') + path;
 }
+
 const cleanError = (error: unknown, provider: ProviderConnection) => {
   const value = error instanceof Error ? error.message : String(error);
   return new Error(
     provider.apiKey ? value.replaceAll(provider.apiKey, '[密钥已隐藏]').slice(0, 1200) : value.slice(0, 1200),
   );
 };
+
 class ProviderError extends Error {
   constructor(
     public readonly status: number,
@@ -119,12 +164,13 @@ class ProviderError extends Error {
     super(message);
   }
 }
+
 async function request(
   provider: ProviderConnection,
   path: string,
   init: RequestInit = {},
   signal?: AbortSignal,
-  useNative = false,
+  baseKind: ProviderRequestOptions['baseKind'] = 'default',
 ) {
   const headers = new Headers(init.headers);
   if (provider.protocol === 'anthropic') headers.set('anthropic-version', '2023-06-01');
@@ -133,7 +179,7 @@ async function request(
     else if (provider.protocol === 'google') headers.set('x-goog-api-key', provider.apiKey);
     else headers.set('Authorization', `Bearer ${provider.apiKey}`);
   }
-  const response = await fetch(endpoint(provider, path, useNative), {
+  const response = await fetch(endpoint(provider, path, baseKind), {
     ...init,
     headers,
     credentials: 'omit',
@@ -144,7 +190,7 @@ async function request(
     let message = await response.text();
     try {
       const parsed = JSON.parse(message);
-      message = parsed.error?.message || parsed.message || message;
+      message = parsed.error?.message || parsed.base_resp?.status_msg || parsed.message || message;
     } catch {}
     throw new ProviderError(
       response.status,
@@ -153,12 +199,13 @@ async function request(
   }
   return response;
 }
+
 const jsonRequest = async (
   p: ProviderConnection,
   path: string,
   body: unknown,
-  signal: AbortSignal,
-  useNative = false,
+  signal?: AbortSignal,
+  baseKind: ProviderRequestOptions['baseKind'] = 'default',
   extraHeaders?: Record<string, string>,
 ) =>
   (
@@ -171,9 +218,10 @@ const jsonRequest = async (
         body: JSON.stringify(body),
       },
       signal,
-      useNative,
+      baseKind,
     )
   ).json();
+
 function publicProvider({ id, name, protocol, baseUrl, requiresKey, hasApiKey }: ProviderConnection) {
   return {
     id,
@@ -184,9 +232,28 @@ function publicProvider({ id, name, protocol, baseUrl, requiresKey, hasApiKey }:
     hasApiKey,
   };
 }
+
 function sameConnection(a: ProviderConnection, b: GenerationSnapshot['provider']) {
   return a.id === b.id && a.protocol === b.protocol && providerBase(a.baseUrl) === providerBase(b.baseUrl);
 }
+
+function normalizedReferenceIds(req: Pick<GenerationRequest, 'referenceAssetId' | 'referenceAssetIds'>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  if (Array.isArray(req.referenceAssetIds)) {
+    for (const id of req.referenceAssetIds) {
+      if (typeof id === 'string' && id.trim() && !seen.has(id.trim())) {
+        seen.add(id.trim());
+        out.push(id.trim());
+      }
+    }
+  }
+  if (typeof req.referenceAssetId === 'string' && req.referenceAssetId.trim() && !seen.has(req.referenceAssetId.trim())) {
+    out.unshift(req.referenceAssetId.trim());
+  }
+  return out;
+}
+
 async function imageData(
   asset: Pick<Asset, 'kind' | 'path'>,
   dir: string,
@@ -212,6 +279,7 @@ async function imageData(
       : image;
   return format === 'jpeg' ? resized.toJPEG(85) : resized.toPNG();
 }
+
 export async function collectGeneratedFile(file: string, store: ProjectStore) {
   const folder = join(store.path, 'assets');
   const snapshot = join(folder, '.' + uid('collect'));
@@ -236,6 +304,7 @@ export async function collectGeneratedFile(file: string, store: ProjectStore) {
     await rm(snapshot, { force: true });
   }
 }
+
 const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -304,7 +373,6 @@ export async function assertSafeRemoteUrl(target: URL, providerBaseUrl?: string)
     return;
   }
   if (!allowLocalProvider && !isIP(host)) {
-    // Resolve DNS to block rebinding/wildcard domains pointing at loopback, LAN, or cloud metadata IPs.
     const records = await lookup(host, { all: true }).catch(() => []);
     for (const rec of records) {
       if (isPrivateOrLoopbackIp(rec.address)) {
@@ -353,9 +421,8 @@ export async function downloadToFile(
     throw err;
   }
 }
-const download = downloadToFile;
 
-/** Provider adapters use official request contracts; no model credentials are serialized in a job. */
+/** Provider adapters use official request contracts via electron/providers/*; no model credentials are serialized in a job. */
 export class GenerationService {
   private stores = new Map<string, ProjectStore>();
   constructor(
@@ -364,6 +431,7 @@ export class GenerationService {
     private changed: (store: ProjectStore, envelope: ProjectEnvelope) => void | Promise<void>,
     private resolveStore?: (path: string) => ProjectStore | Promise<ProjectStore>,
   ) {}
+
   async availableModels(store: ProjectStore) {
     const settings = await this.settings.get();
     const project = await store.project();
@@ -384,6 +452,7 @@ export class GenerationService {
       })),
     };
   }
+
   async inspectProvider(input: { providerId?: string; provider?: ProviderConnection }) {
     const draft = input.provider;
     const id = draft?.id || input.providerId;
@@ -427,14 +496,15 @@ export class GenerationService {
         verified: true,
         message: models.length
           ? `连接成功，发现 ${models.length} 个模型；用途能力请按服务商说明设置`
-          : '连接成功，服务未返回模型目录，可手动添加模型',
+          : '连接成功，服务未返回模型目录，可使用一键套件或手动添加模型',
       };
     } catch (error) {
       if (error instanceof ProviderError && [404, 405].includes(error.status))
-        return { models: [], verified: false, message: '该服务没有开放模型目录。可以手动添加模型。' };
+        return { models: [], verified: false, message: '该服务没有开放模型目录，可使用一键套件或手动添加模型。' };
       throw cleanError(error, provider);
     }
   }
+
   async start(
     store: ProjectStore,
     input: GenerationRequest,
@@ -451,14 +521,23 @@ export class GenerationService {
       provider,
       model: { ...model, parameters: modelParameters(model.adapter, model.parameters) },
     };
+    const refIds = normalizedReferenceIds(input);
+    const lastFrameId = typeof input.lastFrameAssetId === 'string' && input.lastFrameAssetId.trim() ? input.lastFrameAssetId.trim() : undefined;
+
     const req: GenerationRequest = {
       use: input.use,
       prompt: String(input.prompt || '').trim(),
       modelId: model.id,
       assetId: input.assetId,
-      referenceAssetId: input.referenceAssetId,
+      referenceAssetId: refIds[0],
+      ...(refIds.length ? { referenceAssetIds: refIds } : {}),
+      ...(lastFrameId ? { lastFrameAssetId: lastFrameId } : {}),
       size: input.size,
+      resolution: input.resolution,
+      aspectRatio: input.aspectRatio,
       seconds: input.seconds,
+      ...(input.generateAudio !== undefined ? { generateAudio: Boolean(input.generateAudio) } : {}),
+      ...(input.background ? { background: input.background } : {}),
       voice: input.voice,
       language: input.language,
       parameters: modelParameters(model.adapter, input.parameters),
@@ -475,38 +554,62 @@ export class GenerationService {
           }
         : {}),
     };
+
     if (['image', 'video', 'speech'].includes(req.use) && !req.prompt) throw new Error('请输入创作内容');
     if (['transcription', 'vision'].includes(req.use) && !assets.some((a) => a.id === req.assetId))
       throw new Error('请选择项目中的素材');
-    if (req.referenceAssetId && !['image', 'video'].includes(req.use))
+    if ((refIds.length || lastFrameId) && !['image', 'video'].includes(req.use))
       throw new Error('此用途不支持参考图片');
-    if (req.referenceAssetId && !assets.some((a) => a.id === req.referenceAssetId && a.kind === 'image'))
-      throw new Error('参考图片不存在');
-    const expected: Record<string, string[]> = {
-      image: ['openai-image', 'ark-image', 'dashscope-image'],
-      video: ['openai-video', 'ark-video', 'dashscope-video'],
-      speech: ['openai-speech', 'system-speech', 'dashscope-speech'],
+    for (const rid of refIds) {
+      if (!assets.some((a) => a.id === rid && a.kind === 'image'))
+        throw new Error('所选参考图片不存在或不是图片素材');
+    }
+    if (lastFrameId && !assets.some((a) => a.id === lastFrameId && a.kind === 'image'))
+      throw new Error('所选尾帧图片不存在或不是图片素材');
+
+    const expected: Record<string, ModelAdapter[]> = {
+      image: ['openai-image', 'ark-image', 'dashscope-image', 'minimax-image'],
+      video: ['openai-video', 'ark-video', 'dashscope-video', 'minimax-video'],
+      speech: ['openai-speech', 'system-speech', 'dashscope-speech', 'minimax-speech'],
       transcription: ['openai-transcription', 'dashscope-transcription'],
       vision: ['chat'],
     };
     if (!expected[req.use].includes(resolved.model.adapter))
       throw new Error(`「${resolved.model.name}」的接口适配器不适用于${label(req.use)}`);
+
     if (
       resolved.model.adapter === 'openai-video' &&
       new URL(resolved.provider.baseUrl).hostname === 'api.openai.com'
     )
       throw new Error(
-        'OpenAI 官方 Videos API 已于 2026-09-24 停止提供。请选择方舟视频模型或其他已支持该协议的服务。',
+        'OpenAI 官方 Videos API 已于 2026-09-24 停止提供。请选择百炼、火山方舟、MiniMax 或其他已支持该协议的服务。',
       );
-    if (
-      resolved.model.adapter === 'dashscope-video' &&
-      /-i2v/i.test(resolved.model.modelId) &&
-      !req.referenceAssetId
-    )
-      throw new Error('图生视频模型需要选择一张参考图片，或改用文生视频模型 (如 wan2.6-t2v)');
+
+    const caps = modelInputCapabilities(resolved.model);
+    if ((req.use === 'image' || req.use === 'video') && caps.requiresReference && refIds.length === 0) {
+      throw new Error(
+        caps.referenceMode === 'multi-ref'
+          ? `模型「${resolved.model.modelId}」需要至少选择 1 张参考图片`
+          : `图生视频模型「${resolved.model.modelId}」需要选择首帧参考图片，或改用文生视频模型`,
+      );
+    }
+    if ((req.use === 'image' || req.use === 'video') && caps.maxReferences > 0 && refIds.length > caps.maxReferences) {
+      throw new Error(`模型「${resolved.model.modelId}」最多支持 ${caps.maxReferences} 张参考图片`);
+    }
+    if (lastFrameId && req.use === 'video' && !refIds.length) {
+      throw new Error('设置尾帧图片时，请同时选择首帧图片');
+    }
+
+    const neededAssetIds = new Set<string>([
+      ...(req.assetId ? [req.assetId] : []),
+      ...refIds,
+      ...(lastFrameId ? [lastFrameId] : []),
+    ]);
+
     const targetSeq = req.target
       ? project.sequences.find((s) => s.id === req.target!.sequenceId)
       : project.sequences.find((s) => s.isMainBranch) || project.sequences[0];
+
     const job: GenerationJob = {
       id: uid('job'),
       name: req.target?.shotLabel
@@ -532,12 +635,13 @@ export class GenerationService {
         provider: publicProvider(provider),
         publish: options.publish ?? true,
         assets: assets
-          .filter((a) => a.id === req.assetId || a.id === req.referenceAssetId)
+          .filter((a) => neededAssetIds.has(a.id))
           .map(({ id, name, kind, path, duration }) => ({ id, name, kind, path, duration })),
       },
     };
     return this.jobs.runTask(job, (signal) => this.execute(store, job, resolved, signal), options.signal);
   }
+
   async resume(id: string) {
     const job = this.jobs.jobs.find((j) => j.id === id) as GenerationJob | undefined;
     if (!job?.generation || !job.projectPath || (!job.remote && !job.result))
@@ -551,7 +655,6 @@ export class GenerationService {
       new ProjectStore(job.projectPath);
     this.stores.set(store.path, store);
     await store.project();
-    // Explicit recovery collects a result into the library without restoring an old Agent run.
     if (job.result) {
       const result = job.result;
       return this.jobs.runTask(
@@ -582,9 +685,56 @@ export class GenerationService {
       '继续查询已有云任务',
     );
   }
+
   wait(id: string, signal?: AbortSignal) {
     return this.jobs.wait(id, signal);
   }
+
+  private createDriverHttp(job: GenerationJob, resolved: Resolved): ProviderHttp {
+    const { model, provider } = resolved;
+    const req = job.generation!.request;
+    return {
+      request: (p, path, opts) =>
+        request(
+          p,
+          path,
+          {
+            method: opts?.method,
+            headers: opts?.headers,
+            body: opts?.body,
+          },
+          opts?.signal,
+          opts?.baseKind || 'default',
+        ),
+      json: (p, path, body, opts) =>
+        jsonRequest(p, path, body, opts?.signal, opts?.baseKind || 'default', opts?.extraHeaders),
+      downloadToFile: (url, dest, sig, base) => downloadToFile(url, dest, sig, base),
+      onRemoteCreated: async (remote) => {
+        await this.jobs.update(job, {
+          remote: {
+            id: remote.id,
+            status: remote.status,
+            adapter: model.adapter,
+            modelId: model.id,
+            providerId: provider.id,
+            prompt: req.prompt || '',
+            ...(remote.apiVersion ? { apiVersion: remote.apiVersion } : {}),
+            ...(remote.pollPath ? { pollPath: remote.pollPath } : {}),
+          },
+        });
+      },
+      onStage: async (stage, progress, remoteStatus) => {
+        const nextRemote =
+          job.remote && remoteStatus ? { ...job.remote, status: remoteStatus } : job.remote;
+        const patch: Partial<Job> = {};
+        if (stage !== job.stage) patch.stage = stage;
+        if (progress !== undefined && progress !== job.progress) patch.progress = progress;
+        if (nextRemote && remoteStatus && remoteStatus !== job.remote?.status) patch.remote = nextRemote;
+        if (Object.keys(patch).length) await this.jobs.update(job, patch);
+      },
+    };
+  }
+
   private async execute(
     store: ProjectStore,
     job: GenerationJob,
@@ -638,7 +788,6 @@ export class GenerationService {
       signal.throwIfAborted();
       const resultFile = join(dir, 'result.json');
       await atomicJSON(resultFile, result);
-      // Persist before the project pointer moves. Recovery uses this result and the stable asset ID.
       await this.jobs.update(job, { result, output: result.asset?.path || resultFile });
       signal.throwIfAborted();
       if (result.asset && job.generation.publish)
@@ -648,8 +797,8 @@ export class GenerationService {
       throw cleanError(error, provider);
     }
   }
+
   private async publishAsset(store: ProjectStore, asset: Asset, active: () => boolean, job?: GenerationJob) {
-    // An import does not overwrite existing objects; retry only local base-version contention, never a generation request.
     const target = job?.target;
     const canAttachTake = Boolean(target && (asset.kind === 'image' || asset.kind === 'video'));
     const takeId = canAttachTake ? `take_${job!.id}` : undefined;
@@ -682,11 +831,7 @@ export class GenerationService {
             kind: asset.kind === 'video' ? 'video' : 'image',
             sourceIn: 0,
             assetId: asset.id,
-            props: {
-              fit: 'cover',
-              opacity: 1,
-              scale: 1,
-            },
+            props: { fit: 'cover', opacity: 1, scale: 1 },
             createdAt: new Date().toISOString(),
           };
           ops.push({
@@ -711,11 +856,7 @@ export class GenerationService {
           : `添加${asset.kind === 'audio' ? '配音' : '生成素材'}`;
       try {
         const envelope = await store.edit(
-          {
-            baseRevision: p.revision,
-            name: editTitle,
-            operations: ops,
-          },
+          { baseRevision: p.revision, name: editTitle, operations: ops },
           active,
         );
         if (job && attachment) await this.jobs.update(job, { targetAttachment: attachment });
@@ -726,6 +867,7 @@ export class GenerationService {
       }
     }
   }
+
   private async sourceAsset(store: ProjectStore, job: GenerationJob, id: string) {
     const asset =
       job.generation?.assets?.find((a) => a.id === id) ||
@@ -733,276 +875,92 @@ export class GenerationService {
     if (!asset) throw new Error('素材不存在');
     return asset;
   }
-  private async reference(
+
+  private async encodeReference(
     store: ProjectStore,
     job: GenerationJob,
     dir: string,
     signal: AbortSignal,
-    id?: string,
-  ) {
-    if (!id) return undefined;
-    const asset = await this.sourceAsset(store, job, id);
-    return imageData(asset, dir, signal);
-  }
-  private async pollDashscopeTask(
-    provider: ProviderConnection,
-    job: GenerationJob,
-    signal: AbortSignal,
-  ) {
-    const taskId = job.remote!.id;
-    const statusMap: Record<string, string> = {
-      PENDING: 'pending',
-      RUNNING: 'running',
-      SUCCEEDED: 'succeeded',
-      FAILED: 'failed',
-      CANCELED: 'canceled',
-      UNKNOWN: 'expired',
-    };
-    const deadline = Date.now() + POLL_TIMEOUT_MS;
-    let transientErrors = 0;
-    for (;;) {
-      signal.throwIfAborted();
-      if (Date.now() > deadline) {
-        throw new Error('云端生成任务等待超时（超过 15 分钟），可在后台作业面板稍后继续查询');
-      }
-      let data: any;
-      try {
-        data = await (
-          await request(provider, `tasks/${encodeURIComponent(taskId)}`, {}, signal, true)
-        ).json();
-        transientErrors = 0;
-      } catch (err) {
-        if (signal.aborted) throw err;
-        const isTransient =
-          (err instanceof ProviderError && err.status >= 500) ||
-          !(err instanceof ProviderError);
-        if (isTransient && transientErrors < 3) {
-          transientErrors++;
-          await delay(2000 * transientErrors, undefined, { signal });
-          continue;
-        }
-        throw err;
-      }
-      const rawStatus = String(data.output?.task_status || '').toUpperCase();
-      const status = statusMap[rawStatus];
-      signal.throwIfAborted();
-      if (!status) throw new Error('阿里百炼返回了无法识别的任务状态，请核对控制台记录');
-      const remote = { ...job.remote!, status };
-      if (status === 'succeeded') {
-        await this.jobs.update(job, { remote });
-        return data;
-      }
-      if (['failed', 'canceled', 'expired'].includes(status)) {
-        await this.jobs.update(job, { remote });
-        throw new Error(data.output?.message || data.message || `云任务已终止（${status}）`);
-      }
-      const stage = status === 'pending' ? '云端排队中' : '云端生成中';
-      if (stage !== job.stage || status !== job.remote!.status)
-        await this.jobs.update(job, { remote, stage });
-      await delay(1800, undefined, { signal });
+    assetId: string,
+    compressLargeToJpeg = true,
+  ): Promise<EncodedReferenceImage> {
+    const asset = await this.sourceAsset(store, job, assetId);
+    let buffer = await imageData(asset, dir, signal, 'png');
+    let mime: 'image/png' | 'image/jpeg' = 'image/png';
+    if (compressLargeToJpeg && buffer.length > 3 * 1024 * 1024) {
+      buffer = await imageData(asset, dir, signal, 'jpeg');
+      mime = 'image/jpeg';
     }
+    return {
+      assetId,
+      buffer,
+      mime,
+      dataUri: `data:${mime};base64,${buffer.toString('base64')}`,
+    };
   }
+
+  private async encodeReferences(
+    store: ProjectStore,
+    job: GenerationJob,
+    dir: string,
+    signal: AbortSignal,
+    ids: string[],
+  ): Promise<EncodedReferenceImage[]> {
+    const results: EncodedReferenceImage[] = [];
+    for (const id of ids) {
+      results.push(await this.encodeReference(store, job, dir, signal, id));
+    }
+    return results;
+  }
+
   private async image(
     store: ProjectStore,
     job: GenerationJob,
-    { provider, model }: Resolved,
+    resolved: Resolved,
     p: Record<string, unknown>,
     dir: string,
     signal: AbortSignal,
   ) {
+    const { provider, model } = resolved;
     const req = job.generation!.request;
     if (p.output_format && !['png', 'jpeg', 'webp', 'gif'].includes(String(p.output_format)))
       throw new Error('请选择 PNG、JPEG、WebP 或 GIF 作为图像输出');
-    const reference = await this.reference(store, job, dir, signal, req.referenceAssetId);
+
+    const refIds = normalizedReferenceIds(req);
+    const references = await this.encodeReferences(store, job, dir, signal, refIds);
     await this.jobs.update(job, { stage: '正在生成图像' });
-    let data: any;
-    let image: { b64_json?: string; url?: string } | undefined;
-    if (model.adapter === 'dashscope-image') {
-      const dataUri = reference ? `data:image/png;base64,${reference.toString('base64')}` : undefined;
-      let dsRes: any;
-      if (job.remote) {
-        dsRes = await this.pollDashscopeTask(provider, job, signal);
-      } else {
-        const sizeVal = dashscopeSize(req.size || p.size);
-        if (/^qwen-image/i.test(model.modelId)) {
-          try {
-            dsRes = await jsonRequest(
-              provider,
-              'services/aigc/multimodal-generation/generation',
-              {
-                model: model.modelId,
-                input: {
-                  messages: [
-                    {
-                      role: 'user',
-                      content: [...(dataUri ? [{ image: dataUri }] : []), { text: req.prompt }],
-                    },
-                  ],
-                },
-                parameters: {
-                  ...parameters(p, ['seed', 'watermark', 'prompt_extend', 'negative_prompt']),
-                  n: 1,
-                  ...(!reference && sizeVal ? { size: sizeVal } : {}),
-                },
-              },
-              signal,
-              true,
-            );
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            // qwen-image-plus / qwen-image on some DashScope endpoints serve under text2image/image-synthesis (async)
-            if (!reference && /(404|Model not exist|InvalidParameter)/i.test(msg)) {
-              dsRes = await jsonRequest(
-                provider,
-                'services/aigc/text2image/image-synthesis',
-                {
-                  model: model.modelId,
-                  input: {
-                    prompt: req.prompt,
-                    ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
-                  },
-                  parameters: {
-                    ...parameters(p, ['seed', 'watermark', 'prompt_extend']),
-                    n: 1,
-                    ...(sizeVal ? { size: sizeVal } : {}),
-                  },
-                },
-                signal,
-                true,
-                { 'X-DashScope-Async': 'enable' },
-              );
-            } else {
-              throw err;
-            }
-          }
-        } else if (/^wanx/i.test(model.modelId)) {
-          dsRes = await jsonRequest(
-            provider,
-            'services/aigc/text2image/image-synthesis',
-            {
-              model: model.modelId,
-              input: {
-                prompt: req.prompt,
-                ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
-                ...(dataUri ? { ref_img: dataUri } : {}),
-              },
-              parameters: {
-                ...parameters(p, ['seed', 'watermark', 'prompt_extend']),
-                n: 1,
-                ...(sizeVal ? { size: sizeVal } : {}),
-              },
-            },
-            signal,
-            true,
-            { 'X-DashScope-Async': 'enable' },
-          );
-        } else {
-          dsRes = await jsonRequest(
-            provider,
-            'services/aigc/image-generation/generation',
-            {
-              model: model.modelId,
-              input: {
-                messages: [
-                  {
-                    role: 'user',
-                    content: [...(dataUri ? [{ image: dataUri }] : []), { text: req.prompt }],
-                  },
-                ],
-              },
-              parameters: {
-                ...parameters(p, ['seed', 'watermark', 'prompt_extend', 'negative_prompt']),
-                n: 1,
-                ...(sizeVal ? { size: sizeVal } : {}),
-              },
-            },
-            signal,
-            true,
-            { 'X-DashScope-Async': 'enable' },
-          );
-        }
-        if (dsRes?.output?.task_id) {
-          await this.jobs.update(job, {
-            remote: {
-              id: dsRes.output.task_id,
-              status: 'pending',
-              adapter: model.adapter,
-              modelId: model.id,
-              providerId: provider.id,
-              prompt: req.prompt!,
-            },
-          });
-          dsRes = await this.pollDashscopeTask(provider, job, signal);
-        }
-      }
-      const contentImg = dsRes?.output?.choices?.[0]?.message?.content?.find(
-        (c: any) => typeof c?.image === 'string' && c.image,
-      )?.image;
-      const resultItem = dsRes?.output?.results?.[0];
-      const imgVal = contentImg || resultItem?.url || resultItem?.b64_image;
-      if (typeof imgVal === 'string' && imgVal) {
-        image =
-          imgVal.startsWith('data:') || !/^https?:\/\//i.test(imgVal)
-            ? { b64_json: imgVal }
-            : { url: imgVal };
-      }
-    } else if (model.adapter === 'ark-image') {
-      data = await jsonRequest(
+
+    const driver = getProviderDriver(model.adapter);
+    if (!driver.generateImage) throw new Error(`适配器「${model.adapter}」不支持图像生成`);
+
+    const http = this.createDriverHttp(job, resolved);
+    const image = await driver.generateImage(
+      {
         provider,
-        'images/generations',
-        {
-          ...parameters(p, parameterKeys['ark-image']),
-          model: model.modelId,
-          prompt: req.prompt,
-          ...(req.size ? { size: req.size } : {}),
-          response_format: 'b64_json',
-          ...(reference ? { image: `data:image/png;base64,${reference.toString('base64')}` } : {}),
-        },
+        model,
+        prompt: req.prompt!,
+        params: p,
+        references,
+        size: req.size,
+        resolution: req.resolution,
+        aspectRatio: req.aspectRatio,
+        background: req.background,
+        existingRemote: job.remote,
         signal,
-      );
-      image = data.data?.[0];
-    } else if (reference) {
-      const body = new FormData();
-      for (const [key, value] of Object.entries({
-        ...parameters(p, parameterKeys['openai-image']),
-        model: model.modelId,
-        prompt: req.prompt,
-        n: 1,
-        ...(req.size ? { size: req.size } : {}),
-      }))
-        body.append(key, String(value));
-      body.append('image', new Blob([new Uint8Array(reference)], { type: 'image/png' }), 'reference.png');
-      data = await (await request(provider, 'images/edits', { method: 'POST', body }, signal)).json();
-      image = data.data?.[0];
-    } else {
-      data = await jsonRequest(
-        provider,
-        'images/generations',
-        {
-          ...parameters(p, [
-            'size',
-            'quality',
-            'background',
-            'output_format',
-            'output_compression',
-            'moderation',
-          ]),
-          model: model.modelId,
-          prompt: req.prompt,
-          n: 1,
-          ...(req.size ? { size: req.size } : {}),
-        },
-        signal,
-      );
-      image = data.data?.[0];
-    }
+      },
+      http,
+    );
+
     if (!image?.b64_json && !image?.url) throw new Error('服务没有返回图片');
     const output = join(dir, uid('image'));
-    if (image.b64_json)
+    if (image.b64_json) {
       await writeFile(output, Buffer.from(String(image.b64_json).replace(/^data:[^,]+,/, ''), 'base64'), {
         flag: 'wx',
       });
-    else if (image.url) await download(image.url, output, signal, provider.baseUrl);
+    } else if (image.url) {
+      await downloadToFile(image.url, output, signal, provider.baseUrl);
+    }
+
     const handle = await open(output, 'r');
     const header = Buffer.alloc(12);
     try {
@@ -1024,260 +982,132 @@ export class GenerationService {
     await rename(output, file);
     return file;
   }
+
   private async speech(
     job: GenerationJob,
-    { provider, model }: Resolved,
+    resolved: Resolved,
     p: Record<string, unknown>,
     dir: string,
     signal: AbortSignal,
   ) {
+    const { provider, model } = resolved;
     const req = job.generation!.request;
     await this.jobs.update(job, { stage: '正在生成配音' });
-    const output = join(dir, `${uid('voice')}.wav`);
-    if (model.adapter === 'system-speech') {
-      let voice = req.voice || String(p.voice || '');
-      if (!voice) {
-        const voices = await run('/usr/bin/say', ['-v', '?'], { signal });
-        const list = voices.split('\n');
-        voice = (
-          list.find((l) => /^Tingting\s+zh_CN/.test(l)) ||
-          list.find((l) => l.includes('zh_CN')) ||
-          list[0]
-        ).split(/\s{2,}/)[0];
-      }
-      await run(
-        '/usr/bin/say',
-        [
-          '-v',
-          voice,
-          '-r',
-          String(p.rate || 175),
-          '--file-format=WAVE',
-          '--data-format=LEI16@24000',
-          '-o',
-          output,
-          '--',
-          req.prompt!,
-        ],
-        { signal },
-      );
-    } else if (model.adapter === 'dashscope-speech') {
-      const data: any = await jsonRequest(
+    const driver = getProviderDriver(model.adapter);
+    if (!driver.generateSpeech) throw new Error(`适配器「${model.adapter}」不支持语音合成`);
+
+    const http = this.createDriverHttp(job, resolved);
+    const out = await driver.generateSpeech(
+      {
         provider,
-        'services/aigc/multimodal-generation/generation',
-        {
-          model: model.modelId,
-          input: {
-            text: req.prompt,
-            voice: req.voice || p.voice || 'Cherry',
-            ...(p.language_type ? { language_type: p.language_type } : {}),
-          },
-        },
+        model,
+        prompt: req.prompt!,
+        params: p,
+        voice: req.voice,
+        dir,
+        outputStem: uid('voice'),
         signal,
-        true,
-      );
-      const audio = data.output?.audio;
-      if (!audio?.data && !audio?.url) throw new Error('千问语音合成未返回音频内容');
-      const rawFile = join(dir, uid('voice-raw'));
-      if (audio.data) {
-        await writeFile(rawFile, Buffer.from(String(audio.data).replace(/^data:[^,]+,/, ''), 'base64'), {
-          flag: 'wx',
-        });
-      } else {
-        await download(audio.url, rawFile, signal, provider.baseUrl);
-      }
-      const handle = await open(rawFile, 'r');
-      const header = Buffer.alloc(12);
-      try {
-        await handle.read(header);
-      } finally {
-        await handle.close();
-      }
-      const ext =
-        header.toString('ascii', 0, 4) === 'RIFF'
-          ? 'wav'
-          : header.toString('ascii', 0, 3) === 'ID3' || (header[0] === 0xff && (header[1] & 0xe0) === 0xe0)
-            ? 'mp3'
-            : header.toString('ascii', 0, 4) === 'OggS'
-              ? 'ogg'
-              : header.toString('ascii', 0, 4) === 'fLaC'
-                ? 'flac'
-                : 'wav';
-      const named = `${rawFile}.${ext}`;
-      await rename(rawFile, named);
-      return named;
+      },
+      http,
+    );
+
+    if (out.filePath) return out.filePath;
+    const rawFile = join(dir, uid('voice-raw'));
+    if (out.bytes) {
+      await writeFile(rawFile, out.bytes, { flag: 'wx' });
+    } else if (out.url) {
+      await downloadToFile(out.url, rawFile, signal, provider.baseUrl);
     } else {
-      const response = await request(
-        provider,
-        'audio/speech',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...parameters(p, ['speed', 'instructions']),
-            model: model.modelId,
-            input: req.prompt,
-            voice: req.voice || p.voice || 'coral',
-            response_format: 'wav',
-          }),
-        },
-        signal,
-      );
-      if (!response.body) throw new Error('服务没有返回声音');
-      await pipeline(Readable.fromWeb(response.body as any), createWriteStream(output, { flags: 'wx' }), {
-        signal,
-      });
+      throw new Error('语音合成服务未返回音频内容');
     }
-    return output;
+
+    const handle = await open(rawFile, 'r');
+    const header = Buffer.alloc(12);
+    try {
+      await handle.read(header);
+    } finally {
+      await handle.close();
+    }
+    const ext = detectAudioExtension(header);
+    const named = `${rawFile}.${ext}`;
+    await rename(rawFile, named);
+    return named;
   }
+
   private async video(
     store: ProjectStore,
     job: GenerationJob,
-    { provider, model }: Resolved,
+    resolved: Resolved,
     p: Record<string, unknown>,
     dir: string,
     signal: AbortSignal,
   ) {
+    const { provider, model } = resolved;
     const req = job.generation!.request;
-    const ark = model.adapter === 'ark-video';
-    const dashscope = model.adapter === 'dashscope-video';
-    if (dashscope && /-i2v/i.test(model.modelId) && !req.referenceAssetId && !job.remote)
-      throw new Error('图生视频模型需要选择一张参考图片，或改用文生视频模型 (如 wan2.6-t2v)');
-    const route = dashscope
-      ? 'services/aigc/video-generation/video-synthesis'
-      : ark
-        ? 'contents/generations/tasks'
-        : 'videos';
+    const driver = getProviderDriver(model.adapter);
+    if (!driver.submitVideo || !driver.pollVideo) {
+      throw new Error(`适配器「${model.adapter}」不支持视频生成`);
+    }
+    const http = this.createDriverHttp(job, resolved);
+
     if (!job.remote) {
       await this.jobs.update(job, { stage: '正在提交云端任务' });
-      const reference = await this.reference(store, job, dir, signal, req.referenceAssetId);
-      const arkRatio =
-        (req.size &&
-          ({ '1280x720': '16:9', '720x1280': '9:16', '1024x1024': '1:1' } as Record<string, string>)[
-            req.size
-          ]) ||
-        req.size;
+      const refIds = normalizedReferenceIds(req);
+      const references = await this.encodeReferences(store, job, dir, signal, refIds);
+      const lastFrame = req.lastFrameAssetId
+        ? await this.encodeReference(store, job, dir, signal, req.lastFrameAssetId)
+        : undefined;
       signal.throwIfAborted();
       // A submitted creation request can be billable. Read its acknowledgement even after a local stop.
       const receipt = AbortSignal.timeout(30000);
-      let data: any;
-      if (dashscope) {
-        const sizeInput = req.size || p.size;
-        const sizeIsPreset = typeof sizeInput === 'string' && /^(480|720|1080)p$/i.test(sizeInput.trim());
-        const baseParams = parameters(p, ['resolution', 'seed', 'watermark', 'prompt_extend', 'audio']);
-        if (sizeInput && !sizeIsPreset) {
-          delete baseParams.resolution;
-        }
-        // Encode large I2V reference images as JPEG to stay safely under DashScope's 10MB payload limit.
-        let dashRefUrl: string | undefined;
-        if (reference) {
-          let buf = reference;
-          let mime = 'image/png';
-          if (buf.length > 3 * 1024 * 1024 && req.referenceAssetId) {
-            const refAsset = await this.sourceAsset(store, job, req.referenceAssetId);
-            buf = await imageData(refAsset, dir, signal, 'jpeg');
-            mime = 'image/jpeg';
-          }
-          dashRefUrl = `data:${mime};base64,${buf.toString('base64')}`;
-        }
-        data = await jsonRequest(
+      const submitted = await driver.submitVideo(
+        {
           provider,
-          route,
-          {
-            model: model.modelId,
-            input: {
-              prompt: req.prompt,
-              ...(p.negative_prompt ? { negative_prompt: p.negative_prompt } : {}),
-              ...(dashRefUrl ? { img_url: dashRefUrl } : {}),
-            },
-            parameters: {
-              ...baseParams,
-              ...(req.seconds || p.duration ? { duration: Number(req.seconds || p.duration) } : {}),
-              ...(sizeIsPreset
-                ? { resolution: String(sizeInput).trim().toUpperCase() }
-                : sizeInput
-                  ? { size: dashscopeSize(sizeInput) }
-                  : {}),
-            },
-          },
-          receipt,
-          true,
-          { 'X-DashScope-Async': 'enable' },
-        );
-      } else if (ark) {
-        data = await jsonRequest(
-          provider,
-          route,
-          {
-            ...parameters(p, parameterKeys['ark-video']),
-            model: model.modelId,
-            content: [
-              { type: 'text', text: req.prompt },
-              ...(reference
-                ? [
-                    {
-                      type: 'image_url',
-                      image_url: { url: `data:image/png;base64,${reference.toString('base64')}` },
-                      role: 'first_frame',
-                    },
-                  ]
-                : []),
-            ],
-            ...(req.seconds ? { duration: req.seconds } : {}),
-            ...(arkRatio ? { ratio: arkRatio } : {}),
-          },
-          receipt,
-        );
-      } else {
-        const body = new FormData();
-        body.set('model', model.modelId);
-        body.set('prompt', req.prompt!);
-        if (req.seconds || p.seconds) body.set('seconds', String(req.seconds || p.seconds));
-        if (req.size || p.size) body.set('size', String(req.size || p.size));
-        if (reference)
-          body.set(
-            'input_reference',
-            new Blob([new Uint8Array(reference)], { type: 'image/png' }),
-            'reference.png',
-          );
-        data = await (await request(provider, route, { method: 'POST', body }, receipt)).json();
-      }
-      const remoteId = dashscope ? data.output?.task_id : data.id;
-      if (typeof remoteId !== 'string' || !remoteId)
-        throw new Error('服务未返回云任务 ID，请核对提供商后台记录再重新提交');
-      await this.jobs.update(job, {
-        remote: {
-          id: remoteId,
-          status: dashscope ? 'pending' : 'queued',
-          adapter: model.adapter,
-          modelId: model.id,
-          providerId: provider.id,
+          model,
           prompt: req.prompt!,
+          params: p,
+          references,
+          lastFrame,
+          size: req.size,
+          resolution: req.resolution,
+          aspectRatio: req.aspectRatio,
+          seconds: req.seconds,
+          generateAudio: req.generateAudio,
+          signal: receipt,
         },
+        http,
+      );
+      await http.onRemoteCreated({
+        id: submitted.remoteId,
+        status: submitted.initialStatus,
+        apiVersion: submitted.apiVersion,
+        pollPath: submitted.pollPath,
       });
     }
+
     signal.throwIfAborted();
-    if (dashscope) {
-      const final = await this.pollDashscopeTask(provider, job, signal);
-      await this.jobs.update(job, { stage: '正在下载生成的视频' });
-      const output = join(dir, `${uid('video')}.mp4`);
-      const videoUrl = final.output?.video_url || final.output?.results?.[0]?.url;
-      if (!videoUrl) throw new Error('云任务完成但未返回视频地址');
-      await download(videoUrl, output, signal, provider.baseUrl);
-      return output;
-    }
-    const routeWithId = `${route}/${encodeURIComponent(job.remote!.id)}`;
-    let final: any;
     const pollDeadline = Date.now() + POLL_TIMEOUT_MS;
     let pollRetries = 0;
+    let finished: { videoUrl?: string; streamPath?: string } | undefined;
+
     for (;;) {
       signal.throwIfAborted();
       if (Date.now() > pollDeadline) {
         throw new Error('云端生成任务等待超时（超过 15 分钟），可在后台作业面板稍后继续查询');
       }
-      let data: any;
+      let pollRes;
       try {
-        data = await (await request(provider, routeWithId, {}, signal)).json();
+        pollRes = await driver.pollVideo(
+          provider,
+          {
+            id: job.remote!.id,
+            adapter: model.adapter,
+            apiVersion: job.remote!.apiVersion,
+            pollPath: job.remote!.pollPath,
+          },
+          http,
+          signal,
+        );
         pollRetries = 0;
       } catch (err) {
         if (signal.aborted) throw err;
@@ -1289,55 +1119,42 @@ export class GenerationService {
         }
         throw err;
       }
-      const status = data.status;
+
       signal.throwIfAborted();
-      if (
-        ![
-          'succeeded',
-          'completed',
-          'queued',
-          'pending',
-          'running',
-          'in_progress',
-          'processing',
-          'failed',
-          'cancelled',
-          'canceled',
-          'expired',
-        ].includes(status)
-      )
-        throw new Error('服务返回了无法识别的云任务状态，请核对服务商记录');
-      const remote = { ...job.remote!, status };
-      if (['succeeded', 'completed'].includes(status)) {
+      const remote = { ...job.remote!, status: pollRes.status };
+      if (pollRes.status === 'succeeded') {
         await this.jobs.update(job, { remote });
-        final = data;
+        finished = { videoUrl: pollRes.videoUrl, streamPath: pollRes.streamPath };
         break;
       }
-      if (['failed', 'cancelled', 'canceled', 'expired'].includes(status)) {
+      if (pollRes.status === 'failed' || pollRes.status === 'canceled' || pollRes.status === 'expired') {
         await this.jobs.update(job, { remote });
-        throw new Error(data.error?.message || `云任务已终止（${status}）`);
+        throw new Error(pollRes.errorMessage || `云任务已终止（${pollRes.status}）`);
       }
-      const progress = Number(data.progress);
-      const stage = status === 'queued' || status === 'pending' ? '云端排队中' : '云端生成中';
-      const fraction = Number.isFinite(progress) ? Math.min(0.95, Math.max(0, progress / 100)) : 0;
-      if (stage !== job.stage || fraction !== job.progress || status !== job.remote!.status)
+      const stage = pollRes.status === 'pending' ? '云端排队中' : '云端生成中';
+      const fraction = pollRes.progress !== undefined ? pollRes.progress : job.progress;
+      if (stage !== job.stage || fraction !== job.progress || pollRes.status !== job.remote!.status) {
         await this.jobs.update(job, { remote, stage, progress: fraction });
+      }
       await delay(1800, undefined, { signal });
     }
+
     await this.jobs.update(job, { stage: '正在下载生成的视频' });
     const output = join(dir, `${uid('video')}.mp4`);
-    if (ark) {
-      if (!final.content?.video_url) throw new Error('云任务完成但未返回视频地址');
-      await download(final.content.video_url, output, signal, provider.baseUrl);
-    } else {
-      const response = await request(provider, `${routeWithId}/content`, {}, signal);
+    if (finished?.videoUrl) {
+      await downloadToFile(finished.videoUrl, output, signal, provider.baseUrl);
+    } else if (finished?.streamPath) {
+      const response = await request(provider, finished.streamPath, {}, signal);
       if (!response.body) throw new Error('服务没有返回视频内容');
       await pipeline(Readable.fromWeb(response.body as any), createWriteStream(output, { flags: 'wx' }), {
         signal,
       });
+    } else {
+      throw new Error('云任务完成但未返回视频地址');
     }
     return output;
   }
+
   private async transcribe(
     store: ProjectStore,
     job: GenerationJob,
@@ -1444,7 +1261,6 @@ export class GenerationService {
               : ''
         ).trim();
         if (text) {
-          // Deduplicate overlapping text at chunk boundaries for multi-chunk DashScope ASR.
           let deduped = text;
           const prevText = texts.at(-1);
           if (start > 0 && prevText) {
@@ -1461,7 +1277,6 @@ export class GenerationService {
             const chunkStart = start > 0 ? Math.max(start, coveredEnd) : start;
             const chunkEnd = Math.min(asset.duration, start + chunkSeconds);
             if (chunkEnd > chunkStart) {
-              // Split multi-sentence chunks proportionally so subtitles stay readable instead of 120s blocks.
               const sentences = deduped
                 .split(/(?<=[。！？.!?])\s+|\n+/)
                 .map((s) => s.trim())
@@ -1509,7 +1324,6 @@ export class GenerationService {
             const absStart = start + from;
             const absEnd = start + to;
             const mid = (absStart + absEnd) / 2;
-            // Deduplicate segments falling inside the overlap window of the previous chunk
             if (start > 0 && mid <= coveredEnd + 0.1) continue;
             const clampedStart = start > 0 ? Math.max(absStart, coveredEnd) : absStart;
             if (absEnd <= clampedStart) continue;
@@ -1525,7 +1339,6 @@ export class GenerationService {
     }
     if (!texts.length && !segments.length) throw new Error('模型没有返回可用的转录文本');
     const transcriptResult = { text: texts.join('\n'), segments };
-    // Persist transcript in project analysis cache so Transcript panel retains it across restarts without polluting Undo stack.
     try {
       const analysisDir = join(store.path, '.cocraft', 'analysis');
       await mkdir(analysisDir, { recursive: true });
@@ -1538,6 +1351,7 @@ export class GenerationService {
     } catch {}
     return transcriptResult;
   }
+
   private async vision(
     store: ProjectStore,
     job: GenerationJob,
@@ -1591,7 +1405,6 @@ export class GenerationService {
             times.push(time);
           }
         } catch (error) {
-          // A sparse or very short VFR clip can have no frame after the seek timestamp.
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !images.length) throw error;
         } finally {
           await rm(file, { force: true });

@@ -949,6 +949,96 @@ assert.ok(
   ]) {
     assert.ok(mcpSrc.includes(`'${mcpTool}'`), `MCP server missing core tool: ${mcpTool}`);
   }
+
+  // 11. Multi-Provider Architecture v2: DashScope (Qwen-Image 3.0 / Wan 3.0 / Wan 2.7 / HappyHorse / Z-Image), Ark (Seedream 5.5 / Seedance 2.5), MiniMax (H3 / Hailuo / H3-Image / Speech 2.8)
+  const {
+    modelInputCapabilities,
+    minimaxEndpoints,
+    compatibleAdapters,
+    providerModelSuites,
+    curatedModelsByProtocol,
+  } = await import('../src/core/models');
+  const {
+    getProviderDriver,
+    isDashscopeMediaArrayVideo,
+    isDashscopeMultimodalImage,
+    isMiniMaxH3Image,
+    isMiniMaxV2Video,
+  } = await import('../electron/providers');
+
+  assert.deepEqual(minimaxEndpoints('https://api.minimaxi.com'), {
+    root: 'https://api.minimaxi.com',
+    v1Base: 'https://api.minimaxi.com/v1',
+    v2Base: 'https://api.minimaxi.com/v2',
+  });
+  assert.deepEqual(minimaxEndpoints('https://api.minimax.io/v1/'), {
+    root: 'https://api.minimax.io',
+    v1Base: 'https://api.minimax.io/v1',
+    v2Base: 'https://api.minimax.io/v2',
+  });
+
+  // Curated catalog & suites coverage
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'qwen-image-3.0-pro'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'wan2.7-image-pro'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'z-image-turbo'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'wan3.0-video'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'happyhorse-1.1-t2v'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'happyhorse-1.1-i2v'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'happyhorse-1.1-r2v'));
+  assert.ok(curatedModelsByProtocol.ark.some((m) => m.modelId === 'doubao-seedream-5-5-261028'));
+  assert.ok(curatedModelsByProtocol.ark.some((m) => m.modelId === 'doubao-seedance-2-5'));
+  assert.ok(curatedModelsByProtocol.minimax.some((m) => m.modelId === 'MiniMax-H3'));
+  assert.ok(curatedModelsByProtocol.minimax.some((m) => m.modelId === 'MiniMax-Hailuo-2.3'));
+  assert.ok(curatedModelsByProtocol.minimax.some((m) => m.modelId === 'MiniMax-H3-Image'));
+  assert.ok(curatedModelsByProtocol.minimax.some((m) => m.modelId === 'speech-2.8-hd'));
+  assert.ok(providerModelSuites.dashscope && providerModelSuites.ark && providerModelSuites.minimax);
+
+  // Smart inference across protocols
+  assert.equal(inferModelFromId('happyhorse-1.1-t2v', 'dashscope').adapter, 'dashscope-video');
+  assert.equal(inferModelFromId('z-image-turbo', 'dashscope').adapter, 'dashscope-image');
+  assert.equal(inferModelFromId('wan3.0-video-prime', 'dashscope').adapter, 'dashscope-video');
+  assert.equal(inferModelFromId('kling/kling-v3-video-generation', 'dashscope').adapter, 'dashscope-video');
+  assert.equal(inferModelFromId('doubao-seedream-5-5-261028', 'ark').adapter, 'ark-image');
+  assert.equal(inferModelFromId('doubao-seedance-2-5', 'ark').adapter, 'ark-video');
+  assert.equal(inferModelFromId('MiniMax-H3', 'minimax').adapter, 'minimax-video');
+  assert.equal(inferModelFromId('MiniMax-H3-Image', 'minimax').adapter, 'minimax-image');
+  assert.equal(inferModelFromId('speech-2.8-hd', 'minimax').adapter, 'minimax-speech');
+  assert.ok(
+    compatibleAdapters({ id: 'm', name: 'M', protocol: 'minimax', baseUrl: 'https://api.minimaxi.com', hasApiKey: true, requiresKey: true })
+      .some((a) => a.id === 'minimax-video'),
+  );
+
+  // Declarative model capabilities
+  const hhI2vCaps = modelInputCapabilities({ adapter: 'dashscope-video', modelId: 'happyhorse-1.1-i2v' });
+  assert.equal(hhI2vCaps.requiresReference, true);
+  assert.equal(hhI2vCaps.supportsLastFrame, true);
+  const hhR2vCaps = modelInputCapabilities({ adapter: 'dashscope-video', modelId: 'happyhorse-1.1-r2v' });
+  assert.equal(hhR2vCaps.maxReferences, 5);
+  assert.equal(hhR2vCaps.referenceMode, 'multi-ref');
+  const seedream55Caps = modelInputCapabilities({ adapter: 'ark-image', modelId: 'doubao-seedream-5-5-261028' });
+  assert.equal(seedream55Caps.supportsTransparentBg, true);
+  assert.equal(seedream55Caps.maxReferences, 10);
+  const minimaxH3Caps = modelInputCapabilities({ adapter: 'minimax-video', modelId: 'MiniMax-H3' });
+  assert.equal(minimaxH3Caps.supportsLastFrame, true);
+  assert.equal(minimaxH3Caps.supportsAudioToggle, true);
+  assert.ok(minimaxH3Caps.resolutions?.includes('2K'));
+  const zImgCaps = modelInputCapabilities({ adapter: 'dashscope-image', modelId: 'z-image-turbo' });
+  assert.equal(zImgCaps.maxReferences, 0);
+
+  // Driver routing helpers & registry
+  assert.equal(isDashscopeMediaArrayVideo('happyhorse-1.1-i2v'), true);
+  assert.equal(isDashscopeMediaArrayVideo('wan2.7-t2v'), true);
+  assert.equal(isDashscopeMediaArrayVideo('wan3.0-video'), true);
+  assert.equal(isDashscopeMediaArrayVideo('wan2.6-i2v'), false);
+  assert.equal(isDashscopeMultimodalImage('z-image-turbo'), true);
+  assert.equal(isDashscopeMultimodalImage('wan2.7-image-pro'), true);
+  assert.equal(isMiniMaxV2Video('MiniMax-H3'), true);
+  assert.equal(isMiniMaxV2Video('MiniMax-Hailuo-2.3'), false);
+  assert.equal(isMiniMaxH3Image('MiniMax-H3-Image'), true);
+  assert.equal(isMiniMaxH3Image('image-01'), false);
+  for (const ad of ['dashscope-image', 'dashscope-video', 'dashscope-speech', 'ark-image', 'ark-video', 'minimax-image', 'minimax-video', 'minimax-speech', 'openai-image', 'openai-video', 'openai-speech', 'system-speech'] as const) {
+    assert.ok(getProviderDriver(ad), `Driver registered for ${ad}`);
+  }
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools core regression tests');
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 core regression tests');

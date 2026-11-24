@@ -321,14 +321,22 @@ async function start(data: any) {
     hostTool(
       'generate_media',
       '生成创作素材',
-      'Generate an image, video or speech using the selected media model. Waits for the provider and returns a staged asset. To adopt, publish addAsset with its ID and addClip in one group. A remote job can be billable. Use a project image ID as optional reference.',
+      'Generate an image, video or speech using the selected media model. Waits for the provider and returns a staged asset. To adopt, publish addAsset with its ID and addClip in one group. Supports single/multi reference images (referenceAssetId / referenceAssetIds), optional video end frame (lastFrameAssetId), resolution, aspectRatio, generateAudio, and transparent background.',
       Type.Object({
         use: Type.Union([Type.Literal('image'), Type.Literal('video'), Type.Literal('speech')]),
         prompt: Type.String(),
         modelId: optionalText,
         referenceAssetId: optionalText,
+        referenceAssetIds: Type.Optional(Type.Array(Type.String())),
+        lastFrameAssetId: optionalText,
         size: optionalText,
+        resolution: optionalText,
+        aspectRatio: optionalText,
         seconds: Type.Optional(Type.Integer({ minimum: 1 })),
+        generateAudio: Type.Optional(Type.Boolean()),
+        background: Type.Optional(
+          Type.Union([Type.Literal('auto'), Type.Literal('opaque'), Type.Literal('transparent')]),
+        ),
         voice: optionalText,
         parameters: parameterMap,
       }),

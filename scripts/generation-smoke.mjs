@@ -54,7 +54,7 @@ const [png, jpeg, video, wav] = await Promise.all(
   ),
 );
 const secrets = Object.fromEntries(
-  ['open', 'agent', 'google', 'anthropic', 'ark', 'dash'].map((id) => [id, 'fixture-' + randomUUID()]),
+  ['open', 'agent', 'google', 'anthropic', 'ark', 'dash', 'minimax'].map((id) => [id, 'fixture-' + randomUUID()]),
 );
 const failures = [];
 const submissions = new Map();
@@ -309,10 +309,21 @@ const endpoint = await serve(async (req, res) => {
   if (path.endsWith('/images/generations')) {
     assert.ok(data.prompt);
     if (provider === 'ark') {
+      if (data.model === 'doubao-seedream-5-5-261028') {
+        assert.ok(Array.isArray(data.image) && data.image.length === 2, 'Seedream 5.5 receives multi-ref image array');
+        assert.equal(data.background, 'transparent');
+        assert.equal(data.output_format, 'png');
+        assert.equal(data.size, '2K');
+        return json(res, { data: [{ b64_json: png.toString('base64') }] });
+      }
       assert.equal(data.model, 'ark-image-id');
       assert.equal(data.response_format, 'b64_json');
       assert.match(data.image, /^data:image\/png;base64,/);
       return json(res, { data: [{ b64_json: jpeg.toString('base64') }] });
+    }
+    if (provider === 'minimax') {
+      assert.equal(data.model, 'MiniMax-H3-Image');
+      return json(res, { data: [{ url: cdn + '/image.png' }], base_resp: { status_code: 0, status_msg: 'success' } });
     }
     assert.equal(data.model, 'custom/image-id');
     if (data.prompt === 'ssrf-alibaba')
@@ -322,10 +333,72 @@ const endpoint = await serve(async (req, res) => {
     return json(res, { data: [{ url: cdn + '/image.png' }] });
   }
   if (path.endsWith('/images/edits')) {
+    if (provider === 'minimax') {
+      assert.equal(data.model, 'MiniMax-H3-Image');
+      assert.ok(Array.isArray(data.images) && data.images.length === 2);
+      assert.match(data.images[0].image_url, /^data:image\//);
+      return json(res, { data: [{ url: cdn + '/image.png' }], base_resp: { status_code: 0, status_msg: 'success' } });
+    }
     assert.equal(data.get('model'), 'custom/image-id');
     assert.equal(data.get('image').type, 'image/png');
     assert.equal(data.get('size'), '1024x1024');
     return json(res, { data: [{ b64_json: png.toString('base64') }] });
+  }
+  if (path === '/minimax/v1/image_generation') {
+    assert.equal(data.model, 'image-01');
+    assert.equal(data.aspect_ratio, '16:9');
+    return json(res, { data: { image_urls: [cdn + '/image.png'] }, base_resp: { status_code: 0, status_msg: 'success' } });
+  }
+  if (path === '/minimax/v1/t2a_v2') {
+    assert.equal(data.model, 'speech-2.8-hd');
+    assert.equal(data.voice_setting.voice_id, 'male-qn-qingse');
+    return json(res, {
+      data: { audio: wav.toString('hex'), status: 2 },
+      base_resp: { status_code: 0, status_msg: 'success' },
+    });
+  }
+  if (path === '/minimax/v2/video_generation') {
+    assert.equal(data.model, 'MiniMax-H3');
+    assert.equal(data.resolution, '2K');
+    assert.equal(data.generate_audio, true);
+    assert.equal(data.content.find((c) => c.role === 'first_frame')?.type, 'image_url');
+    assert.equal(data.content.find((c) => c.role === 'last_frame')?.type, 'image_url');
+    if (data.content[0].text === 'minimax-balance-err') {
+      return json(res, { base_resp: { status_code: 1008, status_msg: 'insufficient balance' } });
+    }
+    return json(res, { task_id: 'mm-h3-1', base_resp: { status_code: 0, status_msg: 'success' } });
+  }
+  if (path === '/minimax/v2/query/video_generation/mm-h3-1') {
+    return json(res, {
+      task_id: 'mm-h3-1',
+      status: 'Success',
+      content: { url: cdn + '/video.mp4' },
+      base_resp: { status_code: 0, status_msg: 'success' },
+    });
+  }
+  if (path === '/minimax/v1/video_generation') {
+    assert.equal(data.model, 'MiniMax-Hailuo-2.3');
+    assert.match(data.first_frame_image, /^data:image\//);
+    assert.match(data.last_frame_image, /^data:image\//);
+    return json(res, { task_id: 'mm-v1-1', base_resp: { status_code: 0, status_msg: 'success' } });
+  }
+  if (path === '/minimax/v1/query/video_generation') {
+    const qTask = new URL(req.url, 'http://localhost').searchParams.get('task_id');
+    assert.equal(qTask, 'mm-v1-1');
+    return json(res, {
+      task_id: 'mm-v1-1',
+      status: 'Success',
+      file_id: 'mm-file-99',
+      base_resp: { status_code: 0, status_msg: 'success' },
+    });
+  }
+  if (path === '/minimax/v1/files/retrieve') {
+    const fid = new URL(req.url, 'http://localhost').searchParams.get('file_id');
+    assert.equal(fid, 'mm-file-99');
+    return json(res, {
+      file: { file_id: 'mm-file-99', download_url: cdn + '/video.mp4' },
+      base_resp: { status_code: 0, status_msg: 'success' },
+    });
   }
   if (path.endsWith('/audio/speech')) {
     assert.equal(data.response_format, 'wav');
@@ -351,6 +424,11 @@ const endpoint = await serve(async (req, res) => {
     if (!ark) {
       assert.equal(data.get('input_reference').type, 'image/png');
       assert.equal(data.get('seconds'), '4');
+    } else if (prompt === 'seedance-fl') {
+      assert.equal(data.model, 'doubao-seedance-2-5');
+      assert.equal(data.generate_audio, true);
+      assert.equal(data.content.find((c) => c.role === 'first_frame')?.type, 'image_url');
+      assert.equal(data.content.find((c) => c.role === 'last_frame')?.type, 'image_url');
     } else if (prompt === 'recover') {
       assert.equal(data.duration, 5);
       assert.equal(data.ratio, '16:9');
@@ -427,6 +505,17 @@ const endpoint = await serve(async (req, res) => {
       assert.ok(content.some((c) => c.text === '水墨海岸'));
       return json(res, { output: { choices: [{ message: { content: [{ image: cdn + '/image.png' }] } }] } });
     }
+    if (data.model === 'qwen-image-3.0-pro' || data.model === 'wan2.7-image-pro') {
+      const content = data.input.messages[0].content;
+      const imgs = content.filter((c) => typeof c.image === 'string');
+      assert.equal(imgs.length, 2, `${data.model} receives 2 reference images`);
+      assert.equal(data.parameters.size, '2K');
+      return json(res, { output: { choices: [{ message: { content: [{ image: cdn + '/image.png' }] } }] } });
+    }
+    if (data.model === 'z-image-turbo') {
+      assert.equal(data.parameters.size, '1280*720');
+      return json(res, { output: { choices: [{ message: { content: [{ image: cdn + '/image.png' }] } }] } });
+    }
     if (data.model === 'qwen3-tts-flash') {
       assert.equal(data.input.voice, 'Cherry');
       assert.ok(data.input.text);
@@ -435,6 +524,25 @@ const endpoint = await serve(async (req, res) => {
   }
   if (path === '/dash/api/v1/services/aigc/video-generation/video-synthesis') {
     assert.equal(req.headers['x-dashscope-async'], 'enable');
+    if (data.model === 'wan2.7-i2v') {
+      assert.equal(data.input.media[0].type, 'first_frame');
+      assert.equal(data.input.media[1].type, 'last_frame');
+      assert.equal(data.parameters.resolution, '1080P');
+      return json(res, { output: { task_id: 'dash-vid-1', task_status: 'PENDING' } });
+    }
+    if (data.model === 'happyhorse-1.1-r2v') {
+      assert.equal(data.input.media.length, 2);
+      assert.equal(data.input.media[0].type, 'reference_image');
+      assert.equal(data.input.media[1].type, 'reference_image');
+      assert.equal(data.parameters.ratio, '16:9');
+      return json(res, { output: { task_id: 'dash-vid-1', task_status: 'PENDING' } });
+    }
+    if (data.model === 'wan3.0-video') {
+      assert.equal(data.parameters.aspect_ratio, '16:9');
+      assert.equal(data.parameters.audio, true);
+      assert.equal(data.parameters.duration, 10);
+      return json(res, { output: { task_id: 'dash-vid-1', task_status: 'PENDING' } });
+    }
     assert.equal(data.model, 'wan2.6-i2v');
     assert.match(data.input.img_url, /^data:image\/png;base64,/);
     assert.equal(data.parameters.duration, 5);
@@ -460,6 +568,7 @@ const connect = (id, protocol, baseUrl) => ({
 const providers = [
   connect('ark', 'ark', endpoint + '/ark/api/v3'),
   connect('dash', 'dashscope', endpoint + '/dash/api/v1'),
+  connect('minimax', 'minimax', endpoint + '/minimax'),
   connect('open', 'openai', endpoint + '/open/v1'),
   connect('agent', 'openai', endpoint + '/agent/v1'),
   connect('google', 'google', endpoint),
@@ -477,12 +586,24 @@ const models = [
   model('dash-vision', 'dash', 'chat', 'qwen3.5-plus', ['vision']),
   model('image-open', 'open', 'openai-image', 'custom/image-id', ['image']),
   model('image-ark', 'ark', 'ark-image', 'ark-image-id', ['image']),
+  model('image-seedream55', 'ark', 'ark-image', 'doubao-seedream-5-5-261028', ['image']),
   model('image-dash', 'dash', 'dashscope-image', 'qwen-image-plus', ['image']),
+  model('image-qwen3', 'dash', 'dashscope-image', 'qwen-image-3.0-pro', ['image']),
+  model('image-z', 'dash', 'dashscope-image', 'z-image-turbo', ['image']),
+  model('image-mm-h3', 'minimax', 'minimax-image', 'MiniMax-H3-Image', ['image']),
+  model('image-mm-01', 'minimax', 'minimax-image', 'image-01', ['image']),
   model('video-ark', 'ark', 'ark-video', 'ark-endpoint-id', ['video']),
+  model('video-seedance25', 'ark', 'ark-video', 'doubao-seedance-2-5', ['video']),
   model('video-dash', 'dash', 'dashscope-video', 'wan2.6-i2v', ['video']),
+  model('video-wan27-i2v', 'dash', 'dashscope-video', 'wan2.7-i2v', ['video']),
+  model('video-hh-r2v', 'dash', 'dashscope-video', 'happyhorse-1.1-r2v', ['video']),
+  model('video-wan3', 'dash', 'dashscope-video', 'wan3.0-video', ['video']),
+  model('video-mm-h3', 'minimax', 'minimax-video', 'MiniMax-H3', ['video']),
+  model('video-mm-hailuo', 'minimax', 'minimax-video', 'MiniMax-Hailuo-2.3', ['video']),
   model('video-open', 'open', 'openai-video', 'compat-video-id', ['video']),
   model('cloud-speech', 'open', 'openai-speech', 'voice-model', ['speech']),
   model('speech-dash', 'dash', 'dashscope-speech', 'qwen3-tts-flash', ['speech']),
+  model('speech-mm', 'minimax', 'minimax-speech', 'speech-2.8-hd', ['speech']),
   model('asr', 'open', 'openai-transcription', 'whisper-1', ['transcription']),
   model('plain-asr', 'open', 'openai-transcription', 'custom/plain-transcript', ['transcription']),
   model('asr-dash', 'dash', 'dashscope-transcription', 'qwen3-asr-flash', ['transcription']),
@@ -637,6 +758,154 @@ try {
   await assert.rejects(
     call('generation.start', { use: 'video', modelId: 'video-dash', prompt: 'missing-ref' }),
     /参考图片/,
+  );
+
+  // New Multi-Provider v2 contracts (DashScope Wan2.7/HappyHorse/Wan3.0/Qwen-Image-3.0/Z-Image + Ark Seedream 5.5/Seedance 2.5 + MiniMax H3/Hailuo/H3-Image/image-01/Speech 2.8)
+  const imported2 = await call('media.import', { paths: [jpegPath] });
+  const img2 = imported2.project.assets.find((a) => a.path === jpegPath);
+  assert.ok(img2);
+
+  assert.equal(
+    (
+      await generate({
+        use: 'image',
+        modelId: 'image-qwen3',
+        referenceAssetIds: [img.id, img2.id],
+        resolution: '2K',
+        prompt: '多图合成海报',
+      })
+    ).asset.width,
+    96,
+  );
+  assert.equal(
+    (await generate({ use: 'image', modelId: 'image-z', size: '1280x720', prompt: '极速写实' })).asset.width,
+    96,
+  );
+  assert.ok(
+    (
+      await generate({
+        use: 'video',
+        modelId: 'video-wan27-i2v',
+        referenceAssetId: img.id,
+        lastFrameAssetId: img2.id,
+        resolution: '1080P',
+        seconds: 5,
+        prompt: '首尾帧过渡',
+      })
+    ).asset.duration > 0,
+  );
+  assert.ok(
+    (
+      await generate({
+        use: 'video',
+        modelId: 'video-hh-r2v',
+        referenceAssetIds: [img.id, img2.id],
+        aspectRatio: '16:9',
+        seconds: 5,
+        prompt: '快乐马多主体参考',
+      })
+    ).asset.duration > 0,
+  );
+  assert.ok(
+    (
+      await generate({
+        use: 'video',
+        modelId: 'video-wan3',
+        aspectRatio: '16:9',
+        seconds: 10,
+        generateAudio: true,
+        prompt: '万相3.0原声镜头',
+      })
+    ).asset.duration > 0,
+  );
+  const seedream55 = (
+    await generate({
+      use: 'image',
+      modelId: 'image-seedream55',
+      referenceAssetIds: [img.id, img2.id],
+      resolution: '2K',
+      background: 'transparent',
+      prompt: '透明前景贴片',
+    })
+  ).asset;
+  assert.equal(extname(seedream55.path), '.png');
+  assert.ok(
+    (
+      await generate({
+        use: 'video',
+        modelId: 'video-seedance25',
+        referenceAssetId: img.id,
+        lastFrameAssetId: img2.id,
+        generateAudio: true,
+        prompt: 'seedance-fl',
+      })
+    ).asset.duration > 0,
+  );
+  assert.equal(
+    (await generate({ use: 'image', modelId: 'image-mm-h3', prompt: 'MiniMax 生图' })).asset.width,
+    96,
+  );
+  assert.equal(
+    (
+      await generate({
+        use: 'image',
+        modelId: 'image-mm-h3',
+        referenceAssetIds: [img.id, img2.id],
+        prompt: 'MiniMax 多图编辑',
+      })
+    ).asset.width,
+    96,
+  );
+  assert.equal(
+    (await generate({ use: 'image', modelId: 'image-mm-01', aspectRatio: '16:9', prompt: 'image-01 测试' })).asset.width,
+    96,
+  );
+  assert.equal(
+    (await generate({ use: 'speech', modelId: 'speech-mm', voice: 'male-qn-qingse', prompt: 'MiniMax 语音测试' }))
+      .asset.kind,
+    'audio',
+  );
+  assert.ok(
+    (
+      await generate({
+        use: 'video',
+        modelId: 'video-mm-h3',
+        referenceAssetId: img.id,
+        lastFrameAssetId: img2.id,
+        resolution: '2K',
+        generateAudio: true,
+        prompt: 'MiniMax H3 首尾帧',
+      })
+    ).asset.duration > 0,
+  );
+  assert.ok(
+    (
+      await generate({
+        use: 'video',
+        modelId: 'video-mm-hailuo',
+        referenceAssetId: img.id,
+        lastFrameAssetId: img2.id,
+        prompt: '海螺 2.3 两步取回',
+      })
+    ).asset.duration > 0,
+  );
+  const mmErrJob = await call('generation.start', {
+    use: 'video',
+    modelId: 'video-mm-h3',
+    referenceAssetId: img.id,
+    lastFrameAssetId: img2.id,
+    resolution: '2K',
+    generateAudio: true,
+    prompt: 'minimax-balance-err',
+  });
+  const mmErrDone = await until(
+    () => readJob(mmErrJob.id),
+    (j) => j?.status === 'failed',
+    'minimax base_resp error surfaced',
+  );
+  assert.match(mmErrDone.error, /1008|insufficient balance/);
+  console.log(
+    'PASS Multi-Provider v2 contracts: DashScope (Qwen-Image 3.0 / Z-Image / Wan 2.7 I2V / HappyHorse 1.1 R2V / Wan 3.0), Ark (Seedream 5.5 transparent multi-ref / Seedance 2.5 first+last+audio), MiniMax (H3 v2 / Hailuo v1+retrieve / H3-Image edits / image-01 / Speech 2.8 / base_resp error)',
   );
   assert.match(
     (await generate({ use: 'vision', assetId: movie.id, prompt: 'video-sample' })).text,

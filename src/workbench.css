@@ -1401,7 +1401,7 @@ input[type='checkbox']:not(.switch) {
 }
 .modal.generation-shell {
   width: min(560px, calc(100vw - 48px));
-  height: min(496px, calc(100vh - 56px));
+  height: min(588px, calc(100vh - 56px));
   max-height: calc(100vh - 48px);
   display: flex;
   flex-direction: column;
@@ -1420,7 +1420,7 @@ input[type='checkbox']:not(.switch) {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 9px;
   padding: 2px 2px 4px;
 }
 .generation-modes {
@@ -1469,7 +1469,7 @@ input[type='checkbox']:not(.switch) {
 }
 .generation-shell .field textarea {
   resize: none;
-  min-height: 92px;
+  min-height: 70px;
   font-size: 12px;
   border-radius: 6px;
 }
@@ -1483,6 +1483,96 @@ input[type='checkbox']:not(.switch) {
   color: var(--muted);
   font-size: 11px;
   text-align: right;
+}
+.generation-model-hint {
+  margin: -4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.generation-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.generation-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.generation-toggle input[type='checkbox'] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--text);
+}
+.generation-media-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2, var(--bg));
+}
+.generation-multi-ref {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.generation-ref-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.generation-ref-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.generation-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  font-size: 11px;
+  color: var(--text);
+}
+.generation-ref-chip em {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.generation-ref-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.generation-ref-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+.generation-ref-chip button:hover {
+  color: var(--text);
+  background: var(--line);
 }
 
 .brand {
