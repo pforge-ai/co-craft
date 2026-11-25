@@ -751,6 +751,119 @@ export function CreateCanvas({
     [project.canvasGenerators, onEdit],
   );
 
+  /** Freezes a tuned CanvasGeneratorNode (action, typed input slots, model, prompt & params) as a reusable Recipe VaultItem. */
+  const saveGeneratorAsRecipe = useCallback(
+    async (genNode: CanvasGeneratorNode) => {
+      const meta = GENERATOR_ACTION_META[genNode.action] || GENERATOR_ACTION_META['text-to-image'];
+      const inputSlots = genNode.inputs.length
+        ? genNode.inputs.map((i) => i.slot)
+        : genNode.action === 'motion-transfer' || genNode.action === 'character-replace'
+          ? (['subject', 'motion-video'] as CanvasGeneratorInput['slot'][])
+          : genNode.action === 'lip-sync'
+            ? (['subject', 'driver-audio'] as CanvasGeneratorInput['slot'][])
+            : (['subject'] as CanvasGeneratorInput['slot'][]);
+      const slotLabels = inputSlots.map((s) => SLOT_LABELS[s] || s);
+      const count = upstreamEntities.filter((e) => e.subkind === 'recipe').length + 1;
+      const recipeName = `${meta.label}配方 ${count}`;
+      const originPos = layoutRef.current[`gen:${genNode.id}`] || viewportCenterWorld();
+      const item: VaultItem = {
+        id: uid('pvault'),
+        name: recipeName,
+        entityKind: 'skill',
+        role: 'animation-skill',
+        tags: ['工坊配方', meta.label],
+        category: 'recipe',
+        subkind: 'recipe',
+        description: `槽位：${slotLabels.join(' + ')} → ${meta.label}`,
+        derivedFrom: [
+          {
+            vaultItemId: `gen:${genNode.id}`,
+            via: 'manual-ref',
+            note: '存为配方',
+          },
+        ],
+        recipe: {
+          skillId: 'canvas-workshop',
+          slots: slotLabels,
+          promptTemplate: genNode.prompt || '',
+          workshop: {
+            use: genNode.use,
+            action: genNode.action,
+            modelId: genNode.modelId,
+            prompt: genNode.prompt || '',
+            inputSlots,
+            params: genNode.params ? { ...genNode.params } : undefined,
+          },
+        },
+        version: 1,
+        updatedAt: new Date().toISOString(),
+      };
+      const nextLayout = {
+        ...nodePositionsRef.current,
+        [`ent:${item.id}`]: { x: Math.round(originPos.x), y: Math.round(originPos.y + 300) },
+      };
+      nodePositionsRef.current = nextLayout;
+      setNodePositions(nextLayout);
+      await onEdit(`保存工坊配方「${recipeName}」`, [
+        { type: 'putVaultItem', item },
+        { type: 'updateProject', changes: { canvasLayout: nextLayout } },
+      ]);
+      setSelectedNodeIds([`ent:${item.id}`]);
+    },
+    [upstreamEntities, viewportCenterWorld, onEdit],
+  );
+
+  /** Spawns a fresh live CanvasGeneratorNode from a saved Recipe VaultItem, auto-wiring any compatible selected nodes. */
+  const instantiateWorkshopRecipe = useCallback(
+    async (ent: VaultItem, originPos: Pt) => {
+      const ws = ent.recipe?.workshop;
+      if (!ws) return;
+      const inputs: CanvasGeneratorInput[] = [];
+      const extraSelected = selectedIdsRef.current.filter((k) => k !== `ent:${ent.id}`);
+      const usedKeys = new Set<string>();
+      for (const slot of ws.inputSlots) {
+        let matchKey: string | undefined;
+        if (slot === 'motion-video') {
+          matchKey = extraSelected.find((k) => {
+            if (usedKeys.has(k) || !k.startsWith('asset:')) return false;
+            return project.assets.some((a) => `asset:${a.id}` === k && a.kind === 'video');
+          });
+        } else if (slot === 'driver-audio') {
+          matchKey = extraSelected.find((k) => {
+            if (usedKeys.has(k) || !k.startsWith('asset:')) return false;
+            return project.assets.some((a) => `asset:${a.id}` === k && a.kind === 'audio');
+          });
+        } else if (slot === 'prompt-text') {
+          matchKey = extraSelected.find((k) => {
+            if (usedKeys.has(k) || !k.startsWith('ent:')) return false;
+            return upstreamEntities.some((e) => `ent:${e.id}` === k && e.entityKind === 'text');
+          });
+        } else {
+          matchKey = extraSelected.find((k) => {
+            if (usedKeys.has(k)) return false;
+            if (k.startsWith('asset:')) return project.assets.some((a) => `asset:${a.id}` === k && a.kind === 'image');
+            if (k.startsWith('ent:')) return upstreamEntities.some((e) => `ent:${e.id}` === k && e.entityKind !== 'text');
+            return false;
+          });
+        }
+        if (matchKey) {
+          usedKeys.add(matchKey);
+          inputs.push({ nodeKey: matchKey, slot });
+        }
+      }
+      await spawnGeneratorNode({
+        use: ws.use,
+        action: ws.action,
+        modelId: ws.modelId,
+        prompt: ws.prompt,
+        params: ws.params,
+        inputs,
+        placement: { x: Math.round(originPos.x + 306), y: Math.round(originPos.y) },
+      });
+    },
+    [project.assets, upstreamEntities, spawnGeneratorNode],
+  );
+
   const createTextNode = useCallback(
     async (initialText = '', worldPos?: Pt) => {
       setAddMenuOpen(false);
@@ -1551,15 +1664,22 @@ export function CreateCanvas({
         if (!targetGen) return;
         if (targetGen.inputs.some((x) => x.nodeKey === fromKey)) return;
         let slot: CanvasGeneratorInput['slot'] = 'source';
+        let nextActionPatch: Partial<CanvasGeneratorNode> = {};
         if (fromKey.startsWith('ent:')) {
           const ent = upstreamEntities.find((e) => `ent:${e.id}` === fromKey);
           if (ent?.entityKind === 'text') slot = 'prompt-text';
           else if (targetGen.use === 'video') {
-            slot = targetGen.inputs.some((x) => x.slot === 'first-frame')
-              ? targetGen.inputs.some((x) => x.slot === 'last-frame')
-                ? 'subject'
-                : 'last-frame'
-              : 'first-frame';
+            const isPerf =
+              targetGen.action === 'motion-transfer' ||
+              targetGen.action === 'character-replace' ||
+              targetGen.action === 'lip-sync';
+            slot = isPerf
+              ? 'subject'
+              : targetGen.inputs.some((x) => x.slot === 'first-frame')
+                ? targetGen.inputs.some((x) => x.slot === 'last-frame')
+                  ? 'subject'
+                  : 'last-frame'
+                : 'first-frame';
           } else if (ent?.role === 'environment') slot = 'scene';
           else if (ent?.role === 'visual-style') slot = 'style';
           else slot = 'subject';
@@ -1567,18 +1687,34 @@ export function CreateCanvas({
           const a = fromKey.startsWith('asset:')
             ? project.assets.find((x) => `asset:${x.id}` === fromKey)
             : undefined;
-          if (targetGen.use === 'video') {
-            slot = targetGen.inputs.some((x) => x.slot === 'first-frame')
-              ? targetGen.inputs.some((x) => x.slot === 'last-frame')
-                ? 'subject'
-                : 'last-frame'
-              : 'first-frame';
+          if (a?.kind === 'video') {
+            slot = 'motion-video';
+            if (targetGen.action !== 'motion-transfer' && targetGen.action !== 'character-replace') {
+              nextActionPatch = { use: 'video', action: 'motion-transfer', modelId: undefined };
+            }
+          } else if (a?.kind === 'audio') {
+            slot = 'driver-audio';
+            if (targetGen.action !== 'lip-sync') {
+              nextActionPatch = { use: 'video', action: 'lip-sync', modelId: undefined };
+            }
+          } else if (targetGen.use === 'video') {
+            const isPerf =
+              targetGen.action === 'motion-transfer' ||
+              targetGen.action === 'character-replace' ||
+              targetGen.action === 'lip-sync';
+            slot = isPerf
+              ? 'subject'
+              : targetGen.inputs.some((x) => x.slot === 'first-frame')
+                ? targetGen.inputs.some((x) => x.slot === 'last-frame')
+                  ? 'subject'
+                  : 'last-frame'
+                : 'first-frame';
           } else if (a?.role === 'environment' || a?.role === 'backdrop') slot = 'scene';
           else if (a?.role === 'visual-style') slot = 'style';
           else slot = 'subject';
         }
         const nextInputs = [...targetGen.inputs, { nodeKey: fromKey, slot }];
-        await updateGeneratorNode(genId, { inputs: nextInputs });
+        await updateGeneratorNode(genId, { ...nextActionPatch, inputs: nextInputs });
         return;
       }
       // 1. Ent <-> Shot: subject / script / compound binding wire
@@ -2189,15 +2325,18 @@ export function CreateCanvas({
       }
     }
 
-    // E) Entity lineage: Asset/Ent -> Ent
+    // E) Entity lineage: Asset/Ent/Gen/Shot -> Ent
     for (const ent of upstreamEntities) {
       if (!ent.derivedFrom?.length) continue;
       for (const ref of ent.derivedFrom) {
-        const fromKey = ref.vaultItemId
-          ? `ent:${ref.vaultItemId}`
-          : ref.assetId
-            ? `asset:${ref.assetId}`
-            : '';
+        const fromKey =
+          ref.vaultItemId?.startsWith('gen:') || ref.vaultItemId?.startsWith('shot:')
+            ? ref.vaultItemId
+            : ref.vaultItemId
+              ? `ent:${ref.vaultItemId}`
+              : ref.assetId
+                ? `asset:${ref.assetId}`
+                : '';
         if (!fromKey || !layout[fromKey]) continue;
         pushWire({
           key: `elin:${fromKey}->ent:${ent.id}`,
@@ -3428,6 +3567,7 @@ export function CreateCanvas({
           const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
           const isTextNote = ent.entityKind === 'text';
           const isCompound = ent.entityKind === 'compound';
+          const isRecipe = ent.subkind === 'recipe' && Boolean(ent.recipe?.workshop);
           const variants = ent.variants || [];
           const activeVar =
             variants.find((v) => v.id === (activeVarByEnt[ent.id] || ent.defaultVariantId)) || variants[0];
@@ -3504,6 +3644,23 @@ export function CreateCanvas({
                         }
                       >
                         <AudioLines size={12} /> AI 配音
+                      </button>
+                    </>
+                  ) : isRecipe ? (
+                    <>
+                      <button
+                        type="button"
+                        title="按此配方一键生成可运行工坊卡（若同时选中新角色/视频/音频则自动接入对应槽位）"
+                        onClick={() => void instantiateWorkshopRecipe(ent, pos)}
+                      >
+                        <Sparkles size={12} /> 套用配方
+                      </button>
+                      <button
+                        type="button"
+                        title="发布配方至跨项目个人库"
+                        onClick={() => void onPublishToLibrary({ itemId: ent.id })}
+                      >
+                        ↑个人库
                       </button>
                     </>
                   ) : isCompound ? (
@@ -3656,9 +3813,11 @@ export function CreateCanvas({
                 <span>
                   {isTextNote
                     ? ent.name
-                    : isCompound
-                      ? `精剪 · ${formatCanvasDisplayName(ent.name, true)}`
-                      : `${ROLE_LABELS[inferAssetRole(ent)]} · ${formatCanvasDisplayName(ent.name)}`}
+                    : isRecipe
+                      ? `配方 · ${ent.name}`
+                      : isCompound
+                        ? `精剪 · ${formatCanvasDisplayName(ent.name, true)}`
+                        : `${ROLE_LABELS[inferAssetRole(ent)]} · ${formatCanvasDisplayName(ent.name)}`}
                 </span>
                 <small>
                   {isCompound && ent.compound
@@ -3714,6 +3873,22 @@ export function CreateCanvas({
                       });
                     }}
                   />
+                ) : isRecipe && ent.recipe?.workshop ? (
+                  <div className="cc-recipe-body">
+                    <div className="cc-recipe-slots">
+                      {ent.recipe.workshop.inputSlots.map((slot, sIdx) => (
+                        <span key={`${slot}-${sIdx}`} className="cc-recipe-slot-pill">
+                          {SLOT_LABELS[slot] || slot}
+                        </span>
+                      ))}
+                      <span className="cc-recipe-slot-pill">
+                        → {(GENERATOR_ACTION_META[ent.recipe.workshop.action] || GENERATOR_ACTION_META['text-to-image']).label}
+                      </span>
+                    </div>
+                    {ent.recipe.workshop.prompt && (
+                      <p className="cc-recipe-prompt">{ent.recipe.workshop.prompt}</p>
+                    )}
+                  </div>
                 ) : (
                   <>
                     <div
@@ -4690,6 +4865,7 @@ export function CreateCanvas({
               onTraceNode={toggleTraceNode}
               onUpdateNode={(id, patch) => void updateGeneratorNode(id, patch)}
               onDeleteNode={(id) => void deleteGeneratorNode(id)}
+              onSaveRecipe={(g) => void saveGeneratorAsRecipe(g)}
               onJobsStarted={onJobsStarted}
               onOpenGeneration={onOpenGeneration}
             />

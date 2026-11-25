@@ -7,6 +7,14 @@ export interface EncodedReferenceImage {
   dataUri: string;
 }
 
+export interface EncodedMediaFile {
+  assetId: string;
+  filePath: string;
+  fileName: string;
+  mime: string;
+  kind: 'video' | 'audio';
+}
+
 export interface ProviderRequestOptions {
   method?: string;
   headers?: HeadersInit;
@@ -25,6 +33,7 @@ export interface ProviderHttp {
     opts?: Omit<ProviderRequestOptions, 'method' | 'body'> & { extraHeaders?: Record<string, string> },
   ): Promise<any>;
   downloadToFile(url: string, destFile: string, signal: AbortSignal, providerBaseUrl?: string): Promise<void>;
+  assertSafeUrl(url: URL, providerBaseUrl?: string): Promise<void>;
   onRemoteCreated(remote: {
     id: string;
     status: string;
@@ -60,6 +69,9 @@ export interface VideoDriverRequest {
   params: Record<string, unknown>;
   references: EncodedReferenceImage[];
   lastFrame?: EncodedReferenceImage;
+  motionVideo?: EncodedMediaFile;
+  driverAudio?: EncodedMediaFile;
+  animateMode?: 'wan-std' | 'wan-pro';
   size?: string;
   resolution?: string;
   aspectRatio?: string;

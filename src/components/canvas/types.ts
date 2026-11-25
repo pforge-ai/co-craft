@@ -16,6 +16,8 @@ export interface CanvasGenerationOptions {
   referenceAssetId?: string;
   referenceAssetIds?: string[];
   lastFrameAssetId?: string;
+  motionVideoAssetId?: string;
+  driverAudioAssetId?: string;
   assetId?: string;
   target?: GenerationTarget;
   canvas?: GenerationCanvasMeta;
@@ -117,7 +119,9 @@ export function detectStaleBindings(
 export interface CanvasMultiSelectionSummary {
   imageAssetIds: string[];
   videoAssetIds: string[];
+  videoNodeKeys: string[];
   audioAssetIds: string[];
+  audioNodeKeys: string[];
   visualAssetIds: string[];
   textNodeKeys: string[];
   textSnippets: string[];
@@ -147,7 +151,9 @@ export function collectVisualSelection(
 
   const imageAssetIds: string[] = [];
   const videoAssetIds: string[] = [];
+  const videoNodeKeys: string[] = [];
   const audioAssetIds: string[] = [];
+  const audioNodeKeys: string[] = [];
   const visualAssetIds: string[] = [];
   const textNodeKeys: string[] = [];
   const textSnippets: string[] = [];
@@ -173,10 +179,16 @@ export function collectVisualSelection(
         labels.push(a.name.replace(/\.[^.]+$/, ''));
         sourceNodeKeys.push(key);
       } else if (a && a.kind === 'video') {
-        if (!videoAssetIds.includes(a.id)) videoAssetIds.push(a.id);
+        if (!videoAssetIds.includes(a.id)) {
+          videoAssetIds.push(a.id);
+          videoNodeKeys.push(key);
+        }
         if (!visualAssetIds.includes(a.id)) visualAssetIds.push(a.id);
       } else if (a && a.kind === 'audio') {
-        if (!audioAssetIds.includes(a.id)) audioAssetIds.push(a.id);
+        if (!audioAssetIds.includes(a.id)) {
+          audioAssetIds.push(a.id);
+          audioNodeKeys.push(key);
+        }
       }
     } else if (key.startsWith('ent:')) {
       const ent = upstreamEntities.find((x) => `ent:${x.id}` === key);
@@ -220,7 +232,9 @@ export function collectVisualSelection(
   return {
     imageAssetIds,
     videoAssetIds,
+    videoNodeKeys,
     audioAssetIds,
+    audioNodeKeys,
     visualAssetIds,
     textNodeKeys,
     textSnippets,

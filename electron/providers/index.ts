@@ -21,7 +21,13 @@ export function getProviderDriver(adapter: ModelAdapter): MediaProviderDriver {
 }
 
 export * from './types';
-export { dashscopeDriver, isDashscopeMediaArrayVideo, isDashscopeMultimodalImage } from './dashscope';
+export {
+  dashscopeDriver,
+  isDashscopeAnimateVideo,
+  isDashscopeMediaArrayVideo,
+  isDashscopeMultimodalImage,
+  isDashscopeS2VVideo,
+} from './dashscope';
 export { arkDriver } from './ark';
 export { minimaxDriver, isMiniMaxH3Image, isMiniMaxV2Video } from './minimax';
 export { openaiDriver } from './openai';

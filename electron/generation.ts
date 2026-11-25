@@ -51,6 +51,9 @@ export interface GenerationRequest {
   referenceAssetId?: string;
   referenceAssetIds?: string[];
   lastFrameAssetId?: string;
+  motionVideoAssetId?: string;
+  driverAudioAssetId?: string;
+  animateMode?: 'wan-std' | 'wan-pro';
   size?: string;
   resolution?: string;
   aspectRatio?: string;
@@ -106,6 +109,9 @@ const parameterKeys: Record<ModelAdapter, string[]> = {
     'prompt_extend',
     'negative_prompt',
     'audio',
+    'mode',
+    'check_image',
+    'style',
   ],
   'minimax-video': ['resolution', 'ratio', 'duration', 'generate_audio', 'prompt_optimizer', 'fast_pretreatment'],
   'openai-speech': ['voice', 'speed', 'instructions'],
@@ -526,15 +532,34 @@ export class GenerationService {
     };
     const refIds = normalizedReferenceIds(input);
     const lastFrameId = typeof input.lastFrameAssetId === 'string' && input.lastFrameAssetId.trim() ? input.lastFrameAssetId.trim() : undefined;
+    const motionVideoId =
+      typeof input.motionVideoAssetId === 'string' && input.motionVideoAssetId.trim()
+        ? input.motionVideoAssetId.trim()
+        : undefined;
+    const driverAudioId =
+      typeof input.driverAudioAssetId === 'string' && input.driverAudioAssetId.trim()
+        ? input.driverAudioAssetId.trim()
+        : undefined;
+    const caps = modelInputCapabilities(resolved.model);
+    const defaultPerfPrompt = caps.supportsDriverAudio
+      ? '音频驱动对口型'
+      : caps.supportsMotionVideo
+        ? caps.motionMode === 'mix'
+          ? '视频换人'
+          : '动作迁移'
+        : '';
 
     const req: GenerationRequest = {
       use: input.use,
-      prompt: String(input.prompt || '').trim(),
+      prompt: String(input.prompt || '').trim() || (caps.promptOptional ? defaultPerfPrompt : ''),
       modelId: model.id,
       assetId: input.assetId,
       referenceAssetId: refIds[0],
       ...(refIds.length ? { referenceAssetIds: refIds } : {}),
       ...(lastFrameId ? { lastFrameAssetId: lastFrameId } : {}),
+      ...(motionVideoId ? { motionVideoAssetId: motionVideoId } : {}),
+      ...(driverAudioId ? { driverAudioAssetId: driverAudioId } : {}),
+      ...(input.animateMode ? { animateMode: input.animateMode } : {}),
       size: input.size,
       resolution: input.resolution,
       aspectRatio: input.aspectRatio,
@@ -556,7 +581,7 @@ export class GenerationService {
             },
           }
         : {}),
-      ...(input.canvas || refIds.length || lastFrameId
+      ...(input.canvas || refIds.length || lastFrameId || motionVideoId || driverAudioId
         ? {
             canvas: {
               ...(input.canvas?.placement &&
@@ -582,7 +607,9 @@ export class GenerationService {
                 : {}),
               ...(refIds.length ? { referenceAssetIds: refIds } : {}),
               ...(lastFrameId ? { lastFrameAssetId: lastFrameId } : {}),
-              promptPreview: String(input.canvas?.promptPreview || input.prompt || '')
+              ...(motionVideoId ? { motionVideoAssetId: motionVideoId } : {}),
+              ...(driverAudioId ? { driverAudioAssetId: driverAudioId } : {}),
+              promptPreview: String(input.canvas?.promptPreview || input.prompt || defaultPerfPrompt || '')
                 .replace(/\s+/g, ' ')
                 .trim()
                 .slice(0, 120),
@@ -592,7 +619,8 @@ export class GenerationService {
         : {}),
     };
 
-    if (['image', 'video', 'speech'].includes(req.use) && !req.prompt) throw new Error('请输入创作内容');
+    if (['image', 'video', 'speech'].includes(req.use) && !req.prompt && !caps.promptOptional)
+      throw new Error('请输入创作内容');
     if (['transcription', 'vision'].includes(req.use) && !assets.some((a) => a.id === req.assetId))
       throw new Error('请选择项目中的素材');
     if ((refIds.length || lastFrameId) && !['image', 'video'].includes(req.use))
@@ -603,6 +631,10 @@ export class GenerationService {
     }
     if (lastFrameId && !assets.some((a) => a.id === lastFrameId && a.kind === 'image'))
       throw new Error('所选尾帧图片不存在或不是图片素材');
+    if (motionVideoId && !assets.some((a) => a.id === motionVideoId && a.kind === 'video'))
+      throw new Error('所选驱动视频不存在或不是视频素材');
+    if (driverAudioId && !assets.some((a) => a.id === driverAudioId && a.kind === 'audio'))
+      throw new Error('所选驱动音频不存在或不是音频素材');
 
     const expected: Record<string, ModelAdapter[]> = {
       image: ['openai-image', 'ark-image', 'dashscope-image', 'minimax-image'],
@@ -622,13 +654,22 @@ export class GenerationService {
         'OpenAI 官方 Videos API 已于 2026-09-24 停止提供。请选择百炼、火山方舟、MiniMax 或其他已支持该协议的服务。',
       );
 
-    const caps = modelInputCapabilities(resolved.model);
     if ((req.use === 'image' || req.use === 'video') && caps.requiresReference && refIds.length === 0) {
       throw new Error(
-        caps.referenceMode === 'multi-ref'
-          ? `模型「${resolved.model.modelId}」需要至少选择 1 张参考图片`
-          : `图生视频模型「${resolved.model.modelId}」需要选择首帧参考图片，或改用文生视频模型`,
+        caps.supportsMotionVideo
+          ? `模型「${resolved.model.modelId}」需要连入 1 张角色主体参考图`
+          : caps.supportsDriverAudio
+            ? `模型「${resolved.model.modelId}」需要连入 1 张角色人像图`
+            : caps.referenceMode === 'multi-ref'
+              ? `模型「${resolved.model.modelId}」需要至少选择 1 张参考图片`
+              : `图生视频模型「${resolved.model.modelId}」需要选择首帧参考图片，或改用文生视频模型`,
       );
+    }
+    if (req.use === 'video' && caps.supportsMotionVideo && !motionVideoId) {
+      throw new Error(`模型「${resolved.model.modelId}」需要连入 1 段驱动视频（motion-video）`);
+    }
+    if (req.use === 'video' && caps.supportsDriverAudio && !driverAudioId) {
+      throw new Error(`模型「${resolved.model.modelId}」需要连入 1 段驱动音频（driver-audio）`);
     }
     if ((req.use === 'image' || req.use === 'video') && caps.maxReferences > 0 && refIds.length > caps.maxReferences) {
       throw new Error(`模型「${resolved.model.modelId}」最多支持 ${caps.maxReferences} 张参考图片`);
@@ -641,6 +682,8 @@ export class GenerationService {
       ...(req.assetId ? [req.assetId] : []),
       ...refIds,
       ...(lastFrameId ? [lastFrameId] : []),
+      ...(motionVideoId ? [motionVideoId] : []),
+      ...(driverAudioId ? [driverAudioId] : []),
     ]);
 
     const targetSeq = req.target
@@ -747,6 +790,7 @@ export class GenerationService {
       json: (p, path, body, opts) =>
         jsonRequest(p, path, body, opts?.signal, opts?.baseKind || 'default', opts?.extraHeaders),
       downloadToFile: (url, dest, sig, base) => downloadToFile(url, dest, sig, base),
+      assertSafeUrl: (url, base) => assertSafeRemoteUrl(url, base),
       onRemoteCreated: async (remote) => {
         await this.jobs.update(job, {
           remote: {
@@ -821,7 +865,40 @@ export class GenerationService {
         const seenAssetRefs = new Set<string>();
         const seenVaultRefs = new Set<string>();
         const reqRefs = normalizedReferenceIds(req);
-        if (req.lastFrameAssetId && reqRefs.length > 0) {
+        const perfCaps = modelInputCapabilities(model);
+        if (req.motionVideoAssetId && reqRefs.length > 0) {
+          const viaKind = perfCaps.motionMode === 'mix' ? ('character-replace' as const) : ('motion-transfer' as const);
+          const noteLabel = perfCaps.motionMode === 'mix' ? '换人主体' : '表演角色';
+          derivedFrom.push({
+            assetId: reqRefs[0],
+            via: viaKind,
+            modelOrSkill: model.modelId,
+            note: noteLabel,
+          });
+          seenAssetRefs.add(reqRefs[0]);
+          derivedFrom.push({
+            assetId: req.motionVideoAssetId,
+            via: viaKind,
+            modelOrSkill: model.modelId,
+            note: perfCaps.motionMode === 'mix' ? '原片视频' : '动作驱动',
+          });
+          seenAssetRefs.add(req.motionVideoAssetId);
+        } else if (req.driverAudioAssetId && reqRefs.length > 0) {
+          derivedFrom.push({
+            assetId: reqRefs[0],
+            via: 'lip-sync',
+            modelOrSkill: model.modelId,
+            note: '口型角色',
+          });
+          seenAssetRefs.add(reqRefs[0]);
+          derivedFrom.push({
+            assetId: req.driverAudioAssetId,
+            via: 'lip-sync',
+            modelOrSkill: model.modelId,
+            note: '驱动语音',
+          });
+          seenAssetRefs.add(req.driverAudioAssetId);
+        } else if (req.lastFrameAssetId && reqRefs.length > 0) {
           derivedFrom.push({
             assetId: reqRefs[0],
             via: 'first-last-frame',
@@ -1211,6 +1288,30 @@ export class GenerationService {
       const lastFrame = req.lastFrameAssetId
         ? await this.encodeReference(store, job, dir, signal, req.lastFrameAssetId)
         : undefined;
+      const motionAsset = req.motionVideoAssetId
+        ? await this.sourceAsset(store, job, req.motionVideoAssetId)
+        : undefined;
+      const motionVideo = motionAsset
+        ? {
+            assetId: motionAsset.id,
+            filePath: motionAsset.path,
+            fileName: motionAsset.name || `${motionAsset.id}${extname(motionAsset.path) || '.mp4'}`,
+            mime: extname(motionAsset.path).toLowerCase() === '.mov' ? 'video/quicktime' : 'video/mp4',
+            kind: 'video' as const,
+          }
+        : undefined;
+      const driverAudAsset = req.driverAudioAssetId
+        ? await this.sourceAsset(store, job, req.driverAudioAssetId)
+        : undefined;
+      const driverAudio = driverAudAsset
+        ? {
+            assetId: driverAudAsset.id,
+            filePath: driverAudAsset.path,
+            fileName: driverAudAsset.name || `${driverAudAsset.id}${extname(driverAudAsset.path) || '.wav'}`,
+            mime: extname(driverAudAsset.path).toLowerCase() === '.mp3' ? 'audio/mpeg' : 'audio/wav',
+            kind: 'audio' as const,
+          }
+        : undefined;
       signal.throwIfAborted();
       // A submitted creation request can be billable. Read its acknowledgement even after a local stop.
       const receipt = AbortSignal.timeout(30000);
@@ -1222,6 +1323,9 @@ export class GenerationService {
           params: p,
           references,
           lastFrame,
+          motionVideo,
+          driverAudio,
+          animateMode: req.animateMode,
           size: req.size,
           resolution: req.resolution,
           aspectRatio: req.aspectRatio,

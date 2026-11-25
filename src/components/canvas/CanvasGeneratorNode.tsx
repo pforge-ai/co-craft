@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ArrowLeftRight,
   AudioLines,
+  BookmarkPlus,
   Clapperboard,
   Image as ImageIcon,
   Maximize2,
@@ -31,7 +32,7 @@ import type { CanvasGenerationOptions } from './types';
 
 export const GENERATOR_ACTION_META: Record<
   CanvasGeneratorAction,
-  { label: string; use: 'image' | 'video' | 'speech'; defaultPrompt: string }
+  { label: string; use: 'image' | 'video' | 'speech'; defaultPrompt: string; costTier?: 'L2' | 'L3' }
 > = {
   'text-to-image': { label: 'AI 生图', use: 'image', defaultPrompt: '' },
   'image-edit': { label: '指令改图', use: 'image', defaultPrompt: '保留主体身份与构图，按以下要求局部调整画面：' },
@@ -46,9 +47,12 @@ export const GENERATOR_ACTION_META: Record<
     use: 'image',
     defaultPrompt: '完整保留参考图主体边缘与质感，去除全部背景输出干净透明底 PNG',
   },
-  'image-to-video': { label: '图生视频', use: 'video', defaultPrompt: '电影级平稳推镜与自然动态，光影连贯' },
-  'first-last-video': { label: '首尾帧视频', use: 'video', defaultPrompt: '从首帧自然运镜流畅过渡至尾帧，电影感动态连贯' },
-  'ref-video': { label: '参考生视频', use: 'video', defaultPrompt: '保持参考主体外观与美术风格一致，电影感镜头表现' },
+  'image-to-video': { label: '图生视频', use: 'video', defaultPrompt: '电影级平稳推镜与自然动态，光影连贯', costTier: 'L3' },
+  'first-last-video': { label: '首尾帧视频', use: 'video', defaultPrompt: '从首帧自然运镜流畅过渡至尾帧，电影感动态连贯', costTier: 'L3' },
+  'ref-video': { label: '参考生视频', use: 'video', defaultPrompt: '保持参考主体外观与美术风格一致，电影感镜头表现', costTier: 'L3' },
+  'motion-transfer': { label: '动作迁移', use: 'video', defaultPrompt: '', costTier: 'L3' },
+  'character-replace': { label: '视频换人', use: 'video', defaultPrompt: '', costTier: 'L3' },
+  'lip-sync': { label: '音频对口型', use: 'video', defaultPrompt: '', costTier: 'L2' },
   tts: { label: 'AI 配音', use: 'speech', defaultPrompt: '' },
 };
 
@@ -59,6 +63,8 @@ export const SLOT_LABELS: Record<CanvasGeneratorInputSlot, string> = {
   'first-frame': '首帧',
   'last-frame': '尾帧',
   'prompt-text': '文本',
+  'motion-video': '动作视频',
+  'driver-audio': '驱动语音',
   source: '参考',
 };
 
@@ -88,6 +94,7 @@ interface CanvasGeneratorNodeProps {
   onTraceNode: (nodeKey: string) => void;
   onUpdateNode: (nodeId: string, patch: Partial<GeneratorNodeModel>) => void;
   onDeleteNode: (nodeId: string) => void;
+  onSaveRecipe?: (node: GeneratorNodeModel) => void;
   onJobsStarted?: (jobs: Job[]) => void;
   onOpenGeneration: (opts: CanvasGenerationOptions) => void;
 }
@@ -115,6 +122,7 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
   onTraceNode,
   onUpdateNode,
   onDeleteNode,
+  onSaveRecipe,
   onJobsStarted,
   onOpenGeneration,
 }: CanvasGeneratorNodeProps) {
@@ -130,11 +138,13 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
   const isRunning = submitting || activeJobs.length > 0;
   const meta = GENERATOR_ACTION_META[node.action] || GENERATOR_ACTION_META['text-to-image'];
 
-  // Resolve upstream inputs to thumbnails, assetIds, and prompt text snippets
+  // Resolve upstream inputs to thumbnails, image/video/audio assetIds, and prompt text snippets
   const resolvedInputs = useMemo(() => {
     return node.inputs.map((inp) => {
       let label = inp.nodeKey;
       let imageAssetId: string | undefined;
+      let videoAssetId: string | undefined;
+      let audioAssetId: string | undefined;
       let textSnippet = '';
       let thumbSrc: string | undefined;
 
@@ -143,6 +153,8 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
         if (a) {
           label = a.name.replace(/\.[^.]+$/, '').slice(0, 14);
           if (a.kind === 'image') imageAssetId = a.id;
+          else if (a.kind === 'video') videoAssetId = a.id;
+          else if (a.kind === 'audio') audioAssetId = a.id;
           if (a.thumbnail && !a.offline) thumbSrc = mediaUrl(previewOrigin, a.id, true);
         }
       } else if (inp.nodeKey.startsWith('ent:')) {
@@ -177,12 +189,16 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
           textSnippet = sh.scriptText || '';
         }
       }
-      return { ...inp, label, imageAssetId, textSnippet, thumbSrc };
+      return { ...inp, label, imageAssetId, videoAssetId, audioAssetId, textSnippet, thumbSrc };
     });
   }, [node.inputs, project.assets, upstreamEntities, shots, activeVarByEnt, previewOrigin]);
 
   const firstFrameInput = resolvedInputs.find((x) => x.slot === 'first-frame' && x.imageAssetId);
   const lastFrameInput = resolvedInputs.find((x) => x.slot === 'last-frame' && x.imageAssetId);
+  const motionVideoInput = resolvedInputs.find((x) => x.slot === 'motion-video' && x.videoAssetId) ||
+    resolvedInputs.find((x) => Boolean(x.videoAssetId));
+  const driverAudioInput = resolvedInputs.find((x) => x.slot === 'driver-audio' && x.audioAssetId) ||
+    resolvedInputs.find((x) => Boolean(x.audioAssetId));
   const orderedRefIds = useMemo(() => {
     const out: string[] = [];
     if (firstFrameInput?.imageAssetId) out.push(firstFrameInput.imageAssetId);
@@ -193,8 +209,12 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
     return out;
   }, [resolvedInputs, firstFrameInput]);
 
+  const isAnimateAction = node.action === 'motion-transfer' || node.action === 'character-replace';
+  const isLipSyncAction = node.action === 'lip-sync';
+  const motionVideoAssetId = isAnimateAction ? motionVideoInput?.videoAssetId : undefined;
+  const driverAudioAssetId = isLipSyncAction ? driverAudioInput?.audioAssetId : undefined;
   const lastFrameAssetId =
-    node.use === 'video' && lastFrameInput?.imageAssetId && orderedRefIds.length > 0
+    node.use === 'video' && !isAnimateAction && !isLipSyncAction && lastFrameInput?.imageAssetId && orderedRefIds.length > 0
       ? lastFrameInput.imageAssetId
       : undefined;
 
@@ -209,9 +229,23 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
       preferredModelId: node.modelId,
       refCount: orderedRefIds.length,
       hasLastFrame: Boolean(lastFrameAssetId),
+      hasMotionVideo: isAnimateAction,
+      motionMode: node.action === 'character-replace' ? 'mix' : node.action === 'motion-transfer' ? 'move' : undefined,
+      hasDriverAudio: isLipSyncAction,
       transparentBg: node.action === 'cutout' || node.params?.background === 'transparent',
     });
-  }, [settings, node.use, node.modelId, node.action, node.params?.background, project.modelDefaults, orderedRefIds.length, lastFrameAssetId]);
+  }, [
+    settings,
+    node.use,
+    node.modelId,
+    node.action,
+    node.params?.background,
+    project.modelDefaults,
+    orderedRefIds.length,
+    lastFrameAssetId,
+    isAnimateAction,
+    isLipSyncAction,
+  ]);
 
   const provider = settings?.providers.find((p) => p.id === model?.providerId);
   const connected = Boolean(provider && (provider.hasApiKey || !provider.requiresKey));
@@ -231,7 +265,7 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
   };
 
   const handleCycleSlot = (inp: CanvasGeneratorInput) => {
-    if (inp.slot === 'prompt-text') return;
+    if (inp.slot === 'prompt-text' || inp.slot === 'motion-video' || inp.slot === 'driver-audio') return;
     const ring = node.use === 'video' ? VIDEO_SLOTS : IMAGE_SLOTS;
     const idx = ring.indexOf(inp.slot);
     const nextSlot = ring[(idx + 1) % ring.length];
@@ -257,8 +291,11 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
   const handleActionChange = (nextAction: CanvasGeneratorAction) => {
     const nextMeta = GENERATOR_ACTION_META[nextAction];
     const nextInputs: CanvasGeneratorInput[] = node.inputs.map((inp, idx) => {
-      if (inp.slot === 'prompt-text') return inp;
+      if (inp.slot === 'prompt-text' || inp.slot === 'motion-video' || inp.slot === 'driver-audio') return inp;
       if (nextMeta.use === 'video') {
+        if (nextAction === 'motion-transfer' || nextAction === 'character-replace' || nextAction === 'lip-sync') {
+          return { ...inp, slot: 'subject' };
+        }
         if (nextAction === 'first-last-video') {
           return { ...inp, slot: idx === 0 ? 'first-frame' : idx === 1 ? 'last-frame' : 'subject' };
         }
@@ -307,10 +344,31 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
 
   const handleRun = async () => {
     if (submitting) return;
-    const effectivePrompt = buildEffectivePrompt();
-    if (!effectivePrompt) {
+    const promptOptional = Boolean(caps.promptOptional || isAnimateAction || isLipSyncAction);
+    const effectivePrompt = buildEffectivePrompt() || (promptOptional ? meta.label : '');
+    if (!effectivePrompt && !promptOptional) {
       setError('请先填写画面/镜头描述或连入文本节点');
       return;
+    }
+    if (isAnimateAction) {
+      if (!orderedRefIds.length) {
+        setError('请先连入 1 张角色主体图片');
+        return;
+      }
+      if (!motionVideoAssetId) {
+        setError('请先连入 1 段动作/原片驱动视频');
+        return;
+      }
+    }
+    if (isLipSyncAction) {
+      if (!orderedRefIds.length) {
+        setError('请先连入 1 张角色人像图片');
+        return;
+      }
+      if (!driverAudioAssetId) {
+        setError('请先连入 1 段配音音频');
+        return;
+      }
     }
     if (!connected || !model) {
       handleOpenInDialog();
@@ -340,9 +398,12 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
           referenceAssetId: effectiveRefs[0],
           referenceAssetIds: effectiveRefs.length ? effectiveRefs : undefined,
           lastFrameAssetId: effectiveLast,
+          motionVideoAssetId,
+          driverAudioAssetId,
+          animateMode: isAnimateAction ? node.params?.animateMode || 'wan-std' : undefined,
           aspectRatio: caps.supportsAspectRatio ? node.params?.aspectRatio || undefined : undefined,
           resolution: caps.supportsResolution ? node.params?.resolution || undefined : undefined,
-          seconds: node.use === 'video' ? node.params?.seconds || undefined : undefined,
+          seconds: node.use === 'video' && !promptOptional ? node.params?.seconds || undefined : undefined,
           generateAudio: node.use === 'video' && caps.supportsAudioToggle ? node.params?.generateAudio : undefined,
           background:
             node.use === 'image' && caps.supportsTransparentBg
@@ -355,6 +416,8 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
             sourceNodeKeys: [nodeKey],
             referenceAssetIds: effectiveRefs.length ? effectiveRefs : undefined,
             lastFrameAssetId: effectiveLast,
+            motionVideoAssetId,
+            driverAudioAssetId,
             promptPreview: effectivePrompt.slice(0, 120),
             use: node.use,
           },
@@ -413,7 +476,25 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
           {meta.label}
           {node.outputAssetIds?.length ? ` · 已出 ${node.outputAssetIds.length}` : ''}
         </span>
+        {(caps.costTier || meta.costTier) && (
+          <span className={`cc-gen-tier-badge tier-${(caps.costTier || meta.costTier || '').toLowerCase()}`}>
+            {caps.costTier || meta.costTier}
+          </span>
+        )}
         <div className="cc-gen-head-acts" onPointerDown={(e) => e.stopPropagation()}>
+          {onSaveRecipe && (
+            <button
+              type="button"
+              title="将当前工坊拓扑、模型与参数存为可复用配方（Recipe）"
+              aria-label="存为配方"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSaveRecipe({ ...node, prompt: promptLocal });
+              }}
+            >
+              <BookmarkPlus size={10} />
+            </button>
+          )}
           <button
             type="button"
             title={node.collapsed ? '展开工坊卡片' : '折叠为配方胶囊'}
@@ -478,6 +559,11 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
                 <option value="image-to-video">图生视频</option>
                 <option value="first-last-video">首尾帧视频</option>
                 <option value="ref-video">参考生视频</option>
+              </optgroup>
+              <optgroup label="人物表演 / 驱动 (L2 / L3)">
+                <option value="motion-transfer">动作迁移 (Move)</option>
+                <option value="character-replace">视频换人 (Mix)</option>
+                <option value="lip-sync">音频对口型 (S2V)</option>
               </optgroup>
               <optgroup label="语音合成">
                 <option value="tts">AI 配音</option>
@@ -547,9 +633,13 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
             placeholder={
               node.use === 'speech'
                 ? '输入需要朗读的台词，或连入文本卡…'
-                : node.use === 'video'
-                  ? '描述镜头动作、运镜与氛围（⌘↵ 直接运行）…'
-                  : '描述目标画面、修改要求或美术风格（⌘↵ 直接运行）…'
+                : isAnimateAction
+                  ? '动作迁移/换人由驱动视频控制，无需填写提示词（可留空或写备注）…'
+                  : isLipSyncAction
+                    ? '口型与头部微动作由驱动音频自动生成，无需填写提示词（可留空）…'
+                    : node.use === 'video'
+                      ? '描述镜头动作、运镜与氛围（⌘↵ 直接运行）…'
+                      : '描述目标画面、修改要求或美术风格（⌘↵ 直接运行）…'
             }
             value={promptLocal}
             onChange={(e) => {
@@ -605,7 +695,24 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
                 ))}
               </select>
             )}
-            {node.use === 'video' && (
+            {isAnimateAction && (
+              <select
+                aria-label="动作表演模式"
+                value={node.params?.animateMode || 'wan-std'}
+                onChange={(e) =>
+                  onUpdateNode(node.id, {
+                    params: {
+                      ...(node.params || {}),
+                      animateMode: e.target.value === 'wan-pro' ? 'wan-pro' : 'wan-std',
+                    },
+                  })
+                }
+              >
+                <option value="wan-std">标准模式 (wan-std)</option>
+                <option value="wan-pro">高精模式 (wan-pro)</option>
+              </select>
+            )}
+            {node.use === 'video' && !isAnimateAction && !isLipSyncAction && (
               <select
                 aria-label="视频时长"
                 value={String(node.params?.seconds || '')}

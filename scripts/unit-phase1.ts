@@ -1530,6 +1530,121 @@ assert.ok(
   assert.deepEqual(multiSum.visualAssetIds, ['a_still_1', 'a_vid_1']);
   assert.deepEqual(multiSum.textNodeKeys, ['ent:ent_prompt']);
   assert.deepEqual(multiSum.textSnippets, ['赛博霓虹雨巷、35mm胶片颗粒']);
+  assert.deepEqual(multiSum.videoNodeKeys, ['asset:a_vid_1']);
+  assert.deepEqual(multiSum.audioNodeKeys, ['asset:a_vo_1']);
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 Cinema/Audio regression tests');
+// 15. M2 Unified Signal Performance Workshop: Wan 2.2 Animate Move / Mix / S2V Routing, Capabilities & Recipe Subgraph
+{
+  const {
+    curatedModelsByProtocol,
+    inferModelFromId,
+    modelInputCapabilities,
+    recommendModelForInputs,
+  } = await import('../src/core/models');
+  const { isDashscopeAnimateVideo, isDashscopeS2VVideo } = await import('../electron/providers');
+
+  // 15a. Curated models & smart inference cover wan2.2-animate-move, wan2.2-animate-mix, wan2.2-s2v
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'wan2.2-animate-move'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'wan2.2-animate-mix'));
+  assert.ok(curatedModelsByProtocol.dashscope.some((m) => m.modelId === 'wan2.2-s2v'));
+  assert.equal(inferModelFromId('wan2.2-animate-move', 'dashscope').adapter, 'dashscope-video');
+  assert.equal(inferModelFromId('wan2.2-animate-mix', 'dashscope').adapter, 'dashscope-video');
+  assert.equal(inferModelFromId('wan2.2-s2v', 'dashscope').adapter, 'dashscope-video');
+  assert.equal(isDashscopeAnimateVideo('wan2.2-animate-move'), true);
+  assert.equal(isDashscopeAnimateVideo('wan2.2-animate-mix'), true);
+  assert.equal(isDashscopeAnimateVideo('wan2.2-s2v'), false);
+  assert.equal(isDashscopeS2VVideo('wan2.2-s2v'), true);
+  assert.equal(isDashscopeS2VVideo('wan2.7-i2v'), false);
+
+  // 15b. Declarative capability profiles for performance models
+  const moveCaps = modelInputCapabilities({ adapter: 'dashscope-video', modelId: 'wan2.2-animate-move' });
+  assert.equal(moveCaps.supportsMotionVideo, true);
+  assert.equal(moveCaps.motionMode, 'move');
+  assert.equal(moveCaps.promptOptional, true);
+  assert.equal(moveCaps.costTier, 'L3');
+  assert.deepEqual(moveCaps.animateModes, ['wan-std', 'wan-pro']);
+
+  const mixCaps = modelInputCapabilities({ adapter: 'dashscope-video', modelId: 'wan2.2-animate-mix' });
+  assert.equal(mixCaps.supportsMotionVideo, true);
+  assert.equal(mixCaps.motionMode, 'mix');
+  assert.equal(mixCaps.promptOptional, true);
+
+  const s2vCaps = modelInputCapabilities({ adapter: 'dashscope-video', modelId: 'wan2.2-s2v' });
+  assert.equal(s2vCaps.supportsDriverAudio, true);
+  assert.equal(s2vCaps.promptOptional, true);
+  assert.equal(s2vCaps.costTier, 'L2');
+  assert.deepEqual(s2vCaps.resolutions, ['480P', '720P']);
+
+  // 15c. Signal-typed model recommendation automatically routes motion-video (move/mix) and driver-audio (s2v)
+  const settingsM2 = {
+    theme: 'dark' as const,
+    glow: 'subtle' as const,
+    motionEffects: true,
+    providers: [
+      { id: 'dash', name: '百炼', protocol: 'dashscope' as const, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', hasApiKey: true, requiresKey: true },
+    ],
+    models: [
+      { id: 'm_t2v', name: 'Wan 3.0', providerId: 'dash', adapter: 'dashscope-video' as const, modelId: 'wan3.0-video', capabilities: ['video' as const], parameters: {} },
+      { id: 'm_move', name: 'Animate Move', providerId: 'dash', adapter: 'dashscope-video' as const, modelId: 'wan2.2-animate-move', capabilities: ['video' as const], parameters: { mode: 'wan-std' } },
+      { id: 'm_mix', name: 'Animate Mix', providerId: 'dash', adapter: 'dashscope-video' as const, modelId: 'wan2.2-animate-mix', capabilities: ['video' as const], parameters: { mode: 'wan-std' } },
+      { id: 'm_s2v', name: 'Wan S2V', providerId: 'dash', adapter: 'dashscope-video' as const, modelId: 'wan2.2-s2v', capabilities: ['video' as const], parameters: { resolution: '720P' } },
+    ],
+    defaults: { video: 'm_t2v' },
+    defaultFps: 30,
+    defaultWidth: 1920,
+    defaultHeight: 1080,
+  };
+  assert.equal(
+    recommendModelForInputs(settingsM2, 'video', { hasMotionVideo: true, motionMode: 'move', refCount: 1 })?.id,
+    'm_move',
+    'Motion transfer recommends wan2.2-animate-move over default T2V',
+  );
+  assert.equal(
+    recommendModelForInputs(settingsM2, 'video', { hasMotionVideo: true, motionMode: 'mix', refCount: 1 })?.id,
+    'm_mix',
+    'Character replace recommends wan2.2-animate-mix over Move/T2V',
+  );
+  assert.equal(
+    recommendModelForInputs(settingsM2, 'video', { hasDriverAudio: true, refCount: 1 })?.id,
+    'm_s2v',
+    'Lip-sync recommends wan2.2-s2v over default T2V',
+  );
+
+  // 15d. Workshop Recipe VaultItem persistence round-trip
+  let pM2 = newProject('M2RecipeTest');
+  pM2 = applyOperations(pM2, [
+    {
+      type: 'putVaultItem',
+      item: {
+        id: 'recipe_move_1',
+        name: '动作迁移配方 1',
+        entityKind: 'skill',
+        role: 'animation-skill',
+        category: 'recipe',
+        subkind: 'recipe',
+        recipe: {
+          skillId: 'canvas-workshop',
+          slots: ['主体', '动作视频'],
+          promptTemplate: '',
+          workshop: {
+            use: 'video',
+            action: 'motion-transfer',
+            modelId: 'm_move',
+            prompt: '',
+            inputSlots: ['subject', 'motion-video'],
+            params: { animateMode: 'wan-pro' },
+          },
+        },
+        version: 1,
+        updatedAt: '2026-11-25T07:45:00Z',
+      },
+    },
+  ]);
+  const savedRecipe = pM2.vault?.find((v) => v.id === 'recipe_move_1');
+  assert.equal(savedRecipe?.recipe?.workshop?.action, 'motion-transfer');
+  assert.deepEqual(savedRecipe?.recipe?.workshop?.inputSlots, ['subject', 'motion-video']);
+  assert.equal(savedRecipe?.recipe?.workshop?.params?.animateMode, 'wan-pro');
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 Cinema/Audio + M2 Performance Workshop regression tests');

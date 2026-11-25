@@ -71,6 +71,8 @@ export type CanvasGeneratorInputSlot =
   | 'first-frame'
   | 'last-frame'
   | 'prompt-text'
+  | 'motion-video'
+  | 'driver-audio'
   | 'source';
 
 export interface CanvasGeneratorInput {
@@ -87,6 +89,9 @@ export type CanvasGeneratorAction =
   | 'image-to-video'
   | 'first-last-video'
   | 'ref-video'
+  | 'motion-transfer'
+  | 'character-replace'
+  | 'lip-sync'
   | 'tts';
 
 export interface CanvasGeneratorNode {
@@ -105,6 +110,7 @@ export interface CanvasGeneratorNode {
     generateAudio?: boolean;
     background?: 'auto' | 'opaque' | 'transparent';
     voice?: string;
+    animateMode?: 'wan-std' | 'wan-pro';
     batchCount?: number;
   };
   outputAssetIds?: string[];
@@ -129,6 +135,9 @@ export interface AssetLineageRef {
     | 'capture-3d'
     | 'ai-generate'
     | 'first-last-frame'
+    | 'motion-transfer'
+    | 'character-replace'
+    | 'lip-sync'
     | 'extract-frame'
     | 'detach-audio'
     | 'audio-normalize'
@@ -304,6 +313,15 @@ export interface VaultItem {
     slots: string[];
     promptTemplate: string;
     presetId?: string;
+    /** Reusable canvas workshop subgraph snapshot (action + typed input slots + model + params) */
+    workshop?: {
+      use: 'image' | 'video' | 'speech';
+      action: CanvasGeneratorAction;
+      modelId?: string;
+      prompt: string;
+      inputSlots: CanvasGeneratorInputSlot[];
+      params?: CanvasGeneratorNode['params'];
+    };
   };
   version: number;
   originGlobalId?: string;
@@ -579,6 +597,10 @@ export interface GenerationCanvasMeta {
   referenceAssetIds?: string[];
   /** Last frame asset ID for first/last-frame video bridging */
   lastFrameAssetId?: string;
+  /** Driving motion/reference video asset ID for motion transfer or character replacement */
+  motionVideoAssetId?: string;
+  /** Driving speech audio asset ID for lip-sync S2V generation */
+  driverAudioAssetId?: string;
   /** Short prompt summary shown on in-place Ghost rendering cards */
   promptPreview?: string;
   /** Generation purpose shown on Ghost card badge */

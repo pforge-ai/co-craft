@@ -72,7 +72,9 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
   const {
     imageAssetIds,
     videoAssetIds,
+    videoNodeKeys,
     audioAssetIds,
+    audioNodeKeys,
     visualAssetIds,
     textNodeKeys,
     textSnippets,
@@ -88,6 +90,8 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
   const canFirstLastVideo = imgCount === 2;
   const canMultiRefImage = imgCount >= 2;
   const canMultiRefVideo = imgCount >= 3;
+  const canMotionAnimate = imgCount === 1 && videoNodeKeys.length === 1;
+  const canLipSync = imgCount === 1 && audioNodeKeys.length === 1;
   const canBridgeTwoVideos = videoAssetIds.length === 2 && Boolean(onBridgeTwoVideos);
   const canCombineVisualAudio =
     visualAssetIds.length === 1 && audioAssetIds.length === 1 && Boolean(onCombineVisualAudio);
@@ -95,6 +99,8 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
     canImgTextCombo ||
     canFirstLastVideo ||
     canMultiRefImage ||
+    canMotionAnimate ||
+    canLipSync ||
     canBridgeTwoVideos ||
     canCombineVisualAudio;
   const promptSummary = labels.slice(0, 4).join(' + ');
@@ -220,6 +226,74 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
           }
         >
           <Clapperboard size={11} /> 参考生视频
+        </button>
+      )}
+
+      {canMotionAnimate && (
+        <>
+          <button
+            type="button"
+            className="cc-multi-ai"
+            title="将所选角色图与驱动视频连入动作迁移工坊卡（百炼 wan2.2-animate-move）"
+            onClick={() =>
+              onSpawnGeneratorNode({
+                use: 'video',
+                action: 'motion-transfer',
+                inputs: [
+                  { nodeKey: sourceNodeKeys[0], slot: 'subject' },
+                  { nodeKey: videoNodeKeys[0], slot: 'motion-video' },
+                  ...textInputs,
+                ],
+                prompt: textJoined,
+                placement: anchorPlacement,
+              })
+            }
+          >
+            <Clapperboard size={11} /> 动作迁移
+          </button>
+          <button
+            type="button"
+            className="cc-multi-ai"
+            title="保留原片视频背景光影，将主角替换为所选角色图（百炼 wan2.2-animate-mix）"
+            onClick={() =>
+              onSpawnGeneratorNode({
+                use: 'video',
+                action: 'character-replace',
+                inputs: [
+                  { nodeKey: sourceNodeKeys[0], slot: 'subject' },
+                  { nodeKey: videoNodeKeys[0], slot: 'motion-video' },
+                  ...textInputs,
+                ],
+                prompt: textJoined,
+                placement: anchorPlacement,
+              })
+            }
+          >
+            <Sparkles size={11} /> 视频换人
+          </button>
+        </>
+      )}
+
+      {canLipSync && (
+        <button
+          type="button"
+          className="cc-multi-ai"
+          title="将所选角色人像与配音波形连入音频驱动对口型工坊卡（L2 极低费 · wan2.2-s2v）"
+          onClick={() =>
+            onSpawnGeneratorNode({
+              use: 'video',
+              action: 'lip-sync',
+              inputs: [
+                { nodeKey: sourceNodeKeys[0], slot: 'subject' },
+                { nodeKey: audioNodeKeys[0], slot: 'driver-audio' },
+                ...textInputs,
+              ],
+              prompt: textJoined,
+              placement: anchorPlacement,
+            })
+          }
+        >
+          <AudioLines size={11} /> 音频对口型
         </button>
       )}
 

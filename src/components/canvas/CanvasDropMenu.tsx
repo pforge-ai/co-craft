@@ -207,6 +207,62 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
         </>
       )}
 
+      {srcAsset?.kind === 'video' && (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onSpawnGeneratorNode({
+                use: 'video',
+                action: 'motion-transfer',
+                inputs: [{ nodeKey: sk, slot: 'motion-video' }],
+                placement,
+              });
+            }}
+          >
+            <span className="cc-menu-item-label">
+              <Clapperboard size={13} /> 作动作源 → 动作迁移卡 (Move)
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onSpawnGeneratorNode({
+                use: 'video',
+                action: 'character-replace',
+                inputs: [{ nodeKey: sk, slot: 'motion-video' }],
+                placement,
+              });
+            }}
+          >
+            <span className="cc-menu-item-label">
+              <UserCheck size={13} /> 作原片 → 视频换人卡 (Mix)
+            </span>
+          </button>
+        </>
+      )}
+
+      {srcAsset?.kind === 'audio' && (
+        <button
+          type="button"
+          onClick={() => {
+            onClose();
+            onSpawnGeneratorNode({
+              use: 'video',
+              action: 'lip-sync',
+              inputs: [{ nodeKey: sk, slot: 'driver-audio' }],
+              placement,
+            });
+          }}
+        >
+          <span className="cc-menu-item-label">
+            <AudioLines size={13} /> 作语音源 → 音频对口型卡 (S2V)
+          </span>
+        </button>
+      )}
+
       {(!srcAsset || srcAsset.kind !== 'audio') && (
         <button
           type="button"

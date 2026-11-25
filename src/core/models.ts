@@ -314,6 +314,9 @@ export const curatedModelsByProtocol: Record<ProviderConnection['protocol'], Cur
     { modelId: 'kling/kling-v3-video-generation', name: '可灵 Kling v3（百炼托管）· 视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { aspect_ratio: '16:9', duration: 5, audio: true, watermark: false } },
     { modelId: 'kling/kling-v3-turbo-video-generation', name: '可灵 Kling v3 Turbo（百炼托管）· 极速视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { aspect_ratio: '16:9', duration: 5, audio: true, watermark: false } },
     { modelId: 'kling/kling-v3-omni-video-generation', name: '可灵 Kling v3 Omni（百炼托管）· 全能参考视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { aspect_ratio: '16:9', duration: 5, audio: true, watermark: false } },
+    { modelId: 'wan2.2-animate-move', name: '通义万相 Wan 2.2 Animate Move · 角色动作迁移', adapter: 'dashscope-video', capabilities: ['video'], parameters: { mode: 'wan-std' } },
+    { modelId: 'wan2.2-animate-mix', name: '通义万相 Wan 2.2 Animate Mix · 视频换人', adapter: 'dashscope-video', capabilities: ['video'], parameters: { mode: 'wan-std' } },
+    { modelId: 'wan2.2-s2v', name: '通义万相 Wan 2.2 S2V · 音频驱动对口型', adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', style: 'speech' } },
     { modelId: 'wan2.2-kf2v-flash', name: '通义万相 Wan 2.2 · 首尾帧过渡视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', duration: 5 } },
     { modelId: 'wan2.5-t2v-preview', name: '通义万相 Wan 2.5 · 文生视频', adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', duration: 5 } },
 
@@ -384,6 +387,12 @@ export interface ModelInputCapabilities {
   referenceMode: 'none' | 'image-ref' | 'first-frame' | 'multi-ref' | 'media-flex';
   requiresReference: boolean;
   supportsLastFrame: boolean;
+  supportsMotionVideo?: boolean;
+  motionMode?: 'move' | 'mix';
+  supportsDriverAudio?: boolean;
+  promptOptional?: boolean;
+  animateModes?: ('wan-std' | 'wan-pro')[];
+  costTier?: 'L1' | 'L2' | 'L3';
   supportsResolution: boolean;
   resolutions?: string[];
   supportsAspectRatio: boolean;
@@ -525,6 +534,39 @@ export function modelInputCapabilities(
         supportsAudioToggle: true,
         durationRange: [3, 15],
         hint: '百炼托管可灵 v3 视频生成：支持原生音画同步与首尾帧控制',
+      };
+    }
+    if (/^wan2\.2-animate-(move|mix)/i.test(id)) {
+      const isMix = /mix/i.test(id);
+      return {
+        ...base,
+        maxReferences: 1,
+        referenceMode: 'image-ref',
+        requiresReference: true,
+        supportsMotionVideo: true,
+        motionMode: isMix ? 'mix' : 'move',
+        promptOptional: true,
+        animateModes: ['wan-std', 'wan-pro'],
+        costTier: 'L3',
+        supportsSizeInput: false,
+        hint: isMix
+          ? '视频换人（Animate Mix）：连入 1 张角色图 + 1 段原片视频，自动保留背景光照并将主角替换为新角色'
+          : '动作迁移（Animate Move）：连入 1 张角色图 + 1 段动作参考视频，将动作与表情精准迁移至该角色',
+      };
+    }
+    if (/^wan2\.2-s2v/i.test(id)) {
+      return {
+        ...base,
+        maxReferences: 1,
+        referenceMode: 'image-ref',
+        requiresReference: true,
+        supportsDriverAudio: true,
+        promptOptional: true,
+        costTier: 'L2',
+        supportsResolution: true,
+        resolutions: ['480P', '720P'],
+        supportsSizeInput: false,
+        hint: '音频驱动对口型（Wan 2.2 S2V）：连入 1 张角色图 + 1 段配音音频，以极低成本直出精准口型与头部微动作',
       };
     }
     if (/-kf2v/i.test(id)) {
@@ -705,6 +747,12 @@ export function inferModelFromId(
     if (/(qwen-image|z-image|wan2\.7-image|wan2\.6-image|wanx|t2i|i2i|image-generation|reference2image|flux|stable-diffusion)/i.test(lower)) {
       return { name: id, modelId: id, adapter: 'dashscope-image', capabilities: ['image'], parameters: { size: '1280*720' } };
     }
+    if (/(animate-move|animate-mix)/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'dashscope-video', capabilities: ['video'], parameters: { mode: 'wan-std' } };
+    }
+    if (/\bs2v\b|-s2v/i.test(lower)) {
+      return { name: id, modelId: id, adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', style: 'speech' } };
+    }
     if (/(happyhorse|wan\d|t2v|i2v|r2v|kf2v|video|pixverse|vidu)/i.test(lower)) {
       return { name: id, modelId: id, adapter: 'dashscope-video', capabilities: ['video'], parameters: { resolution: '720P', duration: 5 } };
     }
@@ -846,6 +894,9 @@ export function recommendModelForInputs(
     preferredModelId?: string;
     refCount?: number;
     hasLastFrame?: boolean;
+    hasMotionVideo?: boolean;
+    motionMode?: 'move' | 'mix';
+    hasDriverAudio?: boolean;
     transparentBg?: boolean;
   } = {},
 ): ModelDefinition | undefined {
@@ -862,6 +913,26 @@ export function recommendModelForInputs(
   const defCaps = modelInputCapabilities(defaultModel);
   const refCount = opts.refCount ?? 0;
 
+  if (use === 'video' && opts.hasDriverAudio) {
+    if (defCaps.supportsDriverAudio) return defaultModel;
+    const hit =
+      models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsDriverAudio) ||
+      models.find((m) => modelInputCapabilities(m).supportsDriverAudio);
+    if (hit) return hit;
+  }
+  if (use === 'video' && opts.hasMotionVideo) {
+    const matchExact = (m: ModelDefinition) => {
+      const c = modelInputCapabilities(m);
+      return Boolean(c.supportsMotionVideo && (!opts.motionMode || c.motionMode === opts.motionMode));
+    };
+    if (defaultModel && matchExact(defaultModel)) return defaultModel;
+    const hit =
+      models.find((m) => isConnected(m) && matchExact(m)) ||
+      models.find((m) => matchExact(m)) ||
+      models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsMotionVideo) ||
+      models.find((m) => modelInputCapabilities(m).supportsMotionVideo);
+    if (hit) return hit;
+  }
   if (use === 'image' && opts.transparentBg && !defCaps.supportsTransparentBg) {
     const hit =
       models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsTransparentBg) ||

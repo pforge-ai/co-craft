@@ -158,15 +158,16 @@
 | **3B. 「8 合 4」内置创造 Skill 与精选演示装置库** | 落地 `cocraft-seecode`、`cocraft-tinycharts`、`cocraft-anatomy`、`cocraft-teardown-3d` 四大内置 `SKILL.md` 及对应内置可调舞台装置 + `ScreenFocusRig` 录屏平滑推拉聚焦窗；支持全局与项目级外部 `SKILL.md` 发现 | **已验收**（`v03-full-check.mjs` 与 `v03-three-stage.png` 验证通过） |
 | **3C. 3D 机位预演反哺生成（Previs-to-Video）与 Recipe 复用** | 舞台顶栏内置「捕获当前帧为构图参考真值」（`stage.captureReference`），一键将任意 3D 机位或合成画面定格为项目主体参考图资产，直接用于后续分镜图像/视频生成 | **已验收**（`stage.captureReference` 实测渲染入库通过） |
 
-### 阶段 ④：创作画布 v3、光学流光 v3 与低成本大片引擎 M1（已验收 ✅）
+### 阶段 ④：创作画布 v3、光学流光 v3 与低成本影视/漫剧工业化引擎 M1 + M2（已验收 ✅）
 
 | 子项 | 核心交付内容 | 验收状态 |
 | --- | --- | --- |
 | **4A. 创作画布 v2/v3 与光学流光系统 v3（C+A+D）** | 落地画布原地工坊卡（`CanvasGeneratorNode`）、智能模型推荐、4 类按需聚焦/溯源连线（Trace BFS）、动态防裁剪连线画幅、Ghost Card 流体光场与 5 套实时预览极光色系主题（`emerald / silver / cobalt / amber / aurora`） | **已验收**（打包态 7 项 Playwright 端到端 + 深浅色 6 组截图复核，已推送至 `feat/canvas-v3-optical-v3`） |
 | **4B. M1：L1 零视频费大片引擎与逐词高亮字幕** | 在 Remotion 合成引擎与属性面板「调节」页签落地确定性 `cameraBreath`（带自动过扫防黑边）、`filmGrain`、`overlayEffect`（`dust / rain / speedlines` 漫剧速度线）及 5 组一键预设；`Title/Caption` 新增逐词/逐字卡拉 OK 动态高亮（`wordHighlight` / `wordHighlightColor` / `wordTimings`） | **已验收**（打包态真实 Remotion H.264/AAC MP4 导出 + `0.40s / 1.80s` 帧级视觉复核通过） |
 | **4C. M1：本地 0 费用音频工坊、视觉反推、演员声纹与画布高频连招** | 新增内置 FFmpeg 本地 `asset.trimSilence`（`silencedetect` + 60ms 气口保护 `atrim/concat` WAV）与 `asset.normalizeAudio`（`-14 LUFS` WAV）；新增 `asset.visionDescribe` 画面反推可编辑文本卡；演员卡支持 `声纹`（`voiceProfile`）绑定与 `角色名：台词 [舞台提示]` 拆镜自动绑定；多选栏新增「图+文生图卡 / 图+文生视频」「双视频尾接首过渡视频」「图+音直合带声分镜（Audio-First + L1）」 | **已验收**（`tsc --noEmit`、`test:unit`、`smoke:models` 与打包态 7 项端到端实测全绿，0 控制台报错） |
+| **4D. M2：统一信号表演工坊（动作迁移 / 视频换人 / 对口型）与 Recipe 配方** | 工坊卡与驱动层新增正交控制槽位 `motion-video`、`driver-audio` 及 `L2 / L3` 成本档位徽章；百炼驱动落地官方 2 步临时 OSS 签名直传（`uploads?action=getPolicy` + 免鉴权直传 + `X-DashScope-OssResourceResolve: enable` + SSRF 校验），完整打通 `wan2.2-animate-move`（动作迁移 `wan-std/pro`）、`wan2.2-animate-mix`（视频换人）与 `wan2.2-s2v`（音频驱动对口型）；画布多选「图+视频」直出动作迁移/换人、「图+音频」直出对口型；任意工坊卡支持一键「存为配方（Recipe）」与「套用配方」自动复放连线 | **已验收**（`tsc --noEmit`、`test:unit` 第 15 组、`smoke:models` 及打包态全链路 6 次 OSS 直传 + Move/Mix/S2V + Recipe 端到端全绿，0 报错） |
 
-> **下一阶段规划**：**M2（统一信号表演工坊：`Who × Where × How` 百炼 `wan2.2-animate-move` 动作迁移 / `animate-mix` 视频换人 / `wan2.2-s2v` 对口型 + 音频驱动运镜 + Recipe 配方复用）** → **M3（可选/默认关闭的分级 System 1 智能直觉层：Tier 0 本地免费 → Tier 1 已有快模型 → Tier 2 TypeSafe Jev）**。详见 `docs/DECISIONS.md`。
+> **下一阶段规划**：**M3（可选/默认关闭的分级 System 1 决策反射层：Tier 0 本地免费 → Tier 1 已配快模型 → Tier 2 TypeSafe Jev + 设置页防烧钱按项开关 + 派生 9:16 真 · Auto-Reframe 构图与安全区重排 + 批量抽卡质检挑优）**。详见 `docs/DECISIONS.md`。
 
 ---
 
