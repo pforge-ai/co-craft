@@ -1,4 +1,4 @@
-import type { Asset, CanvasGroup, VaultItem } from '../core/types';
+import type { Asset, CanvasGeneratorNode, CanvasGroup, VaultItem } from '../core/types';
 
 export interface CanvasPoint {
   x: number;
@@ -48,9 +48,18 @@ export function formatAssetCardMeta(asset: Asset): string {
  */
 export function estimateCanvasNodeSize(
   key: string,
-  ctx: { assets: readonly Asset[]; entities: readonly VaultItem[] },
+  ctx: {
+    assets: readonly Asset[];
+    entities: readonly VaultItem[];
+    generators?: readonly CanvasGeneratorNode[];
+  },
 ): CanvasSize {
   if (key.startsWith('shot:')) return { w: 288, h: 204 };
+  if (key.startsWith('gen:')) {
+    const g = ctx.generators?.find((x) => `gen:${x.id}` === key);
+    if (g?.collapsed) return { w: 248, h: 66 };
+    return { w: 316, h: 268 };
+  }
   if (key.startsWith('asset:')) {
     const a = ctx.assets.find((x) => `asset:${x.id}` === key);
     if (a?.kind === 'audio') return { w: 248, h: 86 };

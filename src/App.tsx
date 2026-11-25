@@ -79,6 +79,7 @@ import {
   BookmarkPlus,
 } from 'lucide-react';
 import type {
+  Asset,
   BootData,
   ProjectEnvelope,
   Project,
@@ -585,7 +586,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!openComposerMenu && !layoutMenuOpen) return;
+    if (!openComposerMenu && !layoutMenuOpen && !showStageFork) return;
     const onDown = (e: MouseEvent) => {
       if (
         openComposerMenu &&
@@ -596,12 +597,16 @@ export function App() {
       if (layoutMenuOpen && !(e.target as HTMLElement)?.closest('.layout-preset-anchor')) {
         setLayoutMenuOpen(false);
       }
+      if (showStageFork && !(e.target as HTMLElement)?.closest('.branch-fork-anchor')) {
+        setShowStageFork(false);
+      }
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         setOpenComposerMenu(null);
         setLayoutMenuOpen(false);
+        setShowStageFork(false);
       }
     };
     window.addEventListener('mousedown', onDown);
@@ -610,12 +615,13 @@ export function App() {
       window.removeEventListener('mousedown', onDown);
       window.removeEventListener('keydown', onEsc);
     };
-  }, [openComposerMenu, layoutMenuOpen]);
+  }, [openComposerMenu, layoutMenuOpen, showStageFork]);
 
   useEffect(() => {
     if (!settings) return;
     document.documentElement.dataset.glass = settings.glass ? 'on' : 'off';
     document.documentElement.dataset.glow = settings.glow || 'subtle';
+    document.documentElement.dataset.glowColor = settings.glowColor || 'emerald';
     document.documentElement.dataset.motion = settings.motionEffects === false ? 'off' : 'on';
     document.documentElement.dataset.theme =
       settings.theme === 'system'
@@ -630,7 +636,7 @@ export function App() {
     };
     media.addEventListener('change', change);
     return () => media.removeEventListener('change', change);
-  }, [settings?.theme, settings?.glass, settings?.glow, settings?.motionEffects]);
+  }, [settings?.theme, settings?.glass, settings?.glow, settings?.glowColor, settings?.motionEffects]);
 
   useEffect(() => {
     if (env && !playing) setPreviewProject(env.project);
@@ -1977,14 +1983,100 @@ export function App() {
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              className="branch-fork-btn"
-              title="从当前版本派生平行实验分支"
-              onClick={() => setShowStageFork((v) => !v)}
-            >
-              + 派生
-            </button>
+            <div className="branch-fork-anchor">
+              <button
+                type="button"
+                className={`branch-fork-btn ${showStageFork ? 'active' : ''}`}
+                title="从当前版本派生平行实验分支"
+                aria-expanded={showStageFork}
+                aria-haspopup="dialog"
+                onClick={() => {
+                  setProjectMenuOpen(false);
+                  setLayoutMenuOpen(false);
+                  setJobsOpen(false);
+                  setShowStageFork((v) => !v);
+                }}
+              >
+                + 派生
+              </button>
+              {showStageFork && (
+                <form
+                  className="branch-fork-popover"
+                  role="dialog"
+                  aria-label="派生平行实验分支"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const newId = uid('seq');
+                    const bName = stageForkName.trim() || `${sequence.name}-试剪${project.sequences.length}`;
+                    await edit(`派生平行分支「${bName}」`, [
+                      {
+                        type: 'forkSequenceBranch',
+                        sourceSequenceId: sequence.id,
+                        newSequenceId: newId,
+                        branchName: bName,
+                      },
+                    ]);
+                    setStageForkName('');
+                    setShowStageFork(false);
+                    changeSequence(newId);
+                  }}
+                >
+                  <div className="branch-fork-head">
+                    <span>
+                      <GitBranch size={12} /> 从「{sequence.name} @ v{project.revision}」派生
+                    </span>
+                    <button
+                      type="button"
+                      className="icon-button tiny"
+                      aria-label="关闭派生浮层"
+                      onClick={() => setShowStageFork(false)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                  <input
+                    autoFocus
+                    aria-label="派生分支名称"
+                    placeholder="输入新分支名（如：30s紧凑版）"
+                    value={stageForkName}
+                    onChange={(e) => setStageForkName(e.target.value)}
+                  />
+                  <div className="branch-fork-chips">
+                    {['30s 紧凑版', '竖屏 9:16', '风格试剪'].map((presetName) => (
+                      <button
+                        key={presetName}
+                        type="button"
+                        className="branch-fork-chip"
+                        onClick={() => setStageForkName(presetName)}
+                      >
+                        {presetName}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="branch-fork-foot">
+                    {!sequence.isMainBranch && project.sequences.length > 1 ? (
+                      <button
+                        type="button"
+                        className="button tiny"
+                        onClick={() => {
+                          setShowStageFork(false);
+                          void edit(`将「${sequence.name}」设为主干`, [
+                            { type: 'promoteSequenceBranch', sequenceId: sequence.id },
+                          ]);
+                        }}
+                      >
+                        设为主干
+                      </button>
+                    ) : (
+                      <span className="branch-fork-tip">零破坏克隆当前时间线</span>
+                    )}
+                    <button type="submit" className="button tiny primary">
+                      创建并切换
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
           </div>
 
           <button className="version-chip-btn" onClick={() => setDialog('versions')} title="版本历史与历史派生">
@@ -2164,59 +2256,6 @@ export function App() {
       )}
 
       <main className="workbench">
-        {/* Inline Fork Branch Drawer (accessible from Titlebar in both Create & Edit modes) */}
-        {showStageFork && (
-          <form
-            className="sb-inline-drawer"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const newId = uid('seq');
-              const bName = stageForkName.trim() || `${sequence.name}-试剪${project.sequences.length}`;
-              await edit(`派生平行分支「${bName}」`, [
-                {
-                  type: 'forkSequenceBranch',
-                  sourceSequenceId: sequence.id,
-                  newSequenceId: newId,
-                  branchName: bName,
-                },
-              ]);
-              setStageForkName('');
-              setShowStageFork(false);
-              changeSequence(newId);
-            }}
-          >
-            <GitBranch size={13} />
-            <span>从「{sequence.name} @ v{project.revision}」派生平行分支：</span>
-            <input
-              autoFocus
-              aria-label="派生分支名称"
-              placeholder="输入新分支名（如：30s紧凑版）"
-              value={stageForkName}
-              onChange={(e) => setStageForkName(e.target.value)}
-            />
-            <button type="submit" className="button tiny primary">
-              创建并切换
-            </button>
-            {!sequence.isMainBranch && project.sequences.length > 1 && (
-              <button
-                type="button"
-                className="button tiny"
-                onClick={() => {
-                  setShowStageFork(false);
-                  void edit(`将「${sequence.name}」设为主干`, [
-                    { type: 'promoteSequenceBranch', sequenceId: sequence.id },
-                  ]);
-                }}
-              >
-                将当前设为主干
-              </button>
-            )}
-            <button type="button" className="icon-button tiny" onClick={() => setShowStageFork(false)}>
-              <X size={13} />
-            </button>
-          </form>
-        )}
-
         {/* Project Brief Drawer */}
         {showBrief ? (
           <div className="brief-page">
@@ -2297,6 +2336,39 @@ export function App() {
                   void send(instruction, scopeClip);
                 }}
                 onOpenGeneration={(opts) => openStudio(opts)}
+                jobs={jobs}
+                settings={settings}
+                onCancelJob={(jobId) => void api('jobs.cancel', { id: jobId })}
+                onJobsStarted={(started) => {
+                  setJobs((list) => {
+                    const next = [...list];
+                    for (const j of started) {
+                      if (!next.some((x) => x.id === j.id)) next.unshift(j);
+                    }
+                    return next;
+                  });
+                }}
+                onExtractVideoFrame={async (assetId, mode, placement) => {
+                  await work(`抽取视频${mode === 'last' ? '尾帧' : '首帧'}`, async () => {
+                    const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>('asset.extractFrame', {
+                      assetId,
+                      mode,
+                      placement,
+                    });
+                    accept(res.envelope);
+                    notify(`已抽取新图片资产「${res.asset.name}」`);
+                  });
+                }}
+                onDetachVideoAudio={async (assetId, placement) => {
+                  await work('提取视频音轨', async () => {
+                    const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>('asset.detachAudio', {
+                      assetId,
+                      placement,
+                    });
+                    accept(res.envelope);
+                    notify(`已提取音轨「${res.asset.name}」`);
+                  });
+                }}
                 onAskAgentForShot={(shotClip, draftPrompt) => {
                   setScope(clone(shotClip));
                   setStrictScope(true);
@@ -3329,9 +3401,11 @@ export function App() {
           }}
           onStarted={(job) => {
             setDialog(null);
-            setShowNav(true);
             setJobs((list) => (list.some((j) => j.id === job.id) ? list : [job, ...list]));
-            setJobsOpen(true);
+            if (appMode !== 'create') {
+              setShowNav(true);
+              setJobsOpen(true);
+            }
           }}
         />
       )}

@@ -278,6 +278,72 @@ export function moveCompositeShotOperations(
 }
 
 /**
+ * Atomically moves `fromShotId` to `toIndex` (`0 .. shots.length - 1`) in one edit,
+ * preserving inter-shot gaps and shifting all shot-local visuals, overlays, captions,
+ * and `shot`-attached audio clips together while keeping `timeline` BGM pinned.
+ */
+export function reorderCompositeShotOperations(
+  sequence: Sequence,
+  shots: CompositeShot[],
+  fromShotId: string,
+  toIndex: number,
+): EditOperation[] {
+  const fromIdx = shots.findIndex((s) => s.id === fromShotId);
+  if (fromIdx < 0 || toIndex < 0 || toIndex >= shots.length || fromIdx === toIndex) return [];
+  const lo = Math.min(fromIdx, toIndex);
+  const hi = Math.max(fromIdx, toIndex);
+  const slice = shots.slice(lo, hi + 1);
+  if (slice.some((s) => s.locked)) return [];
+
+  // Guard against shared clips across affected shots
+  const seenClipIds = new Set<string>();
+  const clipsByShot = new Map<string, Clip[]>();
+  for (const sh of slice) {
+    const localClips = [
+      ...new Map(
+        [...sh.compositeClips, ...sh.captionClips, ...sh.audioClips].map((c) => [c.id, c]),
+      ).values(),
+    ];
+    for (const c of localClips) {
+      if (seenClipIds.has(c.id)) return [];
+      seenClipIds.add(c.id);
+    }
+    clipsByShot.set(sh.id, localClips);
+  }
+
+  // Record inter-shot gaps between adjacent slots in [lo .. hi]
+  const gaps: number[] = [];
+  for (let i = lo; i < hi; i++) {
+    gaps.push(Math.max(0, shots[i + 1].start - (shots[i].start + shots[i].duration)));
+  }
+
+  // Build new order of the affected slice
+  const reordered = [...slice];
+  const [moved] = reordered.splice(fromIdx - lo, 1);
+  reordered.splice(toIndex - lo, 0, moved);
+
+  let cursor = slice[0].start;
+  const ops: EditOperation[] = [];
+  reordered.forEach((sh, i) => {
+    const newStart = cursor;
+    const delta = newStart - sh.start;
+    if (delta !== 0) {
+      for (const c of clipsByShot.get(sh.id) || []) {
+        const rel = c.start - sh.start;
+        ops.push({
+          type: 'updateClip',
+          sequenceId: sequence.id,
+          clipId: c.id,
+          changes: { start: Math.max(0, newStart + rel) },
+        });
+      }
+    }
+    cursor += sh.duration + (gaps[i] ?? 0);
+  });
+  return ops;
+}
+
+/**
  * Edits ONE timed subtitle clip's text while strictly preserving its exact `start` and `duration` frames.
  */
 export function updateSingleCaptionTextOperations(

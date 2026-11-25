@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AudioLines, Captions, Eye, ImagePlus, Video, ArrowUpRight, SlidersHorizontal, X } from 'lucide-react';
-import type { Asset, GenerationTarget, Job, ModelUse, Project, Settings } from '../core/types';
-import { modelInputCapabilities, selectedModel } from '../core/models';
+import type { Asset, GenerationCanvasMeta, GenerationTarget, Job, ModelUse, Project, Settings } from '../core/types';
+import { modelInputCapabilities, recommendModelForInputs } from '../core/models';
 import { Modal, Spinner } from './ui';
 
 type Use = Exclude<ModelUse, 'agent'>;
@@ -30,6 +30,7 @@ export interface GenerationDraft {
   voice?: string;
   language?: string;
   target?: GenerationTarget;
+  canvas?: GenerationCanvasMeta;
 }
 
 type Props = {
@@ -66,7 +67,7 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
         ? { referenceAssetIds: [initial.referenceAssetId] }
         : {}),
     });
-  }, [initial.use, initial.prompt, initial.assetId, initial.referenceAssetId, initial.target?.clipId]);
+  }, [initial]);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -86,8 +87,14 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
 
   const mode = modes.find((m) => m.id === draft.use)!;
   const models = settings.models.filter((m) => m.capabilities.includes(draft.use));
-  const defaultModel = selectedModel(settings, draft.use, project.modelDefaults);
-  const model = models.find((m) => m.id === draft.modelId) || defaultModel;
+  const draftRefsCount = getDraftRefs(draft).length;
+  const defaultModel = recommendModelForInputs(settings, draft.use, {
+    projectDefaults: project.modelDefaults,
+    refCount: draftRefsCount,
+    hasLastFrame: Boolean(draft.lastFrameAssetId),
+    transparentBg: draft.background === 'transparent',
+  });
+  const model = (draft.modelId ? models.find((m) => m.id === draft.modelId) : undefined) || defaultModel;
   const provider = settings.providers.find((p) => p.id === model?.providerId);
   const connected = provider && (provider.hasApiKey || !provider.requiresKey);
   const isAnalysis = draft.use === 'vision' || draft.use === 'transcription';
@@ -137,6 +144,16 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
         voice: draft.use === 'speech' ? draft.voice || undefined : undefined,
         language: draft.use === 'transcription' ? draft.language || undefined : undefined,
         target: draft.use === 'image' || draft.use === 'video' ? draft.target : undefined,
+        canvas:
+          draft.canvas || effectiveRefs.length || effectiveLastFrame
+            ? {
+                ...(draft.canvas || {}),
+                ...(effectiveRefs.length ? { referenceAssetIds: effectiveRefs } : {}),
+                ...(effectiveLastFrame ? { lastFrameAssetId: effectiveLastFrame } : {}),
+                promptPreview: (draft.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+                use: draft.use,
+              }
+            : undefined,
       });
       onStarted(job);
     } catch (e) {
@@ -164,13 +181,14 @@ export function GenerationDialog({ project, settings, initial, onClose, onConfig
               setDraft(
                 history[m.id] || {
                   use: m.id,
-                  prompt: m.id === 'image' || m.id === 'video' ? draft.prompt : undefined,
+                  prompt: m.id === 'image' || m.id === 'video' || m.id === 'speech' ? draft.prompt : undefined,
                   referenceAssetId:
                     m.id === 'image' || m.id === 'video' ? draft.referenceAssetId : undefined,
                   referenceAssetIds:
                     m.id === 'image' || m.id === 'video' ? draft.referenceAssetIds : undefined,
                   lastFrameAssetId: m.id === 'video' ? draft.lastFrameAssetId : undefined,
                   target: m.id === 'image' || m.id === 'video' ? draft.target : undefined,
+                  canvas: draft.canvas,
                 },
               );
               setError('');

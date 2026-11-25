@@ -64,6 +64,54 @@ export interface CanvasGroup {
   collapsed?: boolean;
 }
 
+export type CanvasGeneratorInputSlot =
+  | 'subject'
+  | 'scene'
+  | 'style'
+  | 'first-frame'
+  | 'last-frame'
+  | 'prompt-text'
+  | 'source';
+
+export interface CanvasGeneratorInput {
+  nodeKey: string;
+  slot: CanvasGeneratorInputSlot;
+}
+
+export type CanvasGeneratorAction =
+  | 'text-to-image'
+  | 'image-edit'
+  | 'multi-ref-image'
+  | 'turnaround'
+  | 'cutout'
+  | 'image-to-video'
+  | 'first-last-video'
+  | 'ref-video'
+  | 'tts';
+
+export interface CanvasGeneratorNode {
+  id: string;
+  title?: string;
+  use: 'image' | 'video' | 'speech';
+  action: CanvasGeneratorAction;
+  modelId?: string;
+  prompt: string;
+  inputs: CanvasGeneratorInput[];
+  params?: {
+    aspectRatio?: string;
+    resolution?: string;
+    size?: string;
+    seconds?: number;
+    generateAudio?: boolean;
+    background?: 'auto' | 'opaque' | 'transparent';
+    voice?: string;
+    batchCount?: number;
+  };
+  outputAssetIds?: string[];
+  collapsed?: boolean;
+  updatedAt: string;
+}
+
 export interface ChatContextRef {
   key: string;
   kind: 'asset' | 'entity' | 'component' | 'clip' | 'shot' | 'group' | 'text';
@@ -77,7 +125,20 @@ export interface AssetLineageRef {
   vaultItemId?: string;
   variantId?: string;
   version?: number;
-  via: 'capture-3d' | 'ai-generate' | 'transcribe-slice' | 'shell-wrap' | 'fork' | 'import' | 'manual-ref' | 'compound-save' | 'text-derive';
+  via:
+    | 'capture-3d'
+    | 'ai-generate'
+    | 'first-last-frame'
+    | 'extract-frame'
+    | 'detach-audio'
+    | 'vision-describe'
+    | 'transcribe-slice'
+    | 'shell-wrap'
+    | 'fork'
+    | 'import'
+    | 'manual-ref'
+    | 'compound-save'
+    | 'text-derive';
   modelOrSkill?: string;
   note?: string;
 }
@@ -378,6 +439,10 @@ export interface Project {
   canvasGroups?: CanvasGroup[];
   /** Node keys stowed off the Create Canvas desktop (underlying project assets stay intact). */
   canvasHiddenNodeIds?: string[];
+  /** In-canvas live Generator / Transform nodes (Asset -> New Asset workbench cards). */
+  canvasGenerators?: CanvasGeneratorNode[];
+  /** Collapsed semantic zone IDs on the Create Canvas ('context' | 'explore' | 'shots'). */
+  canvasCollapsedZones?: string[];
   workflowIntent?: 'product-demo' | 'explainer' | 'story-film' | 'blank';
   modelDefaults?: Partial<Record<ModelUse, string>>;
 }
@@ -484,6 +549,21 @@ export interface GenerationTarget {
   mode: 'take' | 'replace';
 }
 
+export interface GenerationCanvasMeta {
+  /** Desired world-space placement on the Create Canvas for the generated asset */
+  placement?: { x: number; y: number };
+  /** Upstream canvas node keys (`asset:...`, `ent:...`, `shot:...`) for Ghost wires & lineage */
+  sourceNodeKeys?: string[];
+  /** Reference asset IDs used in this generation */
+  referenceAssetIds?: string[];
+  /** Last frame asset ID for first/last-frame video bridging */
+  lastFrameAssetId?: string;
+  /** Short prompt summary shown on in-place Ghost rendering cards */
+  promptPreview?: string;
+  /** Generation purpose shown on Ghost card badge */
+  use?: Exclude<ModelUse, 'agent'>;
+}
+
 export interface Job {
   id: string;
   type: 'export' | 'import' | 'transcribe' | 'generate';
@@ -503,6 +583,7 @@ export interface Job {
   providerId?: string;
   inputAssetId?: string;
   target?: GenerationTarget;
+  canvas?: GenerationCanvasMeta;
   targetAttachment?: { applied: boolean; takeId?: string; reason?: string };
   result?: { asset?: Asset; text?: string; segments?: { start: number; end: number; text: string }[] };
   remote?: {
@@ -572,6 +653,7 @@ export interface Settings {
   hasTranscriptionKey: boolean;
   theme: 'dark' | 'light' | 'system';
   glow?: 'off' | 'subtle' | 'vivid';
+  glowColor?: 'emerald' | 'silver' | 'cobalt' | 'amber' | 'aurora';
   motionEffects?: boolean;
   allowShell: boolean;
   allowNetwork: boolean;
@@ -595,6 +677,8 @@ export type EditOperation =
         canvasLayout?: Record<string, { x: number; y: number }>;
         canvasGroups?: CanvasGroup[];
         canvasHiddenNodeIds?: string[];
+        canvasGenerators?: CanvasGeneratorNode[];
+        canvasCollapsedZones?: string[];
         modelDefaults?: Partial<Record<ModelUse, string>>;
       };
     }
@@ -604,7 +688,7 @@ export type EditOperation =
       assetId: string;
       changes: {
         name?: string;
-        role?: AssetRole;
+        role?: AssetRole | null;
         tags?: string[];
         collection?: string;
         derivedFrom?: AssetLineageRef[];

@@ -307,6 +307,8 @@ export function applyOperations(
         'canvasLayout',
         'canvasGroups',
         'canvasHiddenNodeIds',
+        'canvasGenerators',
+        'canvasCollapsedZones',
       ]);
       Object.assign(p, op.changes);
       continue;
@@ -319,7 +321,8 @@ export function applyOperations(
       const a = p.assets.find((x) => x.id === op.assetId);
       if (!a) throw new Error('资产不存在');
       if (op.changes.name !== undefined && op.changes.name.trim()) a.name = op.changes.name.trim();
-      if (op.changes.role !== undefined) a.role = op.changes.role;
+      if (op.changes.role === null) delete a.role;
+      else if (op.changes.role !== undefined) a.role = op.changes.role;
       if (op.changes.tags !== undefined) a.tags = [...new Set(op.changes.tags.map((t) => t.trim()).filter(Boolean))];
       if (op.changes.collection !== undefined) a.collection = op.changes.collection || undefined;
       if (op.changes.derivedFrom !== undefined) a.derivedFrom = clone(op.changes.derivedFrom);
@@ -1021,6 +1024,10 @@ export function diffSummary(a: Project, b: Project): string[] {
   if (JSON.stringify(a.canvasGroups || []) !== JSON.stringify(b.canvasGroups || [])) result.push('更新画布分组');
   if (JSON.stringify(a.canvasHiddenNodeIds || []) !== JSON.stringify(b.canvasHiddenNodeIds || []))
     result.push('更新画布可见资产');
+  if (JSON.stringify(a.canvasGenerators || []) !== JSON.stringify(b.canvasGenerators || []))
+    result.push('更新画布生成节点');
+  if (JSON.stringify(a.canvasCollapsedZones || []) !== JSON.stringify(b.canvasCollapsedZones || []))
+    result.push('切换画布分区折叠');
   if (JSON.stringify(a.components) !== JSON.stringify(b.components)) result.push('更新代码组件');
   if (JSON.stringify(a.vault || []) !== JSON.stringify(b.vault || [])) result.push('更新项目资产库');
   return result.length ? result : ['更新工程'];

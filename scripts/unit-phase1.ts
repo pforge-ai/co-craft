@@ -1039,6 +1039,309 @@ assert.ok(
   for (const ad of ['dashscope-image', 'dashscope-video', 'dashscope-speech', 'ark-image', 'ark-video', 'minimax-image', 'minimax-video', 'minimax-speech', 'openai-image', 'openai-video', 'openai-speech', 'system-speech'] as const) {
     assert.ok(getProviderDriver(ad), `Driver registered for ${ad}`);
   }
+
+  // 12. Create Canvas v2: Arbitrary Shot Drag Reorder, Dynamic Wire Bounds, Multi-Subject Context & Stale Detection
+  const { reorderCompositeShotOperations, computePrimaryTimelineShots } = await import('../src/core/storyboard');
+  const { computeWireSvgBounds } = await import('../src/components/CanvasWiresLayer');
+  const { resolveShotGenContextFull, detectStaleBindings, collectVisualSelection } = await import(
+    '../src/components/canvas/types'
+  );
+
+  // 12a. reorderCompositeShotOperations moves shot #3 -> #1 keeping captions, shot audio & gaps synced while BGM stays pinned
+  let pRe = newProject('ReorderTest');
+  const sRe = pRe.sequences[0].id;
+  pRe = applyOperations(pRe, [
+    { type: 'addAsset', asset: { id: 'img_1', name: 'kf1.png', kind: 'image', path: '/tmp/1.png', duration: 0, createdAt: '' } },
+    { type: 'addAsset', asset: { id: 'img_2', name: 'kf2.png', kind: 'image', path: '/tmp/2.png', duration: 0, createdAt: '' } },
+    { type: 'addAsset', asset: { id: 'aud_bgm', name: 'bgm.wav', kind: 'audio', path: '/tmp/bgm.wav', duration: 20, createdAt: '' } },
+    { type: 'addAsset', asset: { id: 'aud_s3', name: 'vo3.wav', kind: 'audio', path: '/tmp/vo3.wav', duration: 2, createdAt: '' } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('title', 0), id: 'sh1', duration: 60, track: 'visual', name: 'Shot 1' } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('caption', 0), id: 'cap1', duration: 60, props: { text: '一' } } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('title', 60), id: 'sh2', duration: 90, track: 'visual', name: 'Shot 2' } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('caption', 60), id: 'cap2', duration: 90, props: { text: '二' } } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('title', 150), id: 'sh3', duration: 45, track: 'visual', name: 'Shot 3' } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('caption', 150), id: 'cap3', duration: 45, props: { text: '三' } } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('audio', 155, 'aud_s3'), id: 'vo3', duration: 30, audioAttachMode: 'shot' } },
+    { type: 'addClip', sequenceId: sRe, clip: { ...newClip('audio', 0, 'aud_bgm'), id: 'bgm', duration: 240, audioAttachMode: 'timeline' } },
+  ]);
+  const reShots = computePrimaryTimelineShots(pRe.sequences[0]);
+  assert.equal(reShots.length, 3);
+  const reOps = reorderCompositeShotOperations(pRe.sequences[0], reShots, reShots[2].id, 0);
+  assert.ok(reOps.length >= 6, 'Moving shot #3 to #1 shifts all affected shots & local clips');
+  const pAfterRe = applyOperations(pRe, reOps);
+  const afterShots = computePrimaryTimelineShots(pAfterRe.sequences[0]);
+  assert.deepEqual(
+    afterShots.map((s) => s.anchorClip.id),
+    ['sh3', 'sh1', 'sh2'],
+    'Shots reordered cleanly to [sh3, sh1, sh2]',
+  );
+  assert.equal(afterShots[0].start, 0);
+  assert.equal(afterShots[1].start, 45);
+  assert.equal(afterShots[2].start, 105);
+  assert.equal(pAfterRe.sequences[0].clips.find((c) => c.id === 'vo3')?.start, 5, 'Shot-attached audio preserves relative offset');
+  assert.equal(pAfterRe.sequences[0].clips.find((c) => c.id === 'cap3')?.start, 0, 'Shot caption moves with sh3');
+  assert.equal(pAfterRe.sequences[0].clips.find((c) => c.id === 'bgm')?.start, 0, 'Timeline BGM stays pinned');
+
+  // Locked shot refuses reorder
+  const pLockedRe = applyOperations(pRe, [
+    { type: 'updateClip', sequenceId: sRe, clipId: 'sh2', changes: { locked: true } },
+  ]);
+  const lockedShots = computePrimaryTimelineShots(pLockedRe.sequences[0]);
+  assert.equal(reorderCompositeShotOperations(pLockedRe.sequences[0], lockedShots, lockedShots[2].id, 0).length, 0);
+
+  // 12b. Dynamic SVG wire bounding box handles negative and massive coordinates without clipping
+  const bounds = computeWireSvgBounds(
+    [
+      {
+        key: 'w1',
+        kind: 'asset-lineage',
+        semantic: 'first-last',
+        fromKey: 'asset:a',
+        toKey: 'asset:b',
+        x1: -1400,
+        y1: -650,
+        x2: 6800,
+        y2: 4200,
+        s1: 'right',
+        s2: 'left',
+        label: '首帧',
+        shotId: '',
+        clipId: '',
+        entityId: '',
+        active: false,
+      },
+    ],
+    null,
+  );
+  assert.ok(bounds && bounds.x <= -1400 && bounds.y <= -650, 'Wire SVG bounds include negative coordinates');
+  assert.ok(bounds && bounds.x + bounds.w >= 6800 && bounds.y + bounds.h >= 4200, 'Wire SVG bounds expand beyond 4000x3000');
+
+  // 12c. Multi-subject reference aggregation, stale upstream detection & left-to-right first/last visual selection
+  const entA = {
+    id: 'ent_a',
+    name: '林夏',
+    category: 'subject' as const,
+    subkind: 'character' as const,
+    entityKind: 'image' as const,
+    assetId: 'img_1',
+    promptAnchor: '黑色风衣侦探',
+    version: 3,
+    updatedAt: '',
+  };
+  const entB = {
+    id: 'ent_b',
+    name: '雨夜霓虹街',
+    category: 'subject' as const,
+    subkind: 'environment' as const,
+    entityKind: 'image' as const,
+    assetId: 'img_2',
+    promptAnchor: '湿润反光柏油路',
+    version: 1,
+    updatedAt: '',
+  };
+  const multiShot = {
+    ...reShots[0],
+    bindings: [
+      { entityId: 'ent_a', pinnedVersion: 1 },
+      { entityId: 'ent_b', pinnedVersion: 1 },
+    ],
+  };
+  const fullCtx = resolveShotGenContextFull(multiShot, [entA, entB], pRe.assets, {});
+  assert.deepEqual(fullCtx.refAssetIds, ['img_1', 'img_2'], 'Collects ALL bound subject reference images');
+  assert.ok(fullCtx.prompt.includes('@林夏') && fullCtx.prompt.includes('@雨夜霓虹街'));
+
+  const stale = detectStaleBindings(multiShot, [entA, entB]);
+  assert.equal(stale.length, 1);
+  assert.equal(stale[0].entity.id, 'ent_a', 'Detects upstream entity v3 > pinnedVersion v1');
+
+  const visSel = collectVisualSelection(
+    ['asset:img_2', 'asset:img_1'],
+    pRe,
+    [entA, entB],
+    reShots,
+    {},
+    { 'asset:img_1': { x: 100, y: 120 }, 'asset:img_2': { x: 460, y: 120 } },
+  );
+  assert.deepEqual(visSel.imageAssetIds, ['img_1', 'img_2'], 'Left-to-right canvas order maps Left -> First Frame, Right -> Last Frame');
+  assert.ok(visSel.anchorPlacement.x > 460, 'Anchor placement sits cleanly to the right of selection');
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 core regression tests');
+// 13. Create Canvas v3 Systemic Redesign: In-Canvas Generator Nodes, Smart Model Rec, Inline Role Tagging, Trace BFS & Layout Sizes
+{
+  const { recommendModelForInputs } = await import('../src/core/models');
+  const { computeTraceGraph } = await import('../src/components/CanvasWiresLayer');
+  const { estimateCanvasNodeSize } = await import('../src/lib/canvasLayout');
+
+  // 13a. Smart model recommendation honors transparentBg, hasLastFrame & multi-ref capabilities
+  const settingsV3 = {
+    theme: 'dark' as const,
+    glow: 'subtle' as const,
+    motionEffects: true,
+    providers: [
+      { id: 'dashscope', name: 'DashScope', protocol: 'dashscope' as const, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', hasApiKey: true, requiresKey: true },
+      { id: 'ark', name: 'Ark', protocol: 'ark' as const, baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', hasApiKey: true, requiresKey: true },
+      { id: 'minimax', name: 'MiniMax', protocol: 'minimax' as const, baseUrl: 'https://api.minimaxi.com', hasApiKey: true, requiresKey: true },
+    ],
+    models: [
+      {
+        id: 'm_ds_zimg',
+        name: 'Z-Image Turbo',
+        providerId: 'dashscope',
+        adapter: 'dashscope-image' as const,
+        modelId: 'z-image-turbo',
+        capabilities: ['image' as const],
+        parameters: {},
+      },
+      {
+        id: 'm_ark_seedream55',
+        name: 'Seedream 5.5',
+        providerId: 'ark',
+        adapter: 'ark-image' as const,
+        modelId: 'doubao-seedream-5-5-261028',
+        capabilities: ['image' as const],
+        parameters: {},
+      },
+      {
+        id: 'm_minimax_h3',
+        name: 'MiniMax H3',
+        providerId: 'minimax',
+        adapter: 'minimax-video' as const,
+        modelId: 'MiniMax-H3',
+        capabilities: ['video' as const],
+        parameters: {},
+      },
+    ],
+    defaults: { image: 'm_ds_zimg', video: 'm_minimax_h3' },
+    defaultFps: 30,
+    defaultWidth: 1920,
+    defaultHeight: 1080,
+  };
+  const recCutout = recommendModelForInputs(settingsV3, 'image', { transparentBg: true, refCount: 1 });
+  assert.equal(recCutout?.id, 'm_ark_seedream55', 'Transparent cutout recommends transparent-capable model over Z-Image');
+  const recMultiRef = recommendModelForInputs(settingsV3, 'image', { refCount: 2 });
+  assert.equal(recMultiRef?.id, 'm_ark_seedream55', 'Multi-ref image skips 0-ref Z-Image and recommends Seedream 5.5');
+  const recLastFrame = recommendModelForInputs(settingsV3, 'video', { refCount: 1, hasLastFrame: true });
+  assert.equal(recLastFrame?.id, 'm_minimax_h3', 'First+last frame recommends last-frame-capable video model');
+
+  // 13b. Persistent canvasGenerators, canvasCollapsedZones & inline Asset role set/clear
+  let pV3 = newProject('CanvasV3Test');
+  pV3 = applyOperations(pV3, [
+    {
+      type: 'addAsset',
+      asset: { id: 'a_hero', name: 'hero.png', kind: 'image', path: '/tmp/hero.png', duration: 0, createdAt: '' },
+    },
+    {
+      type: 'updateAssetMeta',
+      assetId: 'a_hero',
+      changes: { role: 'character' },
+    },
+    {
+      type: 'updateProject',
+      changes: {
+        canvasCollapsedZones: ['explore'],
+        canvasGenerators: [
+          {
+            id: 'g1',
+            use: 'image',
+            action: 'multi-ref-image',
+            prompt: '赛博霓虹雨夜侦探与街道融合',
+            inputs: [{ nodeKey: 'asset:a_hero', slot: 'subject' }],
+            params: { aspectRatio: '16:9', batchCount: 2 },
+            collapsed: false,
+            outputAssetIds: ['a_out1'],
+            createdAt: '2026-11-25T00:00:00Z',
+          },
+        ],
+      },
+    },
+  ]);
+  assert.equal(pV3.assets.find((a) => a.id === 'a_hero')?.role, 'character', 'Inline asset role saved');
+  assert.deepEqual(pV3.canvasCollapsedZones, ['explore'], 'Collapsed semantic zones persisted');
+  assert.equal(pV3.canvasGenerators?.length, 1, 'In-canvas generator node persisted');
+  assert.equal(pV3.canvasGenerators?.[0].inputs[0].slot, 'subject');
+
+  pV3 = applyOperations(pV3, [
+    { type: 'updateAssetMeta', assetId: 'a_hero', changes: { role: null } },
+  ]);
+  assert.equal(pV3.assets.find((a) => a.id === 'a_hero')?.role, undefined, 'Passing role: null clears asset role cleanly');
+
+  // 13c. Trace Spotlight full upstream + downstream BFS
+  const traceWires = [
+    {
+      key: 'w_in',
+      kind: 'generator-input' as const,
+      semantic: 'gen-input' as const,
+      category: 'lineage' as const,
+      fromKey: 'asset:a_hero',
+      toKey: 'gen:g1',
+      x1: 0, y1: 0, x2: 300, y2: 0, s1: 'right' as const, s2: 'left' as const,
+      label: '主体', shotId: '', clipId: '', entityId: '', active: false,
+    },
+    {
+      key: 'w_out',
+      kind: 'asset-lineage' as const,
+      semantic: 'lineage' as const,
+      category: 'lineage' as const,
+      fromKey: 'gen:g1',
+      toKey: 'asset:a_out1',
+      x1: 300, y1: 0, x2: 650, y2: 0, s1: 'right' as const, s2: 'left' as const,
+      label: '生成', shotId: '', clipId: '', entityId: '', active: false,
+    },
+    {
+      key: 'w_shot',
+      kind: 'shot-clip' as const,
+      semantic: 'shot-clip' as const,
+      category: 'assembly' as const,
+      fromKey: 'asset:a_out1',
+      toKey: 'shot:s1',
+      x1: 650, y1: 0, x2: 960, y2: 0, s1: 'right' as const, s2: 'left' as const,
+      label: '引用', shotId: 's1', clipId: 'c1', entityId: '', active: false,
+    },
+    {
+      key: 'w_unrelated',
+      kind: 'asset-lineage' as const,
+      semantic: 'lineage' as const,
+      category: 'lineage' as const,
+      fromKey: 'asset:other1',
+      toKey: 'asset:other2',
+      x1: 0, y1: 400, x2: 300, y2: 400, s1: 'right' as const, s2: 'left' as const,
+      label: '生成', shotId: '', clipId: '', entityId: '', active: false,
+    },
+  ];
+  const traced = computeTraceGraph('gen:g1', traceWires);
+  assert.deepEqual(
+    [...traced.nodeKeys].sort(),
+    ['asset:a_hero', 'asset:a_out1', 'gen:g1', 'shot:s1'],
+    'BFS traces both upstream sources and downstream outputs/shots',
+  );
+  assert.ok(traced.wireKeys.has('w_in') && traced.wireKeys.has('w_out') && traced.wireKeys.has('w_shot'));
+  assert.ok(!traced.wireKeys.has('w_unrelated'), 'Unrelated island excluded from trace spotlight');
+
+  // 13d. Layout dimensions for gen: nodes (expanded vs collapsed pill)
+  assert.deepEqual(
+    estimateCanvasNodeSize('gen:g1', {
+      assets: pV3.assets,
+      entities: [],
+      generators: pV3.canvasGenerators,
+    }),
+    { w: 316, h: 268 },
+  );
+  pV3 = applyOperations(pV3, [
+    {
+      type: 'updateProject',
+      changes: {
+        canvasGenerators: [{ ...pV3.canvasGenerators![0], collapsed: true }],
+      },
+    },
+  ]);
+  assert.deepEqual(
+    estimateCanvasNodeSize('gen:g1', {
+      assets: pV3.assets,
+      entities: [],
+      generators: pV3.canvasGenerators,
+    }),
+    { w: 248, h: 66 },
+  );
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 core regression tests');

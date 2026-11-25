@@ -119,18 +119,29 @@ export function SettingsDialog({
       .catch(() => {});
   }, [settings.mcpBridgeEnabled]);
 
-  // Live-preview appearance toggles (glass / glow / motion) while editing; restore saved values if closed without saving
+  // Live-preview appearance toggles (glass / glow / glowColor / motion) while editing; restore saved values if closed without saving
   useEffect(() => {
     const el = document.documentElement;
     el.dataset.glass = draft.glass ? 'on' : 'off';
     el.dataset.glow = draft.glow || 'subtle';
+    el.dataset.glowColor = draft.glowColor || 'emerald';
     el.dataset.motion = draft.motionEffects === false ? 'off' : 'on';
     return () => {
       el.dataset.glass = settings.glass ? 'on' : 'off';
       el.dataset.glow = settings.glow || 'subtle';
+      el.dataset.glowColor = settings.glowColor || 'emerald';
       el.dataset.motion = settings.motionEffects === false ? 'off' : 'on';
     };
-  }, [draft.glass, draft.glow, draft.motionEffects, settings.glass, settings.glow, settings.motionEffects]);
+  }, [
+    draft.glass,
+    draft.glow,
+    draft.glowColor,
+    draft.motionEffects,
+    settings.glass,
+    settings.glow,
+    settings.glowColor,
+    settings.motionEffects,
+  ]);
   const provider = draft.providers.find((p) => p.id === providerId),
     model = draft.models.find((m) => m.id === modelId);
   const field = <K extends keyof Settings>(key: K, value: Settings[K]) =>
@@ -511,7 +522,7 @@ export function SettingsDialog({
                 <div className="setting-row">
                   <div>
                     <b>界面光效</b>
-                    <p>暗房银白液态折射边与 AI 活跃态棱镜微光（预览视频画框内绝不染色）。</p>
+                    <p>实体玻璃层次、追踪白芯彗星切边与生成中流体光场（视频画框内绝不染色）。</p>
                   </div>
                   <div className="segmented-inline" role="group" aria-label="界面光效强度">
                     {(
@@ -529,6 +540,35 @@ export function SettingsDialog({
                         onClick={() => field('glow', val)}
                       >
                         {text}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>光效色系</b>
+                    <p>为 AI 追踪彗星、生成流体光场与连线光子选择主题光色，切换即实时预览。</p>
+                  </div>
+                  <div className="glow-color-swatches" role="group" aria-label="光效色系">
+                    {(
+                      [
+                        ['emerald', '翡翠绿', '#10b981'],
+                        ['silver', '极简银', '#cbd5e1'],
+                        ['cobalt', '光学蓝', '#38bdf8'],
+                        ['amber', '暖胶片', '#f59e0b'],
+                        ['aurora', '极光青', '#2dd4bf'],
+                      ] as const
+                    ).map(([val, label, dotColor]) => (
+                      <button
+                        key={val}
+                        type="button"
+                        disabled={(draft.glow || 'subtle') === 'off'}
+                        aria-pressed={(draft.glowColor || 'emerald') === val}
+                        className={`glow-swatch-btn ${(draft.glowColor || 'emerald') === val ? 'active' : ''}`}
+                        onClick={() => field('glowColor', val)}
+                      >
+                        <i style={{ background: dotColor }} />
+                        <span>{label}</span>
                       </button>
                     ))}
                   </div>

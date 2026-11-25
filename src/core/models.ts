@@ -832,3 +832,59 @@ export function compatibleAdapters(provider?: ProviderConnection) {
     return protocol === 'openai' && a.id.startsWith('openai-');
   });
 }
+
+/**
+ * Recommends the best available (preferring connected) model for a given use and input profile
+ * (first+last frame video, transparent PNG cutout, multi-ref image/video, or single image ref).
+ * Shared consistently by both GenerationDialog and in-canvas CanvasGeneratorNode.
+ */
+export function recommendModelForInputs(
+  settings: Settings,
+  use: Exclude<ModelUse, 'agent'>,
+  opts: {
+    projectDefaults?: Partial<Record<ModelUse, string>>;
+    preferredModelId?: string;
+    refCount?: number;
+    hasLastFrame?: boolean;
+    transparentBg?: boolean;
+  } = {},
+): ModelDefinition | undefined {
+  const models = settings.models.filter((m) => m.capabilities.includes(use));
+  const defaultModel = selectedModel(settings, use, opts.projectDefaults);
+  if (opts.preferredModelId) {
+    const explicit = models.find((m) => m.id === opts.preferredModelId);
+    if (explicit) return explicit;
+  }
+  const isConnected = (m: ModelDefinition) => {
+    const p = settings.providers.find((x) => x.id === m.providerId);
+    return Boolean(p && (p.hasApiKey || !p.requiresKey));
+  };
+  const defCaps = modelInputCapabilities(defaultModel);
+  const refCount = opts.refCount ?? 0;
+
+  if (use === 'image' && opts.transparentBg && !defCaps.supportsTransparentBg) {
+    const hit =
+      models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsTransparentBg) ||
+      models.find((m) => modelInputCapabilities(m).supportsTransparentBg);
+    if (hit) return hit;
+  }
+  if (use === 'video' && opts.hasLastFrame && !defCaps.supportsLastFrame) {
+    const hit =
+      models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsLastFrame) ||
+      models.find((m) => modelInputCapabilities(m).supportsLastFrame);
+    if (hit) return hit;
+  }
+  if ((use === 'image' || use === 'video') && refCount >= 2 && defCaps.maxReferences < 2) {
+    const hit =
+      models.find((m) => isConnected(m) && modelInputCapabilities(m).maxReferences >= 2) ||
+      models.find((m) => modelInputCapabilities(m).maxReferences >= 2);
+    if (hit) return hit;
+  }
+  if ((use === 'image' || use === 'video') && refCount >= 1 && defCaps.maxReferences < 1) {
+    const hit =
+      models.find((m) => isConnected(m) && modelInputCapabilities(m).maxReferences >= 1) ||
+      models.find((m) => modelInputCapabilities(m).maxReferences >= 1);
+    if (hit) return hit;
+  }
+  return defaultModel;
+}

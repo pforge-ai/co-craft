@@ -42,7 +42,11 @@ import {
   EyeOff,
   ChevronDown,
   ChevronRight,
+  Camera,
+  Play,
   RotateCcw,
+  RotateCw,
+  Tag,
   LayoutList,
   X,
 } from 'lucide-react';
@@ -63,13 +67,34 @@ import {
   CanvasWirePillsSvg,
   CanvasWiresSvg,
   computeSmartWire,
+  computeTraceGraph,
   type CanvasPt as Pt,
+  type CanvasWireCategory,
+  type CanvasWireDisplayMode,
   type CanvasWireDrag,
   type CanvasWireItem,
   type PortSide,
 } from './CanvasWiresLayer';
+import { CanvasAnimaticModal } from './canvas/CanvasAnimaticModal';
+import { CanvasDropMenu, type CanvasDropMenuState } from './canvas/CanvasDropMenu';
+import { CanvasForkPopover, type ForkSourceTarget } from './canvas/CanvasForkPopover';
+import {
+  CanvasGeneratorNodeCard,
+  GENERATOR_ACTION_META,
+  SLOT_LABELS,
+} from './canvas/CanvasGeneratorNode';
+import { CanvasGhostCard } from './canvas/CanvasGhostCard';
+import { CanvasLeftToolbar } from './canvas/CanvasLeftToolbar';
+import { CanvasMultiBar } from './canvas/CanvasMultiBar';
+import { CanvasOmnibar, type OmnibarSlashAction } from './canvas/CanvasOmnibar';
+import { CanvasShotCard } from './canvas/CanvasShotCard';
+import { CanvasTopHud, type CanvasAssetFilter } from './canvas/CanvasTopHud';
+import {
+  collectVisualSelection,
+  resolveShotGenContextFull,
+  type CanvasGenerationOptions,
+} from './canvas/types';
 import { PresetPreview } from './PresetControls';
-import { ShotCompositeThumb } from './ShotCompositeThumb';
 import { createPresetClip, getPreset } from '../core/presets';
 import {
   clone,
@@ -81,30 +106,39 @@ import {
   uid,
 } from '../core/project';
 import {
-  collectShotClipsForCompound,
   computePrimaryTimelineShots,
-  moveCompositeShotOperations,
+  reorderCompositeShotOperations,
   scriptOutlineToShotOperations,
-  updateShotNotesOperations,
-  updateShotScriptOperations,
-  updateSingleCaptionTextOperations,
   type CompositeShot,
 } from '../core/storyboard';
 import { ROLE_LABELS, inferAssetRole } from '../core/taxonomy';
 import type {
   AssetLineageRef,
+  AssetRole,
   AssetVariant,
+  CanvasGeneratorAction,
+  CanvasGeneratorInput,
+  CanvasGeneratorNode,
   CanvasGroup,
   ChatContextRef,
   Clip,
   ClipTake,
   EditOperation,
-  GenerationTarget,
+  Job,
   Project,
   Sequence,
+  Settings,
   ShotBinding,
   VaultItem,
 } from '../core/types';
+
+const CONTEXT_ROLES = new Set<AssetRole>(['character', 'environment', 'product', 'visual-style']);
+const QUICK_ASSET_ROLES: { id: AssetRole; label: string }[] = [
+  { id: 'character', label: '角色' },
+  { id: 'environment', label: '场景' },
+  { id: 'product', label: '道具 / 主体' },
+  { id: 'visual-style', label: '风格参考' },
+];
 
 interface CreateCanvasProps {
   project: Project;
@@ -151,14 +185,14 @@ interface CreateCanvasProps {
   chatRefs?: ChatContextRef[];
   onRemoveChatRef?: (key: string) => void;
   onSendCanvasInstruction: (prompt: string, scopeClip?: Clip) => void;
-  onOpenGeneration: (opts: {
-    use: 'image' | 'video' | 'speech' | 'transcription';
-    prompt?: string;
-    referenceAssetId?: string;
-    assetId?: string;
-    target?: GenerationTarget;
-  }) => void;
+  onOpenGeneration: (opts: CanvasGenerationOptions) => void;
   onAskAgentForShot: (clip: Clip, prompt: string) => void;
+  jobs?: Job[];
+  settings?: Settings;
+  onCancelJob?: (jobId: string) => void;
+  onJobsStarted?: (jobs: Job[]) => void;
+  onExtractVideoFrame?: (assetId: string, mode: 'first' | 'last', placement?: Pt) => Promise<void>;
+  onDetachVideoAudio?: (assetId: string, placement?: Pt) => Promise<void>;
 }
 
 export function CreateCanvas({
@@ -189,10 +223,24 @@ export function CreateCanvas({
   onRemoveChatRef,
   onSendCanvasInstruction,
   onOpenGeneration,
+  jobs = [],
+  settings,
+  onCancelJob,
+  onJobsStarted,
+  onExtractVideoFrame,
+  onDetachVideoAudio,
 }: CreateCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
-  const omnibarInputRef = useRef<HTMLInputElement>(null);
-  const [pan, setPan] = useState<Pt>({ x: 96, y: 72 });
+  const omnibarInputRef = useRef<HTMLTextAreaElement>(null);
+  const proximityRafRef = useRef<number>(0);
+  const proximityPtRef = useRef<{ x: number; y: number } | null>(null);
+  const litElsRef = useRef<Set<HTMLElement>>(new Set());
+  useEffect(() => {
+    return () => {
+      if (proximityRafRef.current) cancelAnimationFrame(proximityRafRef.current);
+    };
+  }, []);
+  const [pan, setPan] = useState<Pt>({ x: 96, y: 80 });
   const [zoom, setZoom] = useState(0.95);
   const panRef = useRef(pan);
   const zoomRef = useRef(zoom);
@@ -202,7 +250,6 @@ export function CreateCanvas({
   const [canvasTool, setCanvasTool] = useState<'select' | 'pan'>('select');
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [showMinimap, setShowMinimap] = useState(false);
-  const [aiMode, setAiMode] = useState<'script' | 'subject' | 'shot' | 'agent'>('agent');
   const [omnibarDraft, setOmnibarDraft] = useState('');
 
   const [nodePositions, setNodePositions] = useState<Record<string, Pt>>(() => project.canvasLayout || {});
@@ -240,14 +287,17 @@ export function CreateCanvas({
   // TapNow Popovers, Add Menu, Context Menu, Drop-to-Create Menu, Marquee Box
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<null | { clientX: number; clientY: number; nodeKey?: string }>(null);
-  const [dropMenu, setDropMenu] = useState<null | {
-    sourceKey: string;
-    worldX: number;
-    worldY: number;
-    screenX: number;
-    screenY: number;
-  }>(null);
+  const [dropMenu, setDropMenu] = useState<CanvasDropMenuState | null>(null);
   const [marquee, setMarquee] = useState<null | { x1: number; y1: number; x2: number; y2: number }>(null);
+  const [animaticOpen, setAnimaticOpen] = useState(false);
+  const [forkSource, setForkSource] = useState<ForkSourceTarget | null>(null);
+  const [justCompletedKeys, setJustCompletedKeys] = useState<Record<string, number>>({});
+  const [shotReorderDrag, setShotReorderDrag] = useState<null | {
+    fromShotId: string;
+    targetShotId: string | null;
+    side: 'before' | 'after';
+  }>(null);
+  const prevActiveJobIdsRef = useRef<Set<string>>(new Set());
 
   const [subjectModal, setSubjectModal] = useState<null | { mode: 'new' | 'variant'; entId?: string }>(null);
   const [subjRole, setSubjRole] = useState<'character' | 'product' | 'environment'>('character');
@@ -268,8 +318,17 @@ export function CreateCanvas({
   }>(null);
   const [wireHoverKey, setWireHoverKey] = useState<string | null>(null);
   const [hoveredNodeKey, setHoveredNodeKey] = useState<string | null>(null);
-  const [assetFilter, setAssetFilter] = useState<'all' | 'used' | 'visual'>('all');
-  const [hiddenPopoverOpen, setHiddenPopoverOpen] = useState(false);
+  const [assetFilter, setAssetFilter] = useState<CanvasAssetFilter>('all');
+  const [wireMode, setWireMode] = useState<CanvasWireDisplayMode>('focus');
+  const [wireTypeFilter, setWireTypeFilter] = useState<Record<CanvasWireCategory, boolean>>({
+    binding: true,
+    lineage: true,
+    sequence: true,
+    assembly: true,
+  });
+  const [tracedNodeKey, setTracedNodeKey] = useState<string | null>(null);
+  const [roleMenuFor, setRoleMenuFor] = useState<string | null>(null);
+  const [deriveMenuFor, setDeriveMenuFor] = useState<string | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupNameDraft, setGroupNameDraft] = useState('');
   const [quickLookKey, setQuickLookKey] = useState<string | null>(null);
@@ -357,41 +416,104 @@ export function CreateCanvas({
     return set;
   }, [shots, sequence.clips, project.canvasGroups, standaloneAssets, upstreamEntities]);
 
+  const canvasGenerators = useMemo(() => project.canvasGenerators || [], [project.canvasGenerators]);
+  const collapsedZoneSet = useMemo(() => new Set(project.canvasCollapsedZones || []), [project.canvasCollapsedZones]);
+
+  const isContextAsset = useCallback(
+    (a: { role?: AssetRole }) => Boolean(a.role && CONTEXT_ROLES.has(a.role)),
+    [],
+  );
+
   const visibleUpstreamEntities = useMemo(
     () =>
       upstreamEntities.filter((ent) => {
         const key = `ent:${ent.id}`;
-        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key)) return false;
+        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key) || collapsedZoneSet.has('context')) return false;
+        if (assetFilter === 'audio') return false;
         if (assetFilter === 'used' && !usedNodeSet.has(key)) return false;
         return true;
       }),
-    [upstreamEntities, hiddenNodeSet, collapsedNodeSet, assetFilter, usedNodeSet],
+    [upstreamEntities, hiddenNodeSet, collapsedNodeSet, collapsedZoneSet, assetFilter, usedNodeSet],
   );
   const visibleStandaloneAssets = useMemo(
     () =>
       standaloneAssets.filter((a) => {
         const key = `asset:${a.id}`;
+        const inContextZone = isContextAsset(a);
         if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key)) return false;
+        if (inContextZone && collapsedZoneSet.has('context')) return false;
+        if (!inContextZone && collapsedZoneSet.has('explore')) return false;
+        if (assetFilter === 'context' && !inContextZone) return false;
         if (assetFilter === 'visual' && a.kind === 'audio') return false;
+        if (assetFilter === 'audio' && a.kind !== 'audio') return false;
         if (assetFilter === 'used' && !usedNodeSet.has(key)) return false;
         return true;
       }),
-    [standaloneAssets, hiddenNodeSet, collapsedNodeSet, assetFilter, usedNodeSet],
+    [standaloneAssets, isContextAsset, hiddenNodeSet, collapsedNodeSet, collapsedZoneSet, assetFilter, usedNodeSet],
   );
   const visibleStandaloneComponents = useMemo(
     () =>
       standaloneComponents.filter((c) => {
         const key = `comp:${c.id}`;
-        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key)) return false;
+        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key) || collapsedZoneSet.has('explore')) return false;
+        if (assetFilter === 'context' || assetFilter === 'audio') return false;
         if (assetFilter === 'used' && !usedNodeSet.has(key)) return false;
         return true;
       }),
-    [standaloneComponents, hiddenNodeSet, collapsedNodeSet, assetFilter, usedNodeSet],
+    [standaloneComponents, hiddenNodeSet, collapsedNodeSet, collapsedZoneSet, assetFilter, usedNodeSet],
+  );
+  const visibleGenerators = useMemo(
+    () =>
+      canvasGenerators.filter((g) => {
+        const key = `gen:${g.id}`;
+        if (hiddenNodeSet.has(key) || collapsedNodeSet.has(key) || collapsedZoneSet.has('explore')) return false;
+        if (assetFilter === 'context') return false;
+        if (assetFilter === 'audio' && g.use !== 'speech') return false;
+        return true;
+      }),
+    [canvasGenerators, hiddenNodeSet, collapsedNodeSet, collapsedZoneSet, assetFilter],
+  );
+  const visibleShots = useMemo(
+    () => (collapsedZoneSet.has('shots') ? [] : shots),
+    [shots, collapsedZoneSet],
   );
 
-  const totalAssetCount = upstreamEntities.length + standaloneAssets.length + standaloneComponents.length;
+  const contextAllKeys = useMemo(
+    () => [
+      ...upstreamEntities.map((e) => `ent:${e.id}`),
+      ...standaloneAssets.filter((a) => isContextAsset(a)).map((a) => `asset:${a.id}`),
+    ],
+    [upstreamEntities, standaloneAssets, isContextAsset],
+  );
+  const exploreAllKeys = useMemo(
+    () => [
+      ...canvasGenerators.map((g) => `gen:${g.id}`),
+      ...standaloneAssets.filter((a) => !isContextAsset(a)).map((a) => `asset:${a.id}`),
+      ...standaloneComponents.map((c) => `comp:${c.id}`),
+    ],
+    [canvasGenerators, standaloneAssets, standaloneComponents, isContextAsset],
+  );
+
+  const totalAssetCount =
+    upstreamEntities.length + standaloneAssets.length + standaloneComponents.length + canvasGenerators.length;
   const visibleAssetCount =
-    visibleUpstreamEntities.length + visibleStandaloneAssets.length + visibleStandaloneComponents.length;
+    visibleUpstreamEntities.length +
+    visibleStandaloneAssets.length +
+    visibleStandaloneComponents.length +
+    visibleGenerators.length;
+  const hudCounts = useMemo(
+    () => ({
+      all: totalAssetCount,
+      context: contextAllKeys.length,
+      visual:
+        upstreamEntities.filter((e) => e.entityKind !== 'text').length +
+        standaloneAssets.filter((a) => a.kind !== 'audio').length,
+      audio: standaloneAssets.filter((a) => a.kind === 'audio').length,
+      used: usedNodeSet.size,
+    }),
+    [totalAssetCount, contextAllKeys.length, upstreamEntities, standaloneAssets, usedNodeSet.size],
+  );
+
   const hiddenAssetEntries = useMemo(() => {
     const items: { key: string; label: string }[] = [];
     for (const key of hiddenNodeIds) {
@@ -410,12 +532,18 @@ export function CreateCanvas({
   }, [hiddenNodeIds, standaloneAssets, upstreamEntities, standaloneComponents]);
 
   const assetCols = visibleAssetCount > 8 ? 3 : visibleAssetCount > 3 ? 2 : 1;
-  const shotLaneX = visibleAssetCount > 0 ? 40 + assetCols * 304 + 68 : 80;
+  const shotLaneX = visibleAssetCount > 0 || collapsedZoneSet.has('context') || collapsedZoneSet.has('explore')
+    ? 40 + assetCols * 304 + 68
+    : 80;
 
   const nodeSizeFor = useCallback(
     (key: string): { w: number; h: number } =>
-      estimateCanvasNodeSize(key, { assets: project.assets, entities: upstreamEntities }),
-    [project.assets, upstreamEntities],
+      estimateCanvasNodeSize(key, {
+        assets: project.assets,
+        entities: upstreamEntities,
+        generators: canvasGenerators,
+      }),
+    [project.assets, upstreamEntities, canvasGenerators],
   );
 
   const collapsedGroups = useMemo(() => {
@@ -449,10 +577,12 @@ export function CreateCanvas({
   const layout = useMemo(() => {
     const assetNodeKeys = [
       ...visibleUpstreamEntities.map((e) => `ent:${e.id}`),
-      ...visibleStandaloneAssets.map((a) => `asset:${a.id}`),
+      ...visibleStandaloneAssets.filter((a) => isContextAsset(a)).map((a) => `asset:${a.id}`),
+      ...visibleGenerators.map((g) => `gen:${g.id}`),
+      ...visibleStandaloneAssets.filter((a) => !isContextAsset(a)).map((a) => `asset:${a.id}`),
       ...visibleStandaloneComponents.map((c) => `comp:${c.id}`),
     ];
-    const shotNodeKeys = shots.map((sh) => `shot:${sh.id}`);
+    const shotNodeKeys = visibleShots.map((sh) => `shot:${sh.id}`);
     const occupiedRects = collapsedGroups.map((cg) => ({
       pos: { x: cg.x, y: cg.y },
       sz: { w: 248, h: 178 },
@@ -470,10 +600,12 @@ export function CreateCanvas({
     visibleUpstreamEntities,
     visibleStandaloneAssets,
     visibleStandaloneComponents,
+    visibleGenerators,
+    visibleShots,
+    isContextAsset,
     collapsedGroups,
     assetCols,
     shotLaneX,
-    shots,
     nodePositions,
     nodeSizeFor,
   ]);
@@ -510,10 +642,102 @@ export function CreateCanvas({
     setAddMenuOpen(false);
     setContextMenu(null);
     setDropMenu(null);
-    setHiddenPopoverOpen(false);
     setTakeMenuFor(null);
     setRigPopoverFor(null);
+    setForkSource(null);
+    setRoleMenuFor(null);
+    setDeriveMenuFor(null);
+    setTracedNodeKey(null);
   }, [onSelectClip]);
+
+  const toggleSemanticZone = useCallback(
+    async (zoneId: 'context' | 'explore' | 'shots') => {
+      const prev = project.canvasCollapsedZones || [];
+      const exists = prev.includes(zoneId);
+      const next = exists ? prev.filter((id) => id !== zoneId) : [...prev, zoneId];
+      await onEdit(exists ? '展开语义分区' : '折叠语义分区', [
+        { type: 'updateProject', changes: { canvasCollapsedZones: next } },
+      ]);
+    },
+    [project.canvasCollapsedZones, onEdit],
+  );
+
+  const spawnGeneratorNode = useCallback(
+    async (opts: {
+      use: 'image' | 'video' | 'speech';
+      action: CanvasGeneratorAction;
+      inputs?: CanvasGeneratorInput[];
+      prompt?: string;
+      modelId?: string;
+      params?: CanvasGeneratorNode['params'];
+      placement?: Pt;
+    }) => {
+      setAddMenuOpen(false);
+      setDropMenu(null);
+      setContextMenu(null);
+      setDeriveMenuFor(null);
+      const meta = GENERATOR_ACTION_META[opts.action] || GENERATOR_ACTION_META['text-to-image'];
+      const id = uid('gen');
+      const node: CanvasGeneratorNode = {
+        id,
+        use: opts.use,
+        action: opts.action,
+        modelId: opts.modelId,
+        prompt: opts.prompt !== undefined ? opts.prompt : meta.defaultPrompt,
+        inputs: opts.inputs || [],
+        params: {
+          ...(opts.action === 'cutout' ? { background: 'transparent' as const } : {}),
+          ...(opts.params || {}),
+        },
+        outputAssetIds: [],
+        updatedAt: new Date().toISOString(),
+      };
+      const pos = opts.placement || viewportCenterWorld();
+      const nextLayout = {
+        ...nodePositionsRef.current,
+        [`gen:${id}`]: { x: Math.round(pos.x), y: Math.round(pos.y) },
+      };
+      nodePositionsRef.current = nextLayout;
+      setNodePositions(nextLayout);
+      const nextGens = [...(project.canvasGenerators || []), node];
+      const nextCollapsed = (project.canvasCollapsedZones || []).filter((z) => z !== 'explore');
+      await onEdit(`新建「${meta.label}」工坊卡`, [
+        {
+          type: 'updateProject',
+          changes: {
+            canvasGenerators: nextGens,
+            canvasLayout: nextLayout,
+            canvasCollapsedZones: nextCollapsed,
+          },
+        },
+      ]);
+      setSelectedNodeIds([`gen:${id}`]);
+    },
+    [project.canvasGenerators, project.canvasCollapsedZones, viewportCenterWorld, onEdit],
+  );
+
+  const updateGeneratorNode = useCallback(
+    async (nodeId: string, patch: Partial<CanvasGeneratorNode>) => {
+      const nextGens = (project.canvasGenerators || []).map((g) =>
+        g.id === nodeId ? { ...g, ...patch, updatedAt: new Date().toISOString() } : g,
+      );
+      await onEdit('更新工坊节点配置', [
+        { type: 'updateProject', changes: { canvasGenerators: nextGens } },
+      ]);
+    },
+    [project.canvasGenerators, onEdit],
+  );
+
+  const deleteGeneratorNode = useCallback(
+    async (nodeId: string) => {
+      const nextGens = (project.canvasGenerators || []).filter((g) => g.id !== nodeId);
+      setSelectedNodeIds((prev) => prev.filter((k) => k !== `gen:${nodeId}`));
+      await onEdit('移除工坊节点', [
+        { type: 'updateProject', changes: { canvasGenerators: nextGens } },
+      ]);
+    },
+    [project.canvasGenerators, onEdit],
+  );
 
   const createTextNode = useCallback(
     async (initialText = '', worldPos?: Pt) => {
@@ -610,7 +834,6 @@ export function CreateCanvas({
   const restoreNodeKeysToCanvas = useCallback(
     async (keys?: string[]) => {
       const nextHidden = keys ? hiddenNodeIds.filter((k) => !keys.includes(k)) : [];
-      setHiddenPopoverOpen(false);
       await onEdit(
         keys && keys.length === 1 ? '将素材放回画布' : '恢复画布已收起素材',
         [{ type: 'updateProject', changes: { canvasHiddenNodeIds: nextHidden } }],
@@ -622,10 +845,12 @@ export function CreateCanvas({
   const tidyCanvasNodes = useCallback(async () => {
     const assetNodeKeys = [
       ...visibleUpstreamEntities.map((e) => `ent:${e.id}`),
-      ...visibleStandaloneAssets.map((a) => `asset:${a.id}`),
+      ...visibleStandaloneAssets.filter((a) => isContextAsset(a)).map((a) => `asset:${a.id}`),
+      ...visibleGenerators.map((g) => `gen:${g.id}`),
+      ...visibleStandaloneAssets.filter((a) => !isContextAsset(a)).map((a) => `asset:${a.id}`),
       ...visibleStandaloneComponents.map((c) => `comp:${c.id}`),
     ];
-    const shotNodeKeys = shots.map((sh) => `shot:${sh.id}`);
+    const shotNodeKeys = visibleShots.map((sh) => `shot:${sh.id}`);
     const { positions } = computeTidyCanvasLayout({
       assetNodeKeys,
       shotNodeKeys,
@@ -641,7 +866,9 @@ export function CreateCanvas({
     visibleUpstreamEntities,
     visibleStandaloneAssets,
     visibleStandaloneComponents,
-    shots,
+    visibleGenerators,
+    visibleShots,
+    isContextAsset,
     project.canvasGroups,
     nodeSizeFor,
     onEdit,
@@ -685,26 +912,102 @@ export function CreateCanvas({
     [project.canvasGroups, onEdit],
   );
 
-  function resolveShotGenContext(shot: CompositeShot): { prompt: string; refAssetId?: string } {
-    const b =
-      shot.bindings.find((item) => {
-        const candidate = upstreamEntities.find((x) => x.id === item.entityId);
-        return candidate && candidate.entityKind !== 'text';
-      }) || shot.bindings[0];
-    const ent = b ? upstreamEntities.find((x) => x.id === b.entityId) : undefined;
-    const vr = ent
-      ? ent.variants?.find((v) => v.id === b?.variantId) ||
-        ent.variants?.find((v) => v.id === ent.defaultVariantId) ||
-        ent.variants?.[0]
-      : undefined;
-    const anchorDesc = [ent?.textContent, ent?.promptAnchor, vr?.promptDelta].filter(Boolean).join('；');
-    const subjectPhrase = ent ? `@${ent.name}${vr ? `:${vr.name}` : ''}（${anchorDesc || ent.name}）` : '';
-    const baseText = shot.scriptText || String(shot.anchorClip.props.text || shot.anchorClip.name || '');
-    return {
-      prompt: [baseText, subjectPhrase].filter(Boolean).join('，'),
-      refAssetId: vr?.assetId || ent?.assetId,
-    };
-  }
+  const resolveShotGenContext = useCallback(
+    (shot: CompositeShot) => resolveShotGenContextFull(shot, upstreamEntities, project.assets, activeVarByEnt),
+    [upstreamEntities, project.assets, activeVarByEnt],
+  );
+
+  // Active in-place generation jobs for the current project (both Shot-targeted & Standalone Ghost Cards)
+  const activeCanvasJobs = useMemo(
+    () =>
+      jobs.filter(
+        (j) =>
+          j.type === 'generate' &&
+          (j.status === 'running' || j.status === 'queued') &&
+          (!j.projectId || j.projectId === project.id),
+      ),
+    [jobs, project.id],
+  );
+
+  const shotActiveJobs = useMemo(() => {
+    const map = new Map<string, Job>();
+    for (const j of activeCanvasJobs) {
+      if (j.target?.clipId && !map.has(j.target.clipId)) {
+        map.set(j.target.clipId, j);
+      }
+    }
+    return map;
+  }, [activeCanvasJobs]);
+
+  const ghostJobs = useMemo(() => {
+    const standalone = activeCanvasJobs.filter((j) => !j.target?.clipId);
+    return standalone.map((job, idx) => {
+      const sourceKeys = Array.from(
+        new Set([
+          ...(job.canvas?.sourceNodeKeys || []),
+          ...(job.canvas?.referenceAssetIds || []).map((id) => `asset:${id}`),
+          ...(job.canvas?.lastFrameAssetId ? [`asset:${job.canvas.lastFrameAssetId}`] : []),
+        ]),
+      ).filter((k) => Boolean(layout[k]));
+
+      let pos: Pt | undefined = job.canvas?.placement
+        ? { x: Math.round(job.canvas.placement.x), y: Math.round(job.canvas.placement.y) }
+        : undefined;
+      if (!pos && sourceKeys.length > 0) {
+        const srcPts = sourceKeys.map((k) => layout[k]).filter((p): p is Pt => Boolean(p));
+        const maxX = Math.max(...srcPts.map((p) => p.x));
+        const avgY = srcPts.reduce((s, p) => s + p.y, 0) / srcPts.length;
+        pos = { x: Math.round(maxX + 312), y: Math.round(avgY + idx * 198) };
+      }
+      if (!pos) {
+        pos = { x: 40 + assetCols * 300, y: CANVAS_LANE_TOP + idx * 198 };
+      }
+      return { job, pos, sourceKeys };
+    });
+  }, [activeCanvasJobs, layout, assetCols]);
+
+  // Brief optical micro-sheen when an active canvas generation finishes and materializes
+  useEffect(() => {
+    const prevIds = prevActiveJobIdsRef.current;
+    const nextActive = new Set<string>();
+    const freshlyDone: string[] = [];
+    for (const j of jobs) {
+      if (j.type !== 'generate') continue;
+      if (j.status === 'running' || j.status === 'queued') {
+        nextActive.add(j.id);
+      } else if (j.status === 'completed' && prevIds.has(j.id)) {
+        if (j.target?.clipId) {
+          const hitShot = shots.find((s) => s.anchorClip.id === j.target!.clipId);
+          if (hitShot) freshlyDone.push(`shot:${hitShot.id}`);
+        } else if (j.result?.asset?.id) {
+          freshlyDone.push(`asset:${j.result.asset.id}`);
+        }
+      }
+    }
+    prevActiveJobIdsRef.current = nextActive;
+    if (!freshlyDone.length) return;
+    const now = Date.now();
+    setJustCompletedKeys((prev) => {
+      const next = { ...prev };
+      for (const k of freshlyDone) next[k] = now;
+      return next;
+    });
+    const timer = window.setTimeout(() => {
+      setJustCompletedKeys((prev) => {
+        const next = { ...prev };
+        for (const k of freshlyDone) {
+          if (next[k] === now) delete next[k];
+        }
+        return next;
+      });
+    }, 1350);
+    return () => window.clearTimeout(timer);
+  }, [jobs, shots]);
+
+  const visualSelection = useMemo(
+    () => collectVisualSelection(selectedNodeIds, project, upstreamEntities, shots, activeVarByEnt, layout),
+    [selectedNodeIds, project, upstreamEntities, shots, activeVarByEnt, layout],
+  );
 
   const collectRefsFromNodeKeys = useCallback(
     (keys: string[]): ChatContextRef[] => {
@@ -938,7 +1241,7 @@ export function CreateCanvas({
   // Keyboard shortcuts while Canvas active (Escape deselect, Space tap Quick Look / Space hold pan, T new text node, S new subject, Cmd+A select all, Cmd+G group)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (modalOpen || subjectModal || quickLookKey || editingGroupId) return;
+      if (modalOpen || subjectModal || quickLookKey || editingGroupId || animaticOpen || forkSource) return;
       if (e.isComposing) return;
       const inField = Boolean((e.target as HTMLElement)?.closest('input, textarea, select, [contenteditable]'));
       if (e.code === 'Space' && !inField) {
@@ -974,9 +1277,9 @@ export function CreateCanvas({
         void createTextNode('');
         return;
       }
-      if (!mod && e.key.toLowerCase() === 's') {
+      if (!mod && e.key.toLowerCase() === 'g') {
         e.preventDefault();
-        setSubjectModal({ mode: 'new' });
+        void spawnGeneratorNode({ use: 'image', action: 'text-to-image' });
         return;
       }
       if (!mod && e.key.toLowerCase() === 'v') setCanvasTool('select');
@@ -994,6 +1297,8 @@ export function CreateCanvas({
           !modalOpen &&
           !subjectModal &&
           !editingGroupId &&
+          !animaticOpen &&
+          !forkSource &&
           selectedIdsRef.current.length === 1
         ) {
           setQuickLookKey(selectedIdsRef.current[0]);
@@ -1017,10 +1322,13 @@ export function CreateCanvas({
     subjectModal,
     quickLookKey,
     editingGroupId,
+    animaticOpen,
+    forkSource,
     clearSelection,
     selectAllNodes,
     createGroupFromNodeKeys,
     createTextNode,
+    spawnGeneratorNode,
   ]);
 
   async function addQuickCanvasRigNode(presetId: string, role: VaultItem['role'], label: string) {
@@ -1224,6 +1532,43 @@ export function CreateCanvas({
   const completeWireToNode = useCallback(
     async (fromKey: string, toKey: string) => {
       if (fromKey === toKey) return;
+      // 0. Any upstream asset/entity/shot -> Generator Node (typed input slot!)
+      if (toKey.startsWith('gen:') && !fromKey.startsWith('gen:')) {
+        const genId = toKey.slice(4);
+        const targetGen = canvasGenerators.find((g) => g.id === genId);
+        if (!targetGen) return;
+        if (targetGen.inputs.some((x) => x.nodeKey === fromKey)) return;
+        let slot: CanvasGeneratorInput['slot'] = 'source';
+        if (fromKey.startsWith('ent:')) {
+          const ent = upstreamEntities.find((e) => `ent:${e.id}` === fromKey);
+          if (ent?.entityKind === 'text') slot = 'prompt-text';
+          else if (targetGen.use === 'video') {
+            slot = targetGen.inputs.some((x) => x.slot === 'first-frame')
+              ? targetGen.inputs.some((x) => x.slot === 'last-frame')
+                ? 'subject'
+                : 'last-frame'
+              : 'first-frame';
+          } else if (ent?.role === 'environment') slot = 'scene';
+          else if (ent?.role === 'visual-style') slot = 'style';
+          else slot = 'subject';
+        } else if (fromKey.startsWith('asset:') || fromKey.startsWith('shot:')) {
+          const a = fromKey.startsWith('asset:')
+            ? project.assets.find((x) => `asset:${x.id}` === fromKey)
+            : undefined;
+          if (targetGen.use === 'video') {
+            slot = targetGen.inputs.some((x) => x.slot === 'first-frame')
+              ? targetGen.inputs.some((x) => x.slot === 'last-frame')
+                ? 'subject'
+                : 'last-frame'
+              : 'first-frame';
+          } else if (a?.role === 'environment' || a?.role === 'backdrop') slot = 'scene';
+          else if (a?.role === 'visual-style') slot = 'style';
+          else slot = 'subject';
+        }
+        const nextInputs = [...targetGen.inputs, { nodeKey: fromKey, slot }];
+        await updateGeneratorNode(genId, { inputs: nextInputs });
+        return;
+      }
       // 1. Ent <-> Shot: subject / script / compound binding wire
       if (
         (fromKey.startsWith('ent:') && toKey.startsWith('shot:')) ||
@@ -1423,7 +1768,18 @@ export function CreateCanvas({
         ]);
       }
     },
-    [upstreamEntities, shots, activeVarByEnt, project.assets, standaloneComponents, sequence.id, sequence.fps, onEdit],
+    [
+      canvasGenerators,
+      updateGeneratorNode,
+      upstreamEntities,
+      shots,
+      activeVarByEnt,
+      project.assets,
+      standaloneComponents,
+      sequence.id,
+      sequence.fps,
+      onEdit,
+    ],
   );
 
   const screenToWorld = useCallback((cx: number, cy: number): Pt | null => {
@@ -1597,48 +1953,121 @@ export function CreateCanvas({
     if (clipToSelect) onSelectClip(clipToSelect);
   };
 
-  // Compute SVG Bezier Wires: Bindings + Asset/Entity Lineage + Shot Clips with Adaptive Ports
+  useEffect(() => {
+    // Also clean up fork popover when selection resets externally
+  }, []);
+
+  const startShotReorderDrag = useCallback(
+    (e: React.PointerEvent<HTMLElement>, fromShot: CompositeShot) => {
+      if (e.button !== 0 || fromShot.locked || shots.length < 2) return;
+      e.stopPropagation();
+      const fromIdx = shots.findIndex((s) => s.id === fromShot.id);
+      if (fromIdx < 0) return;
+
+      let latestTarget: { targetShotId: string | null; side: 'before' | 'after' } = {
+        targetShotId: null,
+        side: 'before',
+      };
+      setShotReorderDrag({ fromShotId: fromShot.id, targetShotId: null, side: 'before' });
+
+      const hitShotSlot = (cx: number, cy: number): { targetShotId: string | null; side: 'before' | 'after' } => {
+        const wPt = screenToWorld(cx, cy);
+        if (!wPt) return { targetShotId: null, side: 'before' };
+        let best: { shotId: string; dist: number; side: 'before' | 'after' } | null = null;
+        for (const sh of shots) {
+          if (sh.id === fromShot.id || sh.locked) continue;
+          const p = layoutRef.current[`shot:${sh.id}`];
+          if (!p) continue;
+          const cxCard = p.x + 144;
+          const cyCard = p.y + 102;
+          const dx = wPt.x - cxCard;
+          const dy = wPt.y - cyCard;
+          // Within generous capture zone around a shot card
+          if (Math.abs(dx) <= 172 && Math.abs(dy) <= 135) {
+            const dist = Math.hypot(dx, dy);
+            if (!best || dist < best.dist) {
+              best = { shotId: sh.id, dist, side: dx < 0 ? 'before' : 'after' };
+            }
+          }
+        }
+        return best ? { targetShotId: best.shotId, side: best.side } : { targetShotId: null, side: 'before' };
+      };
+
+      startManagedDrag(
+        pointerDrag(
+          e,
+          (mx, my) => {
+            const next = hitShotSlot(mx, my);
+            if (next.targetShotId !== latestTarget.targetShotId || next.side !== latestTarget.side) {
+              latestTarget = next;
+              setShotReorderDrag({ fromShotId: fromShot.id, ...next });
+            }
+          },
+          () => {
+            const drop = latestTarget;
+            setShotReorderDrag(null);
+            if (!drop.targetShotId) return;
+            const targetIdx = shots.findIndex((s) => s.id === drop.targetShotId);
+            if (targetIdx < 0) return;
+            let insertIdx = drop.side === 'before' ? targetIdx : targetIdx + 1;
+            if (fromIdx < insertIdx) insertIdx -= 1;
+            insertIdx = Math.max(0, Math.min(shots.length - 1, insertIdx));
+            if (insertIdx === fromIdx) return;
+            const ops = reorderCompositeShotOperations(sequence, shots, fromShot.id, insertIdx);
+            if (!ops.length) return;
+            // If affected shots had manual canvasLayout positions, remap them cleanly so cards match new order
+            const saved = nodePositionsRef.current;
+            const lo = Math.min(fromIdx, insertIdx);
+            const hi = Math.max(fromIdx, insertIdx);
+            const slice = shots.slice(lo, hi + 1);
+            if (slice.some((sh) => Boolean(saved[`shot:${sh.id}`]))) {
+              const slotPts = slice.map((sh) => layoutRef.current[`shot:${sh.id}`] || saved[`shot:${sh.id}`]);
+              const reordered = [...slice];
+              const [moved] = reordered.splice(fromIdx - lo, 1);
+              reordered.splice(insertIdx - lo, 0, moved);
+              const nextLayout = { ...saved };
+              reordered.forEach((sh, i) => {
+                if (slotPts[i]) nextLayout[`shot:${sh.id}`] = slotPts[i];
+              });
+              nodePositionsRef.current = nextLayout;
+              setNodePositions(nextLayout);
+              ops.push({ type: 'updateProject', changes: { canvasLayout: nextLayout } });
+            }
+            void onEdit(`拖拽重排镜头 #${fromShot.index} → #${insertIdx + 1}`, ops);
+          },
+          'grabbing',
+        ),
+      );
+    },
+    [shots, sequence, screenToWorld, startManagedDrag, onEdit],
+  );
+
+  // Compute SVG Bezier Wires: Bindings + Asset/Entity Lineage + Shot Clips + Live Ghost Wires with Adaptive Ports
   const wires = useMemo(() => {
-    const list: {
-      key: string;
-      kind: 'binding' | 'asset-lineage' | 'entity-lineage' | 'shot-clip';
-      fromKey: string;
-      toKey: string;
-      x1: number;
-      y1: number;
-      x2: number;
-      y2: number;
-      s1: PortSide;
-      s2: PortSide;
-      label: string;
-      shotId: string;
-      clipId: string;
-      entityId: string;
-      targetAssetId?: string;
-      targetEntId?: string;
-      sourceAssetId?: string;
-      sourceVaultId?: string;
-      removeClipId?: string;
-      isLineage?: boolean;
-      active: boolean;
-    }[] = [];
+    const list: CanvasWireItem[] = [];
     const selSet = new Set(selectedNodeIds);
     const pushWire = (
-      base: Omit<(typeof list)[number], 'x1' | 'y1' | 'x2' | 'y2' | 's1' | 's2' | 'active'>,
+      base: Omit<CanvasWireItem, 'x1' | 'y1' | 'x2' | 'y2' | 's1' | 's2' | 'active'>,
+      overrideTo?: { pos: Pt; sz: { w: number; h: number } },
     ) => {
       const p1 = layout[base.fromKey];
-      const p2 = layout[base.toKey];
+      const p2 = overrideTo?.pos || layout[base.toKey];
       if (!p1 || !p2) return;
-      const smart = computeSmartWire(p1, nodeSizeFor(base.fromKey), p2, nodeSizeFor(base.toKey));
+      const smart = computeSmartWire(
+        p1,
+        nodeSizeFor(base.fromKey),
+        p2,
+        overrideTo?.sz || nodeSizeFor(base.toKey),
+      );
       list.push({
         ...base,
         ...smart,
-        active: selSet.has(base.fromKey) || selSet.has(base.toKey),
+        active: base.kind === 'ghost-generation' || selSet.has(base.fromKey) || selSet.has(base.toKey),
       });
     };
 
     // A) Entity -> Shot bindings
-    for (const sh of shots) {
+    for (const sh of visibleShots) {
       for (const b of sh.bindings) {
         const ent = upstreamEntities.find((x) => x.id === b.entityId);
         if (!ent) continue;
@@ -1646,6 +2075,8 @@ export function CreateCanvas({
         pushWire({
           key: `${ent.id}->${sh.id}`,
           kind: 'binding',
+          category: 'binding',
+          semantic: 'binding',
           fromKey: `ent:${ent.id}`,
           toKey: `shot:${sh.id}`,
           label: vr ? `@${ent.name}:${vr.name}` : `@${ent.name}`,
@@ -1663,6 +2094,8 @@ export function CreateCanvas({
           pushWire({
             key: `clip:${a.id}->${sh.id}`,
             kind: 'shot-clip',
+            category: 'assembly',
+            semantic: 'shot-clip',
             fromKey: `asset:${a.id}`,
             toKey: `shot:${sh.id}`,
             label: a.name.slice(0, 14),
@@ -1680,6 +2113,8 @@ export function CreateCanvas({
           pushWire({
             key: `comp:${comp.id}->${sh.id}`,
             kind: 'shot-clip',
+            category: 'assembly',
+            semantic: 'shot-clip',
             fromKey: `comp:${comp.id}`,
             toKey: `shot:${sh.id}`,
             label: comp.name.slice(0, 14),
@@ -1692,21 +2127,42 @@ export function CreateCanvas({
       }
     }
 
-    // D) Asset lineage: Asset/Ent/Shot -> Asset
+    // C2) Sequence Narrative Flow: Shot[i] -> Shot[i+1]
+    for (let i = 0; i < visibleShots.length - 1; i++) {
+      const curSh = visibleShots[i];
+      const nextSh = visibleShots[i + 1];
+      pushWire({
+        key: `seq:${curSh.id}->${nextSh.id}`,
+        kind: 'sequence-flow',
+        category: 'sequence',
+        semantic: 'sequence',
+        fromKey: `shot:${curSh.id}`,
+        toKey: `shot:${nextSh.id}`,
+        label: '',
+        shotId: curSh.id,
+        clipId: curSh.anchorClip.id,
+        entityId: '',
+      });
+    }
+
+    // D) Asset lineage: Asset/Ent/Shot/Gen -> Asset
     for (const a of standaloneAssets) {
       if (!a.derivedFrom?.length) continue;
       for (const ref of a.derivedFrom) {
-        const fromKey = ref.vaultItemId?.startsWith('shot:')
-          ? ref.vaultItemId
-          : ref.vaultItemId
-            ? `ent:${ref.vaultItemId}`
-            : ref.assetId
-              ? `asset:${ref.assetId}`
-              : '';
+        const fromKey =
+          ref.vaultItemId?.startsWith('shot:') || ref.vaultItemId?.startsWith('gen:')
+            ? ref.vaultItemId
+            : ref.vaultItemId
+              ? `ent:${ref.vaultItemId}`
+              : ref.assetId
+                ? `asset:${ref.assetId}`
+                : '';
         if (!fromKey || !layout[fromKey]) continue;
         pushWire({
           key: `lin:${fromKey}->asset:${a.id}`,
           kind: 'asset-lineage',
+          category: 'lineage',
+          semantic: ref.via === 'first-last-frame' ? 'first-last' : 'lineage',
           fromKey,
           toKey: `asset:${a.id}`,
           shotId: '',
@@ -1734,6 +2190,8 @@ export function CreateCanvas({
         pushWire({
           key: `elin:${fromKey}->ent:${ent.id}`,
           kind: 'entity-lineage',
+          category: 'lineage',
+          semantic: 'lineage',
           fromKey,
           toKey: `ent:${ent.id}`,
           shotId: '',
@@ -1747,9 +2205,60 @@ export function CreateCanvas({
         });
       }
     }
+
+    // F) Generator Node Typed Inputs: upstream -> gen:<id>
+    for (const gen of visibleGenerators) {
+      const toKey = `gen:${gen.id}`;
+      if (!layout[toKey]) continue;
+      for (const inp of gen.inputs) {
+        if (!layout[inp.nodeKey]) continue;
+        const isFirstLast = inp.slot === 'first-frame' || inp.slot === 'last-frame';
+        pushWire({
+          key: `genin:${inp.nodeKey}->${toKey}`,
+          kind: 'generator-input',
+          category: 'lineage',
+          semantic: isFirstLast ? 'first-last' : 'gen-input',
+          fromKey: inp.nodeKey,
+          toKey,
+          shotId: '',
+          clipId: '',
+          entityId: '',
+          generatorId: gen.id,
+          inputSlot: inp.slot,
+          isLineage: true,
+          label: SLOT_LABELS[inp.slot] || '输入',
+        });
+      }
+    }
+
+    // G) Live Ghost Generation Wires: upstream reference/source nodes -> in-place Ghost card
+    for (const g of ghostJobs) {
+      const isAudioGhost = g.job.canvas?.use === 'speech';
+      const ghostSz = isAudioGhost ? { w: 248, h: 108 } : { w: 248, h: 162 };
+      for (const srcKey of g.sourceKeys) {
+        if (!layout[srcKey]) continue;
+        pushWire(
+          {
+            key: `ghost:${srcKey}->${g.job.id}`,
+            kind: 'ghost-generation',
+            category: 'lineage',
+            semantic: 'ghost',
+            fromKey: srcKey,
+            toKey: `ghost:${g.job.id}`,
+            shotId: '',
+            clipId: '',
+            entityId: '',
+            isLineage: true,
+            label: '生成中',
+          },
+          { pos: g.pos, sz: ghostSz },
+        );
+      }
+    }
     return list;
   }, [
-    shots,
+    visibleShots,
+    visibleGenerators,
     layout,
     upstreamEntities,
     standaloneAssets,
@@ -1757,6 +2266,149 @@ export function CreateCanvas({
     sequence.clips,
     selectedNodeIds,
     nodeSizeFor,
+    ghostJobs,
+  ]);
+
+  const filteredWires = useMemo(
+    () => wires.filter((w) => w.kind === 'ghost-generation' || wireTypeFilter[w.category]),
+    [wires, wireTypeFilter],
+  );
+
+  // Per-node connection counters (for subtle collapsed port badges <- N / N ->)
+  const wireDegrees = useMemo(() => {
+    const map = new Map<string, { inCount: number; outCount: number }>();
+    const bump = (key: string, dir: 'in' | 'out') => {
+      const cur = map.get(key) || { inCount: 0, outCount: 0 };
+      if (dir === 'in') cur.inCount += 1;
+      else cur.outCount += 1;
+      map.set(key, cur);
+    };
+    for (const w of filteredWires) {
+      if (w.kind === 'sequence-flow' || w.kind === 'ghost-generation') continue;
+      bump(w.fromKey, 'out');
+      bump(w.toKey, 'in');
+    }
+    return map;
+  }, [filteredWires]);
+
+  // Trace Spotlight graph (BFS upstream + downstream when user clicks any port counter badge)
+  const traceGraph = useMemo(() => {
+    if (!tracedNodeKey) return null;
+    return computeTraceGraph(tracedNodeKey, filteredWires);
+  }, [tracedNodeKey, filteredWires]);
+
+  const toggleTraceNode = useCallback((nodeKey: string) => {
+    setTracedNodeKey((prev) => (prev === nodeKey ? null : nodeKey));
+  }, []);
+
+  const isNodeDimmed = useCallback(
+    (nodeKey: string) => Boolean(traceGraph && !traceGraph.nodeKeys.has(nodeKey)),
+    [traceGraph],
+  );
+
+  // Semantic Zone bounding boxes & collapsed mosaic decks (3-B: 剧本与设定 / 探索工坊 / 成片分镜序列)
+  const semanticZoneMeta = useMemo(() => {
+    const buildPreviews = (keys: readonly string[]) => {
+      const out: string[] = [];
+      for (const k of keys) {
+        if (out.length >= 3) break;
+        if (k.startsWith('asset:')) {
+          const a = project.assets.find((x) => `asset:${x.id}` === k);
+          if (a?.thumbnail && !a.offline) out.push(mediaUrl(previewOrigin, a.id, true));
+        } else if (k.startsWith('ent:')) {
+          const e = upstreamEntities.find((x) => `ent:${x.id}` === k);
+          const aid = e?.variants?.[0]?.assetId || e?.assetId;
+          const a = aid ? project.assets.find((x) => x.id === aid) : undefined;
+          if (a?.thumbnail && !a.offline) out.push(mediaUrl(previewOrigin, a.id, true));
+        } else if (k.startsWith('shot:')) {
+          const sh = shots.find((s) => `shot:${s.id}` === k);
+          const a = sh?.anchorClip.assetId ? project.assets.find((x) => x.id === sh.anchorClip.assetId) : undefined;
+          if (a?.thumbnail && !a.offline) out.push(mediaUrl(previewOrigin, a.id, true));
+        }
+      }
+      return out;
+    };
+
+    const defs: {
+      id: 'context' | 'explore' | 'shots';
+      label: string;
+      allKeys: string[];
+      visibleKeys: string[];
+      fallbackPos: Pt;
+    }[] = [
+      {
+        id: 'context',
+        label: '剧本与设定',
+        allKeys: contextAllKeys,
+        visibleKeys: [
+          ...visibleUpstreamEntities.map((e) => `ent:${e.id}`),
+          ...visibleStandaloneAssets.filter((a) => isContextAsset(a)).map((a) => `asset:${a.id}`),
+        ],
+        fallbackPos: { x: 40, y: CANVAS_LANE_TOP },
+      },
+      {
+        id: 'explore',
+        label: '探索工坊',
+        allKeys: exploreAllKeys,
+        visibleKeys: [
+          ...visibleGenerators.map((g) => `gen:${g.id}`),
+          ...visibleStandaloneAssets.filter((a) => !isContextAsset(a)).map((a) => `asset:${a.id}`),
+          ...visibleStandaloneComponents.map((c) => `comp:${c.id}`),
+        ],
+        fallbackPos: { x: 40, y: CANVAS_LANE_TOP + 224 },
+      },
+      {
+        id: 'shots',
+        label: '成片分镜序列',
+        allKeys: shots.map((s) => `shot:${s.id}`),
+        visibleKeys: visibleShots.map((s) => `shot:${s.id}`),
+        fallbackPos: { x: shotLaneX, y: CANVAS_LANE_TOP },
+      },
+    ];
+
+    return defs.map((d) => {
+      const collapsed = collapsedZoneSet.has(d.id);
+      const pts = d.visibleKeys
+        .map((k) => ({ pos: layout[k], sz: nodeSizeFor(k) }))
+        .filter((x) => Boolean(x.pos));
+      const frame =
+        !collapsed && pts.length > 0
+          ? {
+              x: Math.min(...pts.map((p) => p.pos!.x)) - 22,
+              y: Math.min(...pts.map((p) => p.pos!.y)) - 42,
+              w: Math.max(...pts.map((p) => p.pos!.x + p.sz.w)) - Math.min(...pts.map((p) => p.pos!.x)) + 44,
+              h: Math.max(...pts.map((p) => p.pos!.y + p.sz.h)) - Math.min(...pts.map((p) => p.pos!.y)) + 64,
+            }
+          : null;
+      const savedAnchor = d.allKeys.map((k) => nodePositions[k]).find(Boolean) || d.fallbackPos;
+      return {
+        id: d.id,
+        label: d.label,
+        count: d.allKeys.length,
+        collapsed,
+        frame,
+        deckPos: savedAnchor,
+        previews: collapsed ? buildPreviews(d.allKeys) : [],
+      };
+    });
+  }, [
+    contextAllKeys,
+    exploreAllKeys,
+    shots,
+    visibleUpstreamEntities,
+    visibleStandaloneAssets,
+    visibleStandaloneComponents,
+    visibleGenerators,
+    visibleShots,
+    isContextAsset,
+    collapsedZoneSet,
+    layout,
+    nodeSizeFor,
+    nodePositions,
+    shotLaneX,
+    project.assets,
+    upstreamEntities,
+    previewOrigin,
   ]);
 
   const groupBoxes = useMemo(() => {
@@ -1813,12 +2465,54 @@ export function CreateCanvas({
       className={`create-canvas-viewport ${activePanMode ? 'pan-mode' : 'select-mode'} ${wireDrag ? 'is-wiring' : ''}`}
       onPointerMove={(e) => {
         if (document.documentElement.dataset.glow === 'off') return;
-        const card = (e.target as HTMLElement | null)?.closest('.cc-node-card') as HTMLElement | null;
-        if (!card) return;
-        const rect = card.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return;
-        card.style.setProperty('--mx', `${((e.clientX - rect.left) / rect.width) * 100}%`);
-        card.style.setProperty('--my', `${((e.clientY - rect.top) / rect.height) * 100}%`);
+        proximityPtRef.current = { x: e.clientX, y: e.clientY };
+        if (proximityRafRef.current) return;
+        proximityRafRef.current = requestAnimationFrame(() => {
+          proximityRafRef.current = 0;
+          const pt = proximityPtRef.current;
+          const vp = viewportRef.current;
+          if (!pt || !vp) return;
+          const vpRect = vp.getBoundingClientRect();
+          vp.style.setProperty('--vx', `${Math.round(pt.x - vpRect.left)}px`);
+          vp.style.setProperty('--vy', `${Math.round(pt.y - vpRect.top)}px`);
+          vp.dataset.pointerIn = '1';
+
+          const radius = 195;
+          const nextLit = new Set<HTMLElement>();
+          const targets = vp.querySelectorAll<HTMLElement>(
+            '.cc-node-card, .cc-left-rail, .cc-hud-pill, .cc-hud-btn, .cc-utility-pill',
+          );
+          for (let i = 0; i < targets.length; i++) {
+            const el = targets[i];
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) continue;
+            if (
+              pt.x >= r.left - radius &&
+              pt.x <= r.right + radius &&
+              pt.y >= r.top - radius &&
+              pt.y <= r.bottom + radius
+            ) {
+              el.style.setProperty('--lx', `${Math.round(pt.x - r.left)}px`);
+              el.style.setProperty('--ly', `${Math.round(pt.y - r.top)}px`);
+              if (el.dataset.lit !== '1') el.dataset.lit = '1';
+              nextLit.add(el);
+            }
+          }
+          for (const prev of litElsRef.current) {
+            if (!nextLit.has(prev)) delete prev.dataset.lit;
+          }
+          litElsRef.current = nextLit;
+        });
+      }}
+      onPointerLeave={() => {
+        if (proximityRafRef.current) {
+          cancelAnimationFrame(proximityRafRef.current);
+          proximityRafRef.current = 0;
+        }
+        proximityPtRef.current = null;
+        if (viewportRef.current) delete viewportRef.current.dataset.pointerIn;
+        for (const prev of litElsRef.current) delete prev.dataset.lit;
+        litElsRef.current.clear();
       }}
       onWheel={(e) => {
         if ((e.target as HTMLElement).closest('textarea, input, select, .cc-popover')) return;
@@ -1851,7 +2545,7 @@ export function CreateCanvas({
       onDoubleClick={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-popover, .cc-multi-bar, .cc-group-frame, .cc-group-stack, .cc-lane-label, .cc-hidden-popover, .cc-quicklook-backdrop',
+            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-top-hud, .cc-left-rail-wrap, .cc-popover, .cc-multi-bar, .cc-group-frame, .cc-group-stack, .cc-zone-frame, .cc-zone-stack, .cc-hidden-popover, .cc-quicklook-backdrop, .cc-animatic-backdrop',
           )
         ) {
           return;
@@ -1865,7 +2559,7 @@ export function CreateCanvas({
       onPointerDown={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-popover, .cc-empty-hero, .cc-multi-bar, .cc-lane-label, .cc-lane-action, .cc-hidden-popover, .cc-group-header, .cc-group-stack, .cc-quicklook-backdrop, button, input, textarea, select, audio',
+            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-top-hud, .cc-left-rail-wrap, .cc-popover, .cc-empty-hero, .cc-multi-bar, .cc-zone-header, .cc-zone-stack, .cc-hidden-popover, .cc-group-header, .cc-group-stack, .cc-quicklook-backdrop, .cc-animatic-backdrop, button, input, textarea, select, audio',
           )
         ) {
           return;
@@ -1876,7 +2570,9 @@ export function CreateCanvas({
         setDropMenu(null);
         setTakeMenuFor(null);
         setRigPopoverFor(null);
-        setHiddenPopoverOpen(false);
+        setForkSource(null);
+        setRoleMenuFor(null);
+        setDeriveMenuFor(null);
 
         const vp = viewportRef.current?.getBoundingClientRect();
         const shouldPan = activePanMode || e.button === 1;
@@ -1983,61 +2679,79 @@ export function CreateCanvas({
         }
       }}
     >
-      {/* Top Floating Multi-Selection Action Bar */}
-      {selectedNodeIds.length >= 2 && (
-        <div className="cc-multi-bar" role="toolbar" aria-label="画布多选操作" onPointerDown={(e) => e.stopPropagation()}>
-          <span className="cc-multi-count">已选 {selectedNodeIds.length} 项</span>
-          <span className="cc-tb-sep" />
-          <button
-            type="button"
-            onClick={() => {
-              const refs = collectRefsFromNodeKeys(selectedNodeIds);
-              if (onAddRefsToChat && refs.length) onAddRefsToChat(refs, false);
-            }}
-          >
-            <AtSign size={11} /> 添加到对话
-          </button>
-          <button type="button" onClick={() => void createGroupFromNodeKeys(selectedNodeIds)}>
-            <Group size={11} /> 成组
-          </button>
-          <button type="button" onClick={() => void packNodeKeys(selectedNodeIds, false)}>
-            <Package size={11} /> 打成素材包
-          </button>
-          <button type="button" onClick={() => void linkSelectedNodes(selectedNodeIds)}>
-            <Link2 size={11} /> 建立关联
-          </button>
-          <button type="button" onClick={() => void appendSelectedNodesToTimeline(selectedNodeIds)}>
-            <Film size={11} /> 串入时间线
-          </button>
-          {selectedNodeIds.some((k) => k.startsWith('asset:') || k.startsWith('ent:') || k.startsWith('comp:')) && (
-            <button
-              type="button"
-              title="从画布收起所选素材（不删除工程文件，随时可恢复）"
-              onClick={() => void hideNodeKeysFromCanvas(selectedNodeIds)}
-            >
-              <EyeOff size={11} /> 移出画布
-            </button>
-          )}
-          {selectedNodeIds.some((k) => k.startsWith('shot:')) && onSaveClipsAsAsset && (
-            <button
-              type="button"
-              onClick={() => {
-                const chosenShots = selectedNodeIds
-                  .filter((k) => k.startsWith('shot:'))
-                  .map((k) => shots.find((s) => `shot:${s.id}` === k))
-                  .filter((x): x is CompositeShot => Boolean(x));
-                const allClips = chosenShots.flatMap((s) => [...s.compositeClips, ...s.captionClips]);
-                if (allClips.length) void onSaveClipsAsAsset(allClips);
-              }}
-            >
-              <BookmarkPlus size={11} /> 存为资产
-            </button>
-          )}
-          <button type="button" className="cc-multi-close" aria-label="取消多选" onClick={clearSelection}>
-            <X size={11} />
-          </button>
-        </div>
+      {/* Stationary Top Canvas View HUD (Zoom-independent: Filters, Collapsible Zones, 4-Type Wire Control, Animatic) */}
+      {!isEmpty && (
+        <CanvasTopHud
+          assetFilter={assetFilter}
+          onAssetFilterChange={setAssetFilter}
+          counts={hudCounts}
+          zones={semanticZoneMeta.map((z) => ({
+            id: z.id,
+            label: z.label,
+            count: z.count,
+            collapsed: z.collapsed,
+          }))}
+          onToggleZone={(zoneId) => void toggleSemanticZone(zoneId)}
+          wireMode={wireMode}
+          onWireModeChange={setWireMode}
+          wireTypeFilter={wireTypeFilter}
+          onToggleWireType={(cat) =>
+            setWireTypeFilter((prev) => ({ ...prev, [cat]: !prev[cat] }))
+          }
+          hiddenEntries={hiddenAssetEntries}
+          onRestoreHidden={(keys) => void restoreNodeKeysToCanvas(keys)}
+          tracedInfo={
+            tracedNodeKey && traceGraph
+              ? {
+                  label: collectRefsFromNodeKeys([tracedNodeKey])[0]?.label || '当前节点',
+                  count: traceGraph.nodeKeys.size,
+                }
+              : null
+          }
+          onClearTrace={() => setTracedNodeKey(null)}
+          shotCount={shots.length}
+          totalDurationSec={shots.reduce((sum, s) => sum + s.duration, 0) / Math.max(1, sequence.fps)}
+          onOpenAnimatic={() => setAnimaticOpen(true)}
+          onSwitchToEdit={onSwitchToEdit}
+        />
       )}
+
+      {/* Left-Centered Vertical Darkroom Creation Rail (1-A) */}
+      <CanvasLeftToolbar
+        canvasTool={canvasTool}
+        addMenuOpen={addMenuOpen}
+        canGroupSelected={selectedNodeIds.length >= 2}
+        onSelectTool={setCanvasTool}
+        onToggleAddMenu={() => setAddMenuOpen((v) => !v)}
+        onCloseAddMenu={() => setAddMenuOpen(false)}
+        onCreateGenerator={(use, action) => void spawnGeneratorNode({ use, action })}
+        onCreateTextNode={() => void createTextNode('')}
+        onCreateRig3D={() => void addQuickCanvasRigNode('teardown-3d', 'product', '三维空间结构预演')}
+        onImportMedia={onImportMedia}
+        onAppendShot={() => void appendShotFromRigOrBlank()}
+        onGroupSelected={() => void createGroupFromNodeKeys(selectedNodeIds)}
+        onTidyCanvas={() => void tidyCanvasNodes()}
+        onOpenStudioDialog={() => onOpenGeneration({ use: 'image' })}
+      />
+
+      {/* Top Floating Multi-Selection Smart Action Bar */}
+      <CanvasMultiBar
+        selectedNodeIds={selectedNodeIds}
+        visualSelection={visualSelection}
+        shots={shots}
+        canAddToChat={Boolean(onAddRefsToChat)}
+        canSaveClipsAsAsset={Boolean(onSaveClipsAsAsset)}
+        onCollectRefs={collectRefsFromNodeKeys}
+        onAddRefsToChat={onAddRefsToChat}
+        onSpawnGeneratorNode={(opts) => void spawnGeneratorNode(opts)}
+        onCreateGroup={(keys) => void createGroupFromNodeKeys(keys)}
+        onPackNodes={(keys) => void packNodeKeys(keys, false)}
+        onLinkNodes={(keys) => void linkSelectedNodes(keys)}
+        onAppendToTimeline={(keys) => void appendSelectedNodesToTimeline(keys)}
+        onHideNodes={(keys) => void hideNodeKeysFromCanvas(keys)}
+        onSaveClipsAsAsset={onSaveClipsAsAsset ? (clips) => void onSaveClipsAsAsset(clips) : undefined}
+        onClearSelection={clearSelection}
+      />
 
       {/* Marquee Selection Rectangle */}
       {marquee && (
@@ -2052,84 +2766,35 @@ export function CreateCanvas({
         />
       )}
 
-      {/* Drop-to-Create Contextual Popover (TapNow wire-to-blank) */}
+      {/* Drop-to-Create Contextual Popover (Spawns In-Canvas Generator Nodes directly at Drop Coords) */}
       {dropMenu && (
-        <div
-          className="cc-popover cc-tap-menu cc-drop-create"
-          style={{ left: dropMenu.screenX, top: dropMenu.screenY }}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <div className="cc-menu-group">连线生成下游内容</div>
-          {dropMenu.sourceKey.startsWith('ent:') &&
-            upstreamEntities.find((e) => `ent:${e.id}` === dropMenu.sourceKey)?.entityKind === 'text' && (
-              <button
-                type="button"
-                onClick={async () => {
-                  const srcEnt = upstreamEntities.find((e) => `ent:${e.id}` === dropMenu.sourceKey);
-                  setDropMenu(null);
-                  const rawText = srcEnt ? (textDrafts[srcEnt.id] ?? srcEnt.textContent ?? '') : '';
-                  if (!srcEnt || !rawText.trim()) return;
-                  const ops = scriptOutlineToShotOperations(sequence, rawText, {
-                    entityId: srcEnt.id,
-                    version: srcEnt.version,
-                  });
-                  if (ops.length) await onEdit(`从「${srcEnt.name}」拆解分镜`, ops);
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <Clapperboard size={13} /> 按行拆解为分镜序列
-                </span>
-                <kbd>S</kbd>
-              </button>
-            )}
-          <button
-            type="button"
-            onClick={() => {
-              const sk = dropMenu.sourceKey;
-              const refs = collectRefsFromNodeKeys([sk]);
-              setDropMenu(null);
-              const promptBase = refs[0]?.label || '';
-              onOpenGeneration({
-                use: 'image',
-                prompt: promptBase,
-                referenceAssetId: sk.startsWith('asset:') ? sk.slice(6) : undefined,
-              });
-            }}
-          >
-            <span className="cc-menu-item-label">
-              <Sparkles size={13} /> AI 生成概念画面
-            </span>
-            <kbd>I</kbd>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const sk = dropMenu.sourceKey;
-              setDropMenu(null);
-              const ent = sk.startsWith('ent:')
-                ? upstreamEntities.find((e) => `ent:${e.id}` === sk)
-                : undefined;
-              void appendShotFromRigOrBlank(undefined, ent);
-            }}
-          >
-            <span className="cc-menu-item-label">
-              <Film size={13} /> 派生至新分镜镜头
-            </span>
-            <kbd>N</kbd>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const sk = dropMenu.sourceKey;
-              setDropMenu(null);
-              void appendSelectedNodesToTimeline([sk]);
-            }}
-          >
-            <span className="cc-menu-item-label">
-              <Scissors size={13} /> 直接放入时间线
-            </span>
-          </button>
-        </div>
+        <CanvasDropMenu
+          dropMenu={dropMenu}
+          project={project}
+          sequence={sequence}
+          upstreamEntities={upstreamEntities}
+          shots={shots}
+          activeVarByEnt={activeVarByEnt}
+          textDrafts={textDrafts}
+          onClose={() => setDropMenu(null)}
+          onCollectRefs={collectRefsFromNodeKeys}
+          onSpawnGeneratorNode={(opts) => void spawnGeneratorNode(opts)}
+          onAppendShot={(ent) => void appendShotFromRigOrBlank(undefined, ent)}
+          onAppendToTimeline={(keys) => void appendSelectedNodesToTimeline(keys)}
+          onEdit={onEdit}
+        />
+      )}
+
+      {/* One-Click Side-by-Side Variant Fork Popover */}
+      {forkSource && (
+        <CanvasForkPopover
+          source={forkSource}
+          project={project}
+          settings={settings}
+          onClose={() => setForkSource(null)}
+          onJobsStarted={onJobsStarted}
+          onOpenGeneration={onOpenGeneration}
+        />
       )}
 
       {/* Right-Click TapNow Context Menu */}
@@ -2628,93 +3293,82 @@ export function CreateCanvas({
           </div>
         ))}
 
-        {/* 1px Curved Bezier Relationship Wires (On-Demand Focus: subtle when idle, bright on hover/select) */}
-        <CanvasWiresSvg wires={wires} hoveredNodeKey={hoveredNodeKey} wireDrag={wireDrag} />
-
-        {/* Zone Label Headers (positioned at top: 10px, cleanly separated from row-0 cards at y: 82px) */}
-        {totalAssetCount > 0 && (
-          <div
-            className="cc-lane-label"
-            style={{ left: 40, top: 10 }}
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            <span>
-              画布资产 ({visibleAssetCount}
-              {visibleAssetCount !== totalAssetCount ? ` / ${totalAssetCount}` : ''})
-            </span>
-            <div className="cc-lane-filter" role="tablist" aria-label="画布资产视图筛选">
-              {(
-                [
-                  ['all', '全部'],
-                  ['used', '在用'],
-                  ['visual', '仅画面'],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  aria-selected={assetFilter === id}
-                  className={assetFilter === id ? 'active' : ''}
-                  onClick={() => setAssetFilter(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            {hiddenAssetEntries.length > 0 && (
-              <div className="cc-hidden-restore-wrap">
-                <button
-                  type="button"
-                  className="cc-lane-action"
-                  onClick={() => setHiddenPopoverOpen((v) => !v)}
-                >
-                  <RotateCcw size={10} /> 已收起 {hiddenAssetEntries.length} 项
-                </button>
-                {hiddenPopoverOpen && (
-                  <div className="cc-hidden-popover" role="menu" aria-label="已移出画布的素材">
-                    <div className="cc-hidden-pop-head">
-                      <b>已移出画布（工程资产保留）</b>
-                      <button type="button" onClick={() => void restoreNodeKeysToCanvas()}>
-                        全部放回
-                      </button>
-                    </div>
-                    <div className="cc-hidden-pop-list">
-                      {hiddenAssetEntries.map((item) => (
-                        <button
-                          key={item.key}
-                          type="button"
-                          onClick={() => void restoreNodeKeysToCanvas([item.key])}
-                        >
-                          <span>{item.label}</span>
-                          <small>+ 放回</small>
-                        </button>
-                      ))}
-                    </div>
+        {/* Semantic Collapsible Zone Frames (3-B: 剧本与设定 / 探索工坊 / 成片分镜序列) */}
+        {semanticZoneMeta.map((z) => {
+          if (z.count === 0) return null;
+          if (z.collapsed) {
+            return (
+              <div
+                key={`zone-stack-${z.id}`}
+                className="cc-group-stack cc-zone-stack"
+                style={{ left: z.deckPos.x, top: z.deckPos.y }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <div className="cc-group-stack-layers" onClick={() => void toggleSemanticZone(z.id)}>
+                  <div className="cc-stack-back layer-2" />
+                  <div className="cc-stack-back layer-1" />
+                  <div className="cc-stack-front">
+                    {z.previews.length > 0 ? (
+                      <div className={`cc-stack-mosaic count-${z.previews.length}`}>
+                        {z.previews.map((src, i) => (
+                          <img key={i} src={src} alt="" draggable={false} />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="cc-stack-empty">
+                        <Layers size={20} />
+                      </div>
+                    )}
+                    <span className="cc-stack-badge">{z.count} 项</span>
                   </div>
-                )}
+                </div>
+                <div className="cc-group-stack-foot">
+                  <button
+                    type="button"
+                    className="cc-stack-expand-btn"
+                    title={`展开「${z.label}」分区`}
+                    aria-label={`展开分区 ${z.label}`}
+                    onClick={() => void toggleSemanticZone(z.id)}
+                  >
+                    <ChevronRight size={11} />
+                    <b>{z.label}</b>
+                  </button>
+                </div>
               </div>
-            )}
-            <button
-              type="button"
-              className="cc-lane-action"
-              onClick={() => setSubjectModal({ mode: 'new' })}
+            );
+          }
+          if (!z.frame) return null;
+          return (
+            <div
+              key={`zone-frame-${z.id}`}
+              className={`cc-zone-frame zone-${z.id}`}
+              style={{ left: z.frame.x, top: z.frame.y, width: z.frame.w, height: z.frame.h }}
             >
-              <UserCheck size={11} /> 新建角色 / 设定
-            </button>
-          </div>
-        )}
-        {shots.length > 0 && (
-          <div className="cc-lane-label" style={{ left: shotLaneX, top: 10 }}>
-            <span>
-              成片分镜序列 ({sequence.name} · 共 {shots.length} 镜 ·{' '}
-              {(shots.reduce((sum, s) => sum + s.duration, 0) / sequence.fps).toFixed(1)}s)
-            </span>
-            <button type="button" className="cc-lane-action" onClick={onSwitchToEdit}>
-              进入剪辑精修 <ArrowRight size={11} />
-            </button>
-          </div>
-        )}
+              <div className="cc-zone-header" onPointerDown={(e) => e.stopPropagation()}>
+                <button
+                  type="button"
+                  className="cc-zone-fold-btn"
+                  title={`折叠「${z.label}」为紧凑卡叠`}
+                  aria-label={`折叠分区 ${z.label}`}
+                  onClick={() => void toggleSemanticZone(z.id)}
+                >
+                  <ChevronDown size={11} />
+                  <span>{z.label}</span>
+                  <small>{z.count}</small>
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* 1px Curved Bezier Relationship Wires (Focus Mode Default + 4 Semantic Categories + Trace Spotlight) */}
+        <CanvasWiresSvg
+          wires={filteredWires}
+          hoveredNodeKey={hoveredNodeKey}
+          wireDrag={wireDrag}
+          wireMode={wireMode}
+          tracedWireKeys={traceGraph?.wireKeys || null}
+        />
 
         {/* Vault Entities: Text Nodes, Compound Saved Clips, Consistency Subjects & Dynamic Rigs */}
         {visibleUpstreamEntities.map((ent) => {
@@ -2730,12 +3384,13 @@ export function CreateCanvas({
           const refAssetId = activeVar?.assetId || ent.assetId;
           const refAsset = refAssetId ? project.assets.find((a) => a.id === refAssetId) : undefined;
           const hasRig = Boolean(ent.rig?.presetId && getPreset(ent.rig.presetId));
+          const deg = wireDegrees.get(nodeKey);
 
           return (
             <div
               key={nodeKey}
               data-node-id={nodeKey}
-              className={`cc-node upstream ${isTextNote ? 'text-note' : ''} ${isCompound ? 'compound' : ''} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
+              className={`cc-node upstream ${isTextNote ? 'text-note' : ''} ${isCompound ? 'compound' : ''} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''} ${isNodeDimmed(nodeKey) ? 'trace-dimmed' : ''}`}
               style={{ left: pos.x, top: pos.y }}
               onMouseEnter={() => setHoveredNodeKey(nodeKey)}
               onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
@@ -2907,6 +3562,20 @@ export function CreateCanvas({
                 aria-label={`${ent.name} 左侧连线端口`}
                 onPointerDown={(e) => startWireDrag(e, nodeKey, 'left')}
               />
+              {deg && deg.inCount > 0 && (
+                <button
+                  type="button"
+                  className="cc-port-badge in"
+                  title={`有 ${deg.inCount} 个上游关联，点击溯源完整链路`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleTraceNode(nodeKey);
+                  }}
+                >
+                  ← {deg.inCount}
+                </button>
+              )}
 
               <div className="cc-node-header">
                 {isTextNote ? (
@@ -3038,6 +3707,20 @@ export function CreateCanvas({
                 aria-label={`从 ${ent.name} 拖线`}
                 onPointerDown={(e) => startWireDrag(e, nodeKey, 'right')}
               />
+              {deg && deg.outCount > 0 && (
+                <button
+                  type="button"
+                  className="cc-port-badge out"
+                  title={`已连向 ${deg.outCount} 个下游节点，点击溯源完整链路`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleTraceNode(nodeKey);
+                  }}
+                >
+                  {deg.outCount} →
+                </button>
+              )}
 
               {rigPopoverFor === ent.id && ent.rig?.presetId && (
                 <div className="cc-popover cc-rig-inspector" onClick={(e) => e.stopPropagation()}>
@@ -3176,8 +3859,12 @@ export function CreateCanvas({
           const selected = selectedNodeIds.includes(nodeKey);
           const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
           const isAudio = a.kind === 'audio';
+          const isVideo = a.kind === 'video';
+          const explicitRole = a.role;
+          const hasAiSource = Boolean(a.source && (a.source.prompt || a.source.modelId));
+          const deg = wireDegrees.get(nodeKey);
           const kindLabel =
-            isAudio ? '音频' : a.kind === 'video' ? '视频' : a.kind === 'model-3d' ? '三维模型' : '图片';
+            isAudio ? '音频' : isVideo ? '视频' : a.kind === 'model-3d' ? '三维模型' : '图片';
           const tail = sequence.clips.length
             ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
             : 0;
@@ -3186,7 +3873,7 @@ export function CreateCanvas({
             <div
               key={nodeKey}
               data-node-id={nodeKey}
-              className={`cc-node asset ${a.kind} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
+              className={`cc-node asset ${a.kind} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''} ${isNodeDimmed(nodeKey) ? 'trace-dimmed' : ''}`}
               style={{ left: pos.x, top: pos.y }}
               onMouseEnter={() => setHoveredNodeKey(nodeKey)}
               onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
@@ -3234,45 +3921,167 @@ export function CreateCanvas({
                         <Plus size={11} /> 铺入音轨
                       </button>
                     </>
-                  ) : (
+                  ) : isVideo ? (
                     <>
+                      {onExtractVideoFrame && (
+                        <button
+                          type="button"
+                          title="秒抽视频末帧为新图片卡落回画布（可直接拖线作下一镜首帧）"
+                          onClick={() =>
+                            void onExtractVideoFrame(a.id, 'last', { x: pos.x + 300, y: pos.y })
+                          }
+                        >
+                          <Camera size={11} /> 抽尾帧
+                        </button>
+                      )}
+                      {onExtractVideoFrame && (
+                        <button
+                          type="button"
+                          title="秒抽视频首帧为新图片卡落回画布"
+                          onClick={() =>
+                            void onExtractVideoFrame(a.id, 'first', { x: pos.x + 300, y: pos.y + 186 })
+                          }
+                        >
+                          <ImageIcon size={11} /> 抽首帧
+                        </button>
+                      )}
+                      {onDetachVideoAudio && (
+                        <button
+                          type="button"
+                          title="用 FFmpeg 秒提取视频音轨为独立波形资产卡"
+                          onClick={() =>
+                            void onDetachVideoAudio(a.id, { x: pos.x + 300, y: pos.y + 186 })
+                          }
+                        >
+                          <AudioLines size={11} /> 抽音轨
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() =>
-                          onOpenGeneration({
-                            use: 'image',
-                            prompt: `${a.name.replace(/\.[^.]+$/, '')}，视觉变体延展`,
-                            referenceAssetId: a.kind === 'image' ? a.id : undefined,
-                          })
-                        }
+                        onClick={() => onOpenGeneration({ use: 'transcription', assetId: a.id })}
                       >
-                        <Sparkles size={11} /> AI 派生
+                        <FileText size={11} /> 转录
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const c: Clip = {
+                            ...newClip('video', tail, a.id),
+                            name: a.name,
+                            duration: Math.max(15, Math.floor((a.duration || 5) * sequence.fps)),
+                          };
+                          void onEdit(`加入分镜「${a.name}」`, [
+                            { type: 'addClip', sequenceId: sequence.id, clip: c },
+                          ]);
+                        }}
+                      >
+                        <Plus size={11} /> 入选镜头
+                      </button>
+                    </>
+                  ) : (
+                    <>
                       {a.kind === 'image' && (
                         <button
                           type="button"
-                          onClick={() =>
-                            onOpenGeneration({
-                              use: 'video',
-                              prompt: `${a.name.replace(/\.[^.]+$/, '')}，平滑镜头运动`,
-                              referenceAssetId: a.id,
-                            })
-                          }
+                          title="在右侧原地展开 AI 加工转换工坊卡（改图 / 视频 / 三视图 / 抠图）"
+                          onClick={() => {
+                            setRoleMenuFor(null);
+                            setDeriveMenuFor((prev) => (prev === a.id ? null : a.id));
+                          }}
                         >
-                          <Clapperboard size={11} /> 图生视频
+                          <Sparkles size={11} /> 衍生 ▾
+                        </button>
+                      )}
+                      {a.kind === 'image' && hasAiSource && (
+                        <button
+                          type="button"
+                          title="还原该图原始提示词、模型与上游参考图，在画布原地微调再抽一次"
+                          onClick={() => {
+                            const srcRefIds = Array.isArray(a.source?.referenceAssetIds)
+                              ? (a.source?.referenceAssetIds as string[])
+                              : typeof a.source?.referenceAssetId === 'string'
+                                ? [a.source.referenceAssetId]
+                                : [];
+                            const inputs: CanvasGeneratorInput[] =
+                              srcRefIds.length > 0
+                                ? srcRefIds.map((rid) => ({ nodeKey: `asset:${rid}`, slot: 'subject' }))
+                                : [{ nodeKey, slot: 'subject' }];
+                            void spawnGeneratorNode({
+                              use: 'image',
+                              action: srcRefIds.length >= 2 ? 'multi-ref-image' : 'image-edit',
+                              inputs,
+                              prompt: String(a.source?.prompt || ''),
+                              placement: { x: pos.x + 306, y: pos.y },
+                            });
+                          }}
+                        >
+                          <RotateCw size={11} /> 再抽
                         </button>
                       )}
                       {a.kind === 'image' && (
                         <button
                           type="button"
+                          title="在右侧一键并排派生 2–3 组不同景别/光影的变体做比稿"
+                          onClick={() =>
+                            setForkSource({
+                              label: formatCanvasDisplayName(a.name, true),
+                              basePrompt: String(a.source?.prompt || a.name.replace(/\.[^.]+$/, '')),
+                              refAssetIds: [a.id],
+                              sourceNodeKeys: [nodeKey],
+                              anchorPos: pos,
+                            })
+                          }
+                        >
+                          <GitBranch size={11} /> 变体
+                        </button>
+                      )}
+                      {(a.kind === 'image' || a.kind === 'video') &&
+                        (() => {
+                          const parentShotRef = a.derivedFrom?.find((d) => d.vaultItemId?.startsWith('shot:'));
+                          const targetShot = parentShotRef
+                            ? shots.find((s) => `shot:${s.id}` === parentShotRef.vaultItemId && !s.locked)
+                            : undefined;
+                          if (!targetShot) return null;
+                          return (
+                            <button
+                              type="button"
+                              title={`将此变体直接采纳为镜头 #${targetShot.index} 的当前激活候选画面`}
+                              onClick={() => {
+                                const nextNum = (targetShot.anchorClip.takes?.length || 1) + 1;
+                                const take: ClipTake = {
+                                  id: uid('take'),
+                                  label: `T${nextNum} · ${formatCanvasDisplayName(a.name, true).slice(0, 14)}`,
+                                  kind: a.kind === 'video' ? 'video' : 'image',
+                                  sourceIn: 0,
+                                  assetId: a.id,
+                                  props: { fit: 'cover', opacity: 1, scale: 1 },
+                                  createdAt: new Date().toISOString(),
+                                };
+                                void onEdit(`采纳「${a.name}」至镜头 #${targetShot.index}`, [
+                                  {
+                                    type: 'addClipTake',
+                                    sequenceId: sequence.id,
+                                    clipId: targetShot.anchorClip.id,
+                                    take,
+                                    activate: true,
+                                  },
+                                ]);
+                              }}
+                            >
+                              <Check size={11} /> 采纳至镜头 #{targetShot.index}
+                            </button>
+                          );
+                        })()}
+                      {a.kind === 'image' && (
+                        <button
+                          type="button"
+                          title="就地标记创作角色（角色 / 场景 / 道具 / 风格），自动归入设定分区与连线槽位"
                           onClick={() => {
-                            setSubjName(a.name.replace(/\.[^.]+$/, '').slice(0, 16));
-                            setSubjRef(a.id);
-                            setSubjDesc('');
-                            setSubjectModal({ mode: 'new' });
+                            setDeriveMenuFor(null);
+                            setRoleMenuFor((prev) => (prev === a.id ? null : a.id));
                           }}
                         >
-                          <UserCheck size={11} /> 设为设定
+                          <Tag size={11} /> {explicitRole ? ROLE_LABELS[explicitRole].slice(0, 2) : '标角色'} ▾
                         </button>
                       )}
                       <button
@@ -3330,6 +4139,148 @@ export function CreateCanvas({
                 </div>
               )}
 
+              {deriveMenuFor === a.id && (
+                <div
+                  className="cc-popover cc-tap-menu cc-inline-subpop"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="cc-menu-group">资产 → 新资产原地加工</div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void spawnGeneratorNode({
+                        use: 'image',
+                        action: 'image-edit',
+                        inputs: [{ nodeKey, slot: explicitRole === 'environment' ? 'scene' : explicitRole === 'visual-style' ? 'style' : 'subject' }],
+                        placement: { x: pos.x + 306, y: pos.y },
+                      })
+                    }
+                  >
+                    <span className="cc-menu-item-label">
+                      <Wand2 size={12} /> 指令改图 / 风格延展
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void spawnGeneratorNode({
+                        use: 'video',
+                        action: 'image-to-video',
+                        inputs: [{ nodeKey, slot: 'first-frame' }],
+                        placement: { x: pos.x + 306, y: pos.y },
+                      })
+                    }
+                  >
+                    <span className="cc-menu-item-label">
+                      <Clapperboard size={12} /> 图生视频（作首帧）
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void spawnGeneratorNode({
+                        use: 'image',
+                        action: 'turnaround',
+                        inputs: [{ nodeKey, slot: 'subject' }],
+                        placement: { x: pos.x + 306, y: pos.y },
+                      })
+                    }
+                  >
+                    <span className="cc-menu-item-label">
+                      <UserCheck size={12} /> 角色 / 主体三视图
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void spawnGeneratorNode({
+                        use: 'image',
+                        action: 'cutout',
+                        inputs: [{ nodeKey, slot: 'subject' }],
+                        placement: { x: pos.x + 306, y: pos.y },
+                      })
+                    }
+                  >
+                    <span className="cc-menu-item-label">
+                      <Sparkles size={12} /> 透明底智能抠图
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void spawnGeneratorNode({
+                        use: 'image',
+                        action: 'multi-ref-image',
+                        inputs: [{ nodeKey, slot: 'subject' }],
+                        placement: { x: pos.x + 306, y: pos.y },
+                      })
+                    }
+                  >
+                    <span className="cc-menu-item-label">
+                      <Layers size={12} /> 多图融合工坊卡
+                    </span>
+                  </button>
+                </div>
+              )}
+
+              {roleMenuFor === a.id && (
+                <div
+                  className="cc-popover cc-tap-menu cc-inline-subpop"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="cc-menu-group">标记资产创作角色</div>
+                  {QUICK_ASSET_ROLES.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => {
+                        setRoleMenuFor(null);
+                        void onEdit(`标记「${a.name}」为${r.label}`, [
+                          { type: 'updateAssetMeta', assetId: a.id, changes: { role: r.id } },
+                        ]);
+                      }}
+                    >
+                      <span className="cc-menu-item-label">
+                        <Tag size={11} /> {r.label}
+                      </span>
+                      {explicitRole === r.id && <Check size={11} />}
+                    </button>
+                  ))}
+                  {explicitRole && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoleMenuFor(null);
+                        void onEdit(`清除「${a.name}」角色标记`, [
+                          { type: 'updateAssetMeta', assetId: a.id, changes: { role: null } },
+                        ]);
+                      }}
+                    >
+                      <span className="cc-menu-item-label">
+                        <X size={11} /> 取消角色标记
+                      </span>
+                    </button>
+                  )}
+                  <div className="cc-menu-divider" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRoleMenuFor(null);
+                      setSubjName(a.name.replace(/\.[^.]+$/, '').slice(0, 16));
+                      setSubjRef(a.id);
+                      setSubjDesc('');
+                      setSubjectModal({ mode: 'new' });
+                    }}
+                  >
+                    <span className="cc-menu-item-label">
+                      <GitBranch size={11} /> 升级为多状态设定集…
+                    </span>
+                  </button>
+                </div>
+              )}
+
               <button
                 type="button"
                 className="cc-port in"
@@ -3337,17 +4288,45 @@ export function CreateCanvas({
                 aria-label={`${a.name} 左侧连线端口`}
                 onPointerDown={(e) => startWireDrag(e, nodeKey, 'left')}
               />
+              {deg && deg.inCount > 0 && (
+                <button
+                  type="button"
+                  className="cc-port-badge in"
+                  title={`有 ${deg.inCount} 个上游关联，点击溯源完整链路`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleTraceNode(nodeKey);
+                  }}
+                >
+                  ← {deg.inCount}
+                </button>
+              )}
 
               <div className="cc-node-header">
                 {isAudio ? <AudioLines size={11} /> : a.kind === 'model-3d' ? <Box size={11} /> : <ImageIcon size={11} />}
                 <span title={a.name}>
                   {kindLabel} · {formatCanvasDisplayName(a.name, true)}
                 </span>
+                {explicitRole && (
+                  <button
+                    type="button"
+                    className="cc-role-badge"
+                    title="点击修改资产创作角色"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRoleMenuFor((prev) => (prev === a.id ? null : a.id));
+                    }}
+                  >
+                    {ROLE_LABELS[explicitRole].slice(0, 2)}
+                  </button>
+                )}
                 <small>{formatAssetCardMeta(a)}</small>
               </div>
 
               <div
-                className="cc-node-card asset-card"
+                className={`cc-node-card asset-card ${justCompletedKeys[nodeKey] ? 'cc-just-completed' : ''}`}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
                   setQuickLookKey(nodeKey);
@@ -3382,6 +4361,20 @@ export function CreateCanvas({
                 aria-label={`从 ${a.name} 拖线`}
                 onPointerDown={(e) => startWireDrag(e, nodeKey, 'right')}
               />
+              {deg && deg.outCount > 0 && (
+                <button
+                  type="button"
+                  className="cc-port-badge out"
+                  title={`已关联 ${deg.outCount} 个下游节点，点击溯源完整链路`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleTraceNode(nodeKey);
+                  }}
+                >
+                  {deg.outCount} →
+                </button>
+              )}
             </div>
           );
         })}
@@ -3472,467 +4465,121 @@ export function CreateCanvas({
           );
         })}
 
-        {/* Structured Storyboard Sequence Shot Nodes (TapNow Simplified Card Surface) */}
-        {shots.map((shot) => {
+        {/* In-Canvas Live Generator / Transform Nodes (Asset -> New Asset Workbench Cards) */}
+        {visibleGenerators.map((genNode) => {
+          const nodeKey = `gen:${genNode.id}`;
+          const pos = layout[nodeKey] || { x: 240, y: CANVAS_LANE_TOP };
+          const selected = selectedNodeIds.includes(nodeKey);
+          const deg = wireDegrees.get(nodeKey);
+          const matchingJobs = activeCanvasJobs.filter((j) =>
+            j.canvas?.sourceNodeKeys?.includes(nodeKey),
+          );
+          return (
+            <CanvasGeneratorNodeCard
+              key={nodeKey}
+              node={genNode}
+              pos={pos}
+              project={project}
+              settings={settings}
+              upstreamEntities={upstreamEntities}
+              shots={shots}
+              activeVarByEnt={activeVarByEnt}
+              previewOrigin={previewOrigin}
+              selected={selected}
+              wireTarget={wireHoverKey === nodeKey}
+              dimmed={isNodeDimmed(nodeKey)}
+              activeJobs={matchingJobs}
+              inDegree={deg?.inCount || 0}
+              outDegree={deg?.outCount || 0}
+              onMouseEnter={setHoveredNodeKey}
+              onMouseLeave={(k) => setHoveredNodeKey((prev) => (prev === k ? null : prev))}
+              onPointerDown={handleNodePointerDown}
+              onClick={(e, k) => handleNodeCardClick(e, k)}
+              onStartWireDrag={startWireDrag}
+              onTraceNode={toggleTraceNode}
+              onUpdateNode={(id, patch) => void updateGeneratorNode(id, patch)}
+              onDeleteNode={(id) => void deleteGeneratorNode(id)}
+              onJobsStarted={onJobsStarted}
+              onOpenGeneration={onOpenGeneration}
+            />
+          );
+        })}
+
+        {/* In-Place Active Generation Ghost Cards */}
+        {ghostJobs.map(({ job, pos }) => (
+          <CanvasGhostCard key={`ghost-${job.id}`} job={job} pos={pos} onCancel={onCancelJob} />
+        ))}
+
+        {/* Structured Storyboard Sequence Shot Nodes (Extracted CanvasShotCard) */}
+        {visibleShots.map((shot) => {
           const nodeKey = `shot:${shot.id}`;
           const pos = layout[nodeKey] || { x: 340, y: 44 };
           const selected = selectedNodeIds.includes(nodeKey);
           const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
-          const c = shot.anchorClip;
-          const takes = c.takes || [];
-          const primaryBinding = shot.bindings[0];
-          const boundEnt = primaryBinding
-            ? upstreamEntities.find((x) => x.id === primaryBinding.entityId)
-            : undefined;
-          const boundVar = boundEnt?.variants?.find((v) => v.id === primaryBinding?.variantId);
-
+          const deg = wireDegrees.get(nodeKey);
+          const reorderDropSide =
+            shotReorderDrag && shotReorderDrag.targetShotId === shot.id ? shotReorderDrag.side : null;
           return (
-            <div
+            <CanvasShotCard
               key={nodeKey}
-              data-node-id={nodeKey}
-              data-shot-node-id={shot.id}
-              className={`cc-node shot ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
-              style={{ left: pos.x, top: pos.y }}
-              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
-              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
-              onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
-              onClick={(e) => handleNodeCardClick(e, nodeKey, c.id)}
-              onDragOver={(e) => {
-                if (e.dataTransfer.types.includes('application/cocraft-entity')) e.preventDefault();
+              project={project}
+              sequence={sequence}
+              shot={shot}
+              shots={shots}
+              pos={pos}
+              previewOrigin={previewOrigin}
+              selected={selected}
+              isPrimarySelected={isPrimarySelected}
+              wireTarget={wireHoverKey === nodeKey}
+              upstreamEntities={upstreamEntities}
+              activeVarByEnt={activeVarByEnt}
+              takeMenuOpen={takeMenuFor === shot.id}
+              activeJob={shotActiveJobs.get(shot.anchorClip.id)}
+              justCompleted={Boolean(justCompletedKeys[nodeKey])}
+              reorderDropSide={reorderDropSide}
+              isReorderingSource={shotReorderDrag?.fromShotId === shot.id}
+              dimmed={isNodeDimmed(nodeKey)}
+              inDegree={deg?.inCount || 0}
+              outDegree={deg?.outCount || 0}
+              onTraceNode={toggleTraceNode}
+              onMouseEnter={setHoveredNodeKey}
+              onMouseLeave={(k) => setHoveredNodeKey((prev) => (prev === k ? null : prev))}
+              onPointerDown={handleNodePointerDown}
+              onClick={handleNodeCardClick}
+              onStartWireDrag={startWireDrag}
+              onStartReorderDrag={startShotReorderDrag}
+              onQuickLook={setQuickLookKey}
+              onToggleTakeMenu={(id) => setTakeMenuFor((prev) => (prev === id ? null : id))}
+              onAddCandidateTake={(sh, v) => void addShotCandidateTake(sh, v)}
+              onOpenGeneration={onOpenGeneration}
+              onForkShotVariants={(sh, p) => {
+                const ctx = resolveShotGenContext(sh);
+                setForkSource({
+                  label: `镜头 #${sh.index}`,
+                  basePrompt: ctx.prompt || sh.anchorClip.name,
+                  refAssetIds: ctx.refAssetIds,
+                  sourceNodeKeys: ctx.sourceNodeKeys,
+                  anchorPos: p,
+                });
               }}
-              onDrop={(e) => {
-                const entPayload = e.dataTransfer.getData('application/cocraft-entity');
-                if (entPayload && !shot.locked) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const [entityId, variantId] = entPayload.split(':');
-                  void onEdit('绑定主体到分镜', [
-                    {
-                      type: 'updateClip',
-                      sequenceId: sequence.id,
-                      clipId: c.id,
-                      changes: {
-                        subjectBindings: [{ entityId, variantId: variantId || undefined }],
-                        subjectIds: [entityId],
-                      },
-                    },
-                  ]);
-                }
+              onTweakShotWithAgent={(_sh, draftPrompt) => {
+                setOmnibarDraft(draftPrompt);
+                requestAnimationFrame(() => omnibarInputRef.current?.focus());
               }}
-            >
-              {isPrimarySelected && (
-                <div
-                  className="cc-node-toolbar"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    aria-label="前移镜头"
-                    title="前移镜头（画面与字幕同步移动）"
-                    disabled={shot.locked || shot.index === 1}
-                    onClick={() => {
-                      const ops = moveCompositeShotOperations(sequence, shots, shot.id, -1);
-                      if (ops.length) void onEdit(`前移镜头 #${shot.index}`, ops);
-                    }}
-                  >
-                    <ArrowLeft size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="后移镜头"
-                    title="后移镜头（画面与字幕同步移动）"
-                    disabled={shot.locked || shot.index === shots.length}
-                    onClick={() => {
-                      const ops = moveCompositeShotOperations(sequence, shots, shot.id, 1);
-                      if (ops.length) void onEdit(`后移镜头 #${shot.index}`, ops);
-                    }}
-                  >
-                    <ArrowRight size={12} />
-                  </button>
-                  <span className="cc-tb-sep" />
-                  <button
-                    type="button"
-                    aria-label={`镜头 ${shot.index} AI 生成候选`}
-                    onClick={() => {
-                      const ctx = resolveShotGenContext(shot);
-                      onOpenGeneration({
-                        use: 'image',
-                        prompt: ctx.prompt,
-                        referenceAssetId: ctx.refAssetId,
-                        target: {
-                          sequenceId: sequence.id,
-                          clipId: c.id,
-                          shotLabel: `镜头 #${shot.index} · ${c.name}`,
-                          mode: 'take',
-                        },
-                      });
-                    }}
-                  >
-                    <Sparkles size={12} /> 生图/视频
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAiMode('agent');
-                      const ctx = resolveShotGenContext(shot);
-                      setOmnibarDraft(`优化镜头 #${shot.index}（${ctx.prompt || c.name}）：`);
-                      requestAnimationFrame(() => omnibarInputRef.current?.focus());
-                    }}
-                  >
-                    <Wand2 size={11} /> 微调
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`为镜头 ${shot.index} 生产候选`}
-                    onClick={() => setTakeMenuFor(takeMenuFor === shot.id ? null : shot.id)}
-                  >
-                    <Plus size={12} /> 候选
-                  </button>
-                  <button
-                    type="button"
-                    title="进入时间线在此位置精剪"
-                    onClick={() => {
-                      onSelectClip(c.id);
-                      onSeek(shot.start);
-                      onSwitchToEdit();
-                    }}
-                  >
-                    <Scissors size={11} /> 精剪
-                  </button>
-                  {onSaveClipsAsAsset && (
-                    <button
-                      type="button"
-                      aria-label="保存为项目资产"
-                      title="将当前镜头整组保存为复合资产"
-                      onClick={() =>
-                        void onSaveClipsAsAsset(collectShotClipsForCompound(sequence, shot), c.name, {
-                          start: shot.start,
-                          duration: shot.duration,
-                        })
-                      }
-                    >
-                      <BookmarkPlus size={11} /> 存资产
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={c.locked ? '解锁镜头' : '锁定镜头'}
-                    onClick={() =>
-                      void onEdit(c.locked ? '解锁镜头' : '锁定镜头', [
-                        { type: 'updateClip', sequenceId: sequence.id, clipId: c.id, changes: { locked: !c.locked } },
-                      ])
-                    }
-                  >
-                    {c.locked ? <Lock size={11} /> : <Unlock size={11} />}
-                  </button>
-                  {!c.locked && (
-                    <button
-                      type="button"
-                      aria-label={`删除镜头 ${shot.index}`}
-                      title="删除此分镜"
-                      onClick={() =>
-                        void onEdit(`删除镜头 #${shot.index}`, [
-                          { type: 'deleteClip', sequenceId: sequence.id, clipId: c.id },
-                        ])
-                      }
-                    >
-                      <Trash2 size={11} />
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {takeMenuFor === shot.id && (
-                <div className="cc-popover cc-take-menu" onClick={(e) => e.stopPropagation()}>
-                  <button type="button" onClick={() => void addShotCandidateTake(shot, 'seecode-architecture')}>
-                    + 流程指标图解候选
-                  </button>
-                  <button type="button" onClick={() => void addShotCandidateTake(shot, 'tinycharts-state')}>
-                    + 手绘白板推演候选
-                  </button>
-                  <button type="button" onClick={() => void addShotCandidateTake(shot, 'teardown-3d')}>
-                    + 三维空间结构候选
-                  </button>
-                  <button type="button" onClick={() => void addShotCandidateTake(shot, 'screen-focus-rig')}>
-                    + 设备窗口特写候选
-                  </button>
-                  <button type="button" onClick={() => void addShotCandidateTake(shot, 'clone')}>
-                    克隆当前画面为候选
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTakeMenuFor(null);
-                      const ctx = resolveShotGenContext(shot);
-                      onOpenGeneration({
-                        use: 'image',
-                        prompt: ctx.prompt,
-                        referenceAssetId: ctx.refAssetId,
-                        target: {
-                          sequenceId: sequence.id,
-                          clipId: c.id,
-                          shotLabel: `镜头 #${shot.index} · ${c.name}`,
-                          mode: 'take',
-                        },
-                      });
-                    }}
-                  >
-                    <Sparkles size={12} /> AI 生图/生视频候选（带入台词与参考图）
-                  </button>
-                </div>
-              )}
-
-              <button
-                type="button"
-                className="cc-port in"
-                title="拖出或接收上游设定或参考节点连线"
-                aria-label={`镜头 ${shot.index} 左侧连线端口`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'left')}
-              />
-
-              <div className="cc-node-header">
-                <Film size={11} />
-                <span>
-                  镜头 {String(shot.index).padStart(2, '0')} · {timecode(shot.start, sequence.fps)}
-                </span>
-                <small>
-                  {(shot.duration / sequence.fps).toFixed(1)}s
-                  {shot.compositeClips.length > 1 ? ` · ${shot.compositeClips.length}层` : ''}
-                </small>
-              </div>
-
-              <div className="cc-node-card shot-card-body">
-                <div
-                  className="cc-shot-thumb"
-                  onDoubleClick={(e) => {
-                    e.stopPropagation();
-                    setQuickLookKey(nodeKey);
-                  }}
-                >
-                  <ShotCompositeThumb
-                    project={project}
-                    sequence={sequence}
-                    shot={shot}
-                    previewOrigin={previewOrigin}
-                  />
-                  {shot.locked && (
-                    <span className="cc-lock-tag">
-                      <Lock size={10} />
-                    </span>
-                  )}
-                  {!selected && (shot.scriptText || boundEnt) && (
-                    <div className="cc-shot-overlay-cap">
-                      {boundEnt && <b>@{boundEnt.name}</b>}
-                      <span>{shot.scriptText || c.name}</span>
-                    </div>
-                  )}
-                </div>
-
-                {selected && (
-                  <div className="cc-shot-inspector-drawer" onClick={(e) => e.stopPropagation()}>
-                    {shot.captionClips.length >= 2 ? (
-                      <div className="shot-timed-captions compact">
-                        <div className="shot-timed-head">
-                          <span>已对时字幕（{shot.captionClips.length} 句）</span>
-                          {!shot.locked && (
-                            <button
-                              type="button"
-                              className="text-button"
-                              onClick={() => {
-                                if (
-                                  window.confirm(
-                                    `确定将镜头 #${shot.index} 的 ${shot.captionClips.length} 条逐句字幕合并为 1 条整镜字幕？原分句停顿时间将被替换（可 ⌘Z 撤销）。`,
-                                  )
-                                ) {
-                                  void onEdit(
-                                    `合并重写镜头 #${shot.index} 字幕`,
-                                    updateShotScriptOperations(sequence, shot, shot.scriptText, { resetTiming: true }),
-                                  );
-                                }
-                              }}
-                            >
-                              合并重排
-                            </button>
-                          )}
-                        </div>
-                        {shot.captionClips.map((cap, capIdx) => (
-                          <div key={cap.id} className="shot-timed-row">
-                            <span className="shot-timed-tc">{timecode(cap.start, sequence.fps)}</span>
-                            <input
-                              key={`${cap.id}-${String(cap.props.text || '')}`}
-                              type="text"
-                              className="shot-timed-input"
-                              aria-label={`镜头 ${shot.index} 第 ${capIdx + 1} 句字幕`}
-                              defaultValue={String(cap.props.text || '')}
-                              disabled={shot.locked || cap.locked}
-                              onBlur={(e) => {
-                                const nextVal = e.currentTarget.value.trim();
-                                if (nextVal !== String(cap.props.text || '').trim()) {
-                                  void onEdit(
-                                    `修改镜头 #${shot.index} 第 ${capIdx + 1} 句字幕`,
-                                    updateSingleCaptionTextOperations(sequence, cap, nextVal),
-                                  );
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') e.currentTarget.blur();
-                              }}
-                            />
-                          </div>
-                        ))}
-                        <input
-                          key={`${shot.id}-notes-${c.shotNotes || ''}`}
-                          type="text"
-                          className="shot-notes-input"
-                          aria-label={`镜头 ${shot.index} 旁白备注`}
-                          placeholder="本镜旁白备注（不影响字幕时码）…"
-                          defaultValue={c.shotNotes || ''}
-                          disabled={shot.locked}
-                          onBlur={(e) => {
-                            if (e.currentTarget.value.trim() !== (c.shotNotes || '').trim()) {
-                              void onEdit(
-                                `更新镜头 #${shot.index} 旁白备注`,
-                                updateShotNotesOperations(sequence, shot, e.currentTarget.value),
-                              );
-                            }
-                          }}
-                        />
-                      </div>
-                    ) : (
-                      <textarea
-                        key={`${shot.id}-${shot.scriptText}`}
-                        className="cc-shot-script"
-                        rows={2}
-                        aria-label={`镜头 ${shot.index} 旁白与字幕`}
-                        placeholder="输入本镜台词或旁白（自动同步字幕轨）…"
-                        defaultValue={shot.scriptText}
-                        disabled={shot.locked}
-                        onBlur={(e) => {
-                          if (e.currentTarget.value.trim() !== shot.scriptText.trim()) {
-                            void onEdit(
-                              `更新镜头 #${shot.index} 台词`,
-                              updateShotScriptOperations(sequence, shot, e.currentTarget.value),
-                            );
-                          }
-                        }}
-                      />
-                    )}
-                    <div className="cc-shot-foot">
-                      {shot.bindings.map((binding) => {
-                        const ent = upstreamEntities.find((x) => x.id === binding.entityId);
-                        if (!ent) return null;
-                        const vr =
-                          ent.variants?.find((v) => v.id === binding.variantId) ||
-                          ent.variants?.find((v) => v.id === ent.defaultVariantId) ||
-                          ent.variants?.[0];
-                        return (
-                          <span key={binding.entityId} className="cc-bound-pill" title="已通过画布连线绑定一致性特征">
-                            @{ent.name}
-                            {vr ? `:${vr.name}` : ''}
-                            {!shot.locked && (
-                              <button
-                                type="button"
-                                aria-label={`解除主体绑定 ${ent.name}`}
-                                onClick={() => {
-                                  const nextBindings = shot.bindings.filter((x) => x.entityId !== ent.id);
-                                  void onEdit(`解除 @${ent.name} 绑定`, [
-                                    {
-                                      type: 'updateClip',
-                                      sequenceId: sequence.id,
-                                      clipId: c.id,
-                                      changes: {
-                                        subjectBindings: nextBindings,
-                                        subjectIds: nextBindings.map((x) => x.entityId),
-                                      },
-                                    },
-                                  ]);
-                                }}
-                              >
-                                ×
-                              </button>
-                            )}
-                          </span>
-                        );
-                      })}
-                      {!shot.locked && upstreamEntities.some((u) => !shot.bindings.some((b) => b.entityId === u.id)) ? (
-                        <select
-                          className="cc-bind-select"
-                          aria-label={`镜头 ${shot.index} 绑定主体`}
-                          value=""
-                          onChange={(e) => {
-                            const ent = upstreamEntities.find((x) => x.id === e.target.value);
-                            if (!ent) return;
-                            const vrId = activeVarByEnt[ent.id] || ent.defaultVariantId || ent.variants?.[0]?.id;
-                            const nextBindings = [
-                              ...shot.bindings.filter((x) => x.entityId !== ent.id),
-                              { entityId: ent.id, variantId: vrId, pinnedVersion: ent.version },
-                            ];
-                            void onEdit(`绑定 @${ent.name}`, [
-                              {
-                                type: 'updateClip',
-                                sequenceId: sequence.id,
-                                clipId: c.id,
-                                changes: {
-                                  subjectBindings: nextBindings,
-                                  subjectIds: nextBindings.map((x) => x.entityId),
-                                },
-                              },
-                            ]);
-                          }}
-                        >
-                          <option value="">+ 绑定节点…</option>
-                          {upstreamEntities
-                            .filter((u) => !shot.bindings.some((b) => b.entityId === u.id))
-                            .map((u) => (
-                              <option key={u.id} value={u.id}>
-                                @{u.name}
-                              </option>
-                            ))}
-                        </select>
-                      ) : shot.bindings.length === 0 ? (
-                        <span className="cc-muted-meta">{c.name.slice(0, 14)}</span>
-                      ) : null}
-
-                      <div className="cc-takes">
-                        {takes.map((t, ti) => {
-                          const isAct = c.activeTakeId === t.id;
-                          return (
-                            <button
-                              key={t.id}
-                              type="button"
-                              className={isAct ? 'active' : ''}
-                              title={t.label}
-                              disabled={c.locked}
-                              onClick={() =>
-                                void onEdit(`切换镜头 #${shot.index} 候选`, [
-                                  { type: 'switchClipTake', sequenceId: sequence.id, clipId: c.id, takeId: t.id },
-                                ])
-                              }
-                            >
-                              {isAct && <Check size={9} />}T{ti + 1}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                className="cc-port out"
-                title="拖出连线派生后续分镜或参考"
-                aria-label={`从镜头 ${shot.index} 拖线`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'right')}
-              />
-            </div>
+              onJumpToEdit={(clipId, startFrame) => {
+                onSelectClip(clipId);
+                onSeek(startFrame);
+                onSwitchToEdit();
+              }}
+              onSaveClipsAsAsset={onSaveClipsAsAsset}
+              onCancelJob={onCancelJob}
+              onEdit={onEdit}
+            />
           );
         })}
 
         {/* Add Trailing Shot Card */}
-        {shots.length > 0 && (
+        {visibleShots.length > 0 && (
           <button
             type="button"
             className="cc-append-shot-node"
@@ -3949,9 +4596,11 @@ export function CreateCanvas({
 
         {/* Clickable Bezier Wire Label Pills (only visible when related node/wire is hovered or selected) */}
         <CanvasWirePillsSvg
-          wires={wires}
+          wires={filteredWires}
           hoveredNodeKey={hoveredNodeKey}
           wireDrag={wireDrag}
+          wireMode={wireMode}
+          tracedWireKeys={traceGraph?.wireKeys || null}
           project={project}
           sequence={sequence}
           upstreamEntities={upstreamEntities}
@@ -3973,7 +4622,7 @@ export function CreateCanvas({
         onFit={fitCanvasToNodes}
       />
 
-      {/* TapNow Bottom-Centered Dock: Omnibar + Independent Circular (+) FAB */}
+      {/* Unified Bottom-Centered AI Director Bar (Zero Mode Tabs, Zero Detached White Orb) */}
       {!rightAgentOpen &&
         (() => {
           const singleRefs = selectedNodeIds.length > 0 ? collectRefsFromNodeKeys(selectedNodeIds) : [];
@@ -3981,62 +4630,94 @@ export function CreateCanvas({
             primarySelectedId?.startsWith('shot:')
               ? shots.find((s) => `shot:${s.id}` === primarySelectedId)
               : undefined;
-          const selectedEnt =
-            primarySelectedId?.startsWith('ent:')
-              ? upstreamEntities.find((e) => `ent:${e.id}` === primarySelectedId)
-              : undefined;
-          const selectedAsset =
-            primarySelectedId?.startsWith('asset:')
-              ? standaloneAssets.find((a) => `asset:${a.id}` === primarySelectedId)
-              : undefined;
           const activeVal = omnibarDraft || floatingPrompt;
 
-          const handleOmnibarSubmit = async (e: React.FormEvent) => {
-            e.preventDefault();
-            const text = activeVal.trim();
-            if (!text) return;
-            if (aiMode === 'script') {
+          const handleSlashAction = (cmd: OmnibarSlashAction) => {
+            const text = activeVal.replace(/^\/\S*\s*/, '').trim();
+            if (cmd === 'tidy') {
+              void tidyCanvasNodes();
+              return;
+            }
+            if (cmd === 'new-text') {
+              void createTextNode(text);
+              setOmnibarDraft('');
+              onFloatingPromptChange('');
+              return;
+            }
+            if (cmd === 'gen-image') {
+              const inputs: CanvasGeneratorInput[] = visualSelection.sourceNodeKeys
+                .slice(0, 6)
+                .map((k, idx) => ({ nodeKey: k, slot: idx === 0 ? 'subject' : 'style' }));
+              void spawnGeneratorNode({
+                use: 'image',
+                action: inputs.length >= 2 ? 'multi-ref-image' : inputs.length === 1 ? 'image-edit' : 'text-to-image',
+                inputs,
+                prompt: text || undefined,
+                placement: inputs.length > 0 ? visualSelection.anchorPlacement : viewportCenterWorld(),
+              });
+              setOmnibarDraft('');
+              onFloatingPromptChange('');
+              return;
+            }
+            if (cmd === 'gen-video') {
+              const imgKeys = visualSelection.sourceNodeKeys;
+              const inputs: CanvasGeneratorInput[] =
+                imgKeys.length === 2
+                  ? [
+                      { nodeKey: imgKeys[0], slot: 'first-frame' },
+                      { nodeKey: imgKeys[1], slot: 'last-frame' },
+                    ]
+                  : imgKeys.slice(0, 4).map((k, idx) => ({
+                      nodeKey: k,
+                      slot: idx === 0 ? 'first-frame' : 'subject',
+                    }));
+              void spawnGeneratorNode({
+                use: 'video',
+                action: imgKeys.length === 2 ? 'first-last-video' : imgKeys.length >= 3 ? 'ref-video' : 'image-to-video',
+                inputs,
+                prompt: text || undefined,
+                placement: inputs.length > 0 ? visualSelection.anchorPlacement : viewportCenterWorld(),
+              });
+              setOmnibarDraft('');
+              onFloatingPromptChange('');
+              return;
+            }
+            if (cmd === 'gen-speech') {
+              void spawnGeneratorNode({
+                use: 'speech',
+                action: 'tts',
+                prompt: text,
+                placement: viewportCenterWorld(),
+              });
+              setOmnibarDraft('');
+              onFloatingPromptChange('');
+              return;
+            }
+            if (cmd === 'breakdown') {
               if (text.includes('\n')) {
                 const ops = scriptOutlineToShotOperations(sequence, text);
                 if (ops.length) {
-                  await onEdit('从指令舱脚本拆解分镜', ops);
+                  void onEdit('从指令舱脚本拆解分镜', ops);
                   setOmnibarDraft('');
                   onFloatingPromptChange('');
                 }
               } else {
                 onSendCanvasInstruction(
-                  `请围绕以下创意主题为当前分支拆解生成多镜头分镜脚本、字幕与匹配画面：${text}`,
+                  text
+                    ? `请围绕以下创意主题为当前分支拆解生成多镜头分镜脚本、字幕与匹配画面：${text}`
+                    : '请根据当前画布上的剧本与设定资产拆解生成多镜头分镜序列。',
                   selectedShot?.anchorClip,
                 );
                 setOmnibarDraft('');
+                onFloatingPromptChange('');
               }
-              return;
             }
-            if (aiMode === 'subject') {
-              onOpenGeneration({
-                use: 'image',
-                prompt: `${text}，角色/主体设定参考图，特征稳定一致`,
-              });
-              setOmnibarDraft('');
-              return;
-            }
-            if (aiMode === 'shot') {
-              const shotCtx = selectedShot ? resolveShotGenContext(selectedShot) : undefined;
-              const refEntAsset = selectedEnt
-                ? selectedEnt.variants?.[0]?.assetId || selectedEnt.assetId
-                : selectedAsset?.kind === 'image'
-                  ? selectedAsset.id
-                  : undefined;
-              onOpenGeneration({
-                use: 'image',
-                prompt: [shotCtx?.prompt, ...singleRefs.map((r) => `@${r.label}`), text]
-                  .filter(Boolean)
-                  .join('，'),
-                referenceAssetId: shotCtx?.refAssetId || refEntAsset,
-              });
-              setOmnibarDraft('');
-              return;
-            }
+          };
+
+          const handleOmnibarSubmit = async () => {
+            const text = activeVal.trim();
+            if (!text) return;
+            // Smart multi-line script paste shortcut: if user pasted 3+ lines cleanly without question marks, offer/run breakdown or send to Agent
             const ctxPrefix =
               singleRefs.length > 0 || chatRefs.length > 0
                 ? `参考上下文（${[...chatRefs, ...singleRefs].map((r) => `@${r.label}`).join('、')}）：`
@@ -4046,217 +4727,28 @@ export function CreateCanvas({
             onFloatingPromptChange('');
           };
 
-          const omniModes = [
-            { id: 'script' as const, label: '拆解分镜', icon: FileText },
-            { id: 'subject' as const, label: '角色设定', icon: UserCheck },
-            { id: 'shot' as const, label: '生成画面', icon: Clapperboard },
-            { id: 'agent' as const, label: 'Agent 编排', icon: Sparkles },
-          ];
-
           return (
             <div className="cc-bottom-dock" onPointerDown={(e) => e.stopPropagation()}>
-              <form className={`cc-ai-omnibar ${aiBusy ? 'ai-active' : ''}`} onSubmit={(e) => void handleOmnibarSubmit(e)}>
-                <div className="cc-omni-top">
-                  <div className="cc-omni-modes" role="tablist" aria-label="AI 画布创作模式">
-                    {omniModes.map((m) => {
-                      const Icon = m.icon;
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          role="tab"
-                          aria-selected={aiMode === m.id}
-                          className={`cc-omni-mode ${aiMode === m.id ? 'active' : ''}`}
-                          onClick={() => setAiMode(m.id)}
-                        >
-                          <Icon size={11} />
-                          <span>{m.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {(singleRefs.length > 0 || chatRefs.length > 0) &&
-                    (() => {
-                      const uniqueSingle = singleRefs.filter((sr) => !chatRefs.some((cr) => cr.key === sr.key));
-                      const shownChat = chatRefs.slice(0, 3);
-                      const shownSingle = uniqueSingle.slice(0, Math.max(0, 3 - shownChat.length));
-                      const totalCount = chatRefs.length + uniqueSingle.length;
-                      const overflow = totalCount - (shownChat.length + shownSingle.length);
-                      return (
-                        <div className="cc-omni-ctx-list">
-                          {shownChat.map((cr) => (
-                            <span key={cr.key} className="cc-omni-ctx">
-                              <AtSign size={10} />
-                              <span>{cr.label}</span>
-                              {onRemoveChatRef && (
-                                <button
-                                  type="button"
-                                  onClick={() => onRemoveChatRef(cr.key)}
-                                  aria-label={`移除 ${cr.label}`}
-                                >
-                                  <X size={10} />
-                                </button>
-                              )}
-                            </span>
-                          ))}
-                          {shownSingle.map((sr) => (
-                            <span key={sr.key} className="cc-omni-ctx">
-                              <Film size={10} />
-                              <span>{sr.label}</span>
-                              <button
-                                type="button"
-                                aria-label="移除画布上下文"
-                                onClick={() => setSelectedNodeIds((prev) => prev.filter((k) => k !== sr.key))}
-                              >
-                                <X size={10} />
-                              </button>
-                            </span>
-                          ))}
-                          {overflow > 0 && <span className="cc-omni-ctx">+{overflow} 项</span>}
-                        </div>
-                      );
-                    })()}
-                </div>
-
-                <div className="cc-omni-row">
-                  <input
-                    ref={omnibarInputRef}
-                    aria-label="悬浮 Agent 指令输入"
-                    placeholder={
-                      aiMode === 'script'
-                        ? '输入创意主题，或粘贴多行剧本拆解分镜…'
-                        : aiMode === 'subject'
-                          ? '描述要生成的角色或产品视觉设定…'
-                          : aiMode === 'shot'
-                            ? '结合选中设定或镜头上下文生成画面…'
-                            : '输入指令，或点右侧 + 添加节点 / @ 引用资产…'
-                    }
-                    value={activeVal}
-                    onChange={(e) => {
-                      setOmnibarDraft(e.target.value);
-                      onFloatingPromptChange(e.target.value);
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className={`cc-omni-tool ${canvasTool === 'select' ? 'active' : ''}`}
-                    title={canvasTool === 'select' ? '当前：指针框选 (按空格拖拽平移，点此切换抓手 H)' : '当前：抓手平移 (点此切换回框选 V)'}
-                    aria-label="切换框选或平移工具"
-                    onClick={() => setCanvasTool((t) => (t === 'select' ? 'pan' : 'select'))}
-                  >
-                    {canvasTool === 'select' ? <MousePointer2 size={13} /> : <Hand size={13} />}
-                  </button>
-                  <button
-                    type="submit"
-                    className="cc-omni-send"
-                    disabled={!activeVal.trim()}
-                    aria-label="发送指令"
-                  >
-                    <ArrowUp size={13} />
-                  </button>
-                </div>
-              </form>
-
-              <div className="cc-fab-wrap">
-                <button
-                  type="button"
-                  className={`cc-add-fab ${addMenuOpen ? 'open' : ''}`}
-                  aria-label="添加画布节点"
-                  title="添加节点 (文本 / 图片 / 视频 / 音频 / 组件)"
-                  onClick={() => setAddMenuOpen((v) => !v)}
-                >
-                  <Plus size={18} />
-                </button>
-
-                {addMenuOpen && (
-                  <div className="cc-popover cc-tap-menu cc-fab-menu" role="menu" aria-label="添加画布节点">
-                    <div className="cc-menu-group">添加</div>
-                    <button type="button" onClick={() => void createTextNode('')}>
-                      <span className="cc-menu-item-label">
-                        <FileText size={13} /> 文本
-                      </span>
-                      <kbd>T</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        onOpenGeneration({ use: 'image' });
-                      }}
-                    >
-                      <span className="cc-menu-item-label">
-                        <ImageIcon size={13} /> 图片
-                      </span>
-                      <kbd>I</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        onOpenGeneration({ use: 'video' });
-                      }}
-                    >
-                      <span className="cc-menu-item-label">
-                        <Clapperboard size={13} /> 视频
-                      </span>
-                      <kbd>V</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        onOpenGeneration({ use: 'speech' });
-                      }}
-                    >
-                      <span className="cc-menu-item-label">
-                        <AudioLines size={13} /> 音频
-                      </span>
-                      <kbd>A</kbd>
-                    </button>
-                    <div className="cc-menu-divider" />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        setSubjectModal({ mode: 'new' });
-                      }}
-                    >
-                      <span className="cc-menu-item-label">
-                        <UserCheck size={13} /> 角色 / 设定
-                      </span>
-                      <kbd>S</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void addQuickCanvasRigNode('teardown-3d', 'product', '三维空间结构预演')}
-                    >
-                      <span className="cc-menu-item-label">
-                        <Box size={13} /> 3D 运镜组件
-                      </span>
-                      <kbd>C</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        onImportMedia();
-                      }}
-                    >
-                      <span className="cc-menu-item-label">
-                        <Upload size={13} /> 上传
-                      </span>
-                      <kbd>U</kbd>
-                    </button>
-                    <button type="button" onClick={() => void appendShotFromRigOrBlank()}>
-                      <span className="cc-menu-item-label">
-                        <Film size={13} /> 空白分镜
-                      </span>
-                      <kbd>N</kbd>
-                    </button>
-                  </div>
-                )}
-              </div>
+              <CanvasOmnibar
+                aiBusy={aiBusy}
+                value={activeVal}
+                onChange={(val) => {
+                  setOmnibarDraft(val);
+                  onFloatingPromptChange(val);
+                }}
+                onSubmit={handleOmnibarSubmit}
+                onSlashAction={handleSlashAction}
+                inputRef={omnibarInputRef}
+                chatRefs={chatRefs}
+                singleRefs={singleRefs}
+                onRemoveChatRef={onRemoveChatRef}
+                onRemoveCanvasRef={(key) => setSelectedNodeIds((prev) => prev.filter((k) => k !== key))}
+                onAttachSelectedToChat={
+                  onAddRefsToChat && singleRefs.length > 0
+                    ? () => onAddRefsToChat(singleRefs, false)
+                    : undefined
+                }
+              />
             </div>
           );
         })()}
@@ -4276,6 +4768,46 @@ export function CreateCanvas({
             onSelectClip(clipId);
             onSeek(startFrame);
             onSwitchToEdit();
+          }}
+        />
+      )}
+
+      {/* In-Canvas Storyboard Animatic Player */}
+      {animaticOpen && shots.length > 0 && (
+        <CanvasAnimaticModal
+          project={project}
+          sequence={sequence}
+          shots={shots}
+          previewOrigin={previewOrigin}
+          initialShotIndex={Math.max(
+            0,
+            shots.findIndex((s) => `shot:${s.id}` === primarySelectedId),
+          )}
+          onClose={() => setAnimaticOpen(false)}
+          onEdit={onEdit}
+          onJumpToEdit={(clipId, startFrame) => {
+            onSelectClip(clipId);
+            onSeek(startFrame);
+            onSwitchToEdit();
+          }}
+          onRegenerateShot={(sh) => {
+            const ctx = resolveShotGenContext(sh);
+            onOpenGeneration({
+              use: 'image',
+              prompt: ctx.prompt,
+              referenceAssetId: ctx.refAssetId,
+              referenceAssetIds: ctx.refAssetIds.length ? ctx.refAssetIds : undefined,
+              target: {
+                sequenceId: sequence.id,
+                clipId: sh.anchorClip.id,
+                shotLabel: `镜头 #${sh.index} · ${sh.anchorClip.name}`,
+                mode: 'take',
+              },
+              canvas: {
+                sourceNodeKeys: ctx.sourceNodeKeys,
+                referenceAssetIds: ctx.refAssetIds.length ? ctx.refAssetIds : undefined,
+              },
+            });
           }}
         />
       )}

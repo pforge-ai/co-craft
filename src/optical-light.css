@@ -1,10 +1,19 @@
 /* ============================================================================
- * CoCraft A+B Optical Lighting System
+ * CoCraft Optical Lighting System v3 — C + A Architecture
  * ----------------------------------------------------------------------------
- * A (Base): Optical Darkroom · Silver Liquid Glass specular rims & ambient depth
- * B (AI Active): Apple-Intelligence-style 1px prism flow ONLY on AI focus/active
- * Controlled via :root[data-glow="off"|"subtle"|"vivid"] & [data-motion="on"|"off"]
- * 100% GPU-composited (CSS custom properties, transform, opacity); zero video tint.
+ * C (Strict Static/Active Hierarchy — Zero Light Pollution):
+ *   - Idle / Focused inputs / Selected cards: crisp physical elevation shadows,
+ *     monochrome liquid-glass top bevels, 100% pure clean interiors (0 smudge!).
+ *   - ONLY actively generating/thinking elements light up: Ghost rendering cards
+ *     gain a slow velvety internal fluid light field (.cc-ghost-fluid), while
+ *     active cards/bars display the asymmetric tracing comet.
+ * A (True White-Hot Asymmetric Tracing Comet — 70% Quiet + 30% Beam):
+ *   - 70% of the perimeter stays completely quiet/transparent!
+ *   - Only a focused leading white-hot core + tapered theme-color tail glides
+ *     cleanly around the outer bevel, casting a tiny localized reflection ONLY
+ *     at the comet tip (never a uniform 4-sided neon sticker outline).
+ * Themeable via :root[data-glow-color="emerald"|"silver"|"cobalt"|"amber"|"aurora"]
+ * Guardrail: Edit Mode video playback stage stays 100% neutral (zero tint).
  * ============================================================================ */
 
 @property --cc-prism-angle {
@@ -19,15 +28,15 @@
   }
 }
 
-@keyframes cc-prism-breathe {
+@keyframes cc-fluid-drift {
   0%,
   100% {
-    opacity: 0.65;
-    transform: scale(0.992);
+    transform: translate3d(-6%, -4%, 0) scale(1);
+    opacity: 0.85;
   }
   50% {
+    transform: translate3d(8%, 6%, 0) scale(1.1);
     opacity: 1;
-    transform: scale(1.008);
   }
 }
 
@@ -57,106 +66,266 @@
   }
 }
 
-/* ── Optical Tokens: Darkroom Default (Subtle) ───────────────────────────── */
+/* ── Base Physical Glass Tokens (Neutral Darkroom / Alabaster) ───────────── */
 :root {
-  --rim-top: rgba(255, 255, 255, 0.14);
-  --rim-edge: rgba(255, 255, 255, 0.08);
-  --rim-focus: rgba(176, 206, 246, 0.36);
-  --glass-depth-shadow: 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.24);
-  --specular-ring: rgba(235, 244, 255, 0.44);
-  --specular-wash: rgba(214, 232, 255, 0.045);
-  --node-select-glow: rgba(154, 192, 246, 0.22);
-  --canvas-ambient: rgba(146, 178, 228, 0.06);
-  --canvas-ambient-2: rgba(176, 152, 230, 0.032);
-  --stage-halo: rgba(142, 178, 232, 0.10);
-  --playhead-glow: rgba(182, 214, 255, 0.56);
-  --clip-select-rim: rgba(232, 242, 255, 0.46);
-  --clip-select-glow: rgba(150, 190, 246, 0.24);
-  --kf-glow: rgba(196, 222, 255, 0.72);
-  --prism-alpha: 0.64;
-  --prism-focus-alpha: 0.34;
-  --prism-glow: rgba(146, 178, 248, 0.15);
-  --prism-grad: conic-gradient(
-    from var(--cc-prism-angle),
-    rgba(138, 184, 255, 0.92),
-    rgba(184, 152, 252, 0.88),
-    rgba(242, 196, 134, 0.84),
-    rgba(126, 214, 248, 0.88),
-    rgba(138, 184, 255, 0.92)
-  );
-  --wire-pulse-opacity: 0.86;
-  --sheen-color: rgba(255, 255, 255, 0.19);
+  --rim-top: rgba(255, 255, 255, 0.13);
+  --rim-edge: rgba(255, 255, 255, 0.075);
+  --glass-depth-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    0 12px 32px rgba(0, 0, 0, 0.42);
+  --card-select-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.30),
+    0 10px 28px rgba(0, 0, 0, 0.34);
+  --specular-ring: rgba(255, 255, 255, 0.32);
+  --specular-wash: rgba(255, 255, 255, 0.03);
+  --stage-halo: rgba(200, 212, 228, 0.065);
+  --clip-select-rim: rgba(255, 255, 255, 0.42);
+  --sheen-color: rgba(255, 255, 255, 0.20);
+
+  /* Comet Intensity: Subtle (default) */
+  --comet-active-alpha: 0.92;
+  --comet-focus-alpha: 0.48;
+  --comet-spill-alpha: 0.50;
+  --comet-spill-blur: 10px;
+  --comet-width: 1.4px;
+  --wire-pulse-opacity: 0.88;
 }
 
 :root[data-glow='vivid'] {
-  --rim-top: rgba(255, 255, 255, 0.24);
-  --rim-edge: rgba(206, 226, 255, 0.15);
-  --rim-focus: rgba(168, 206, 255, 0.56);
-  --glass-depth-shadow: 0 18px 46px rgba(0, 0, 0, 0.50), 0 0 24px rgba(132, 172, 238, 0.08);
-  --specular-ring: rgba(236, 246, 255, 0.72);
-  --specular-wash: rgba(186, 216, 255, 0.085);
-  --node-select-glow: rgba(154, 196, 255, 0.38);
-  --canvas-ambient: rgba(142, 180, 242, 0.11);
-  --canvas-ambient-2: rgba(182, 150, 244, 0.06);
-  --stage-halo: rgba(138, 178, 244, 0.19);
-  --playhead-glow: rgba(190, 222, 255, 0.86);
-  --clip-select-rim: rgba(240, 248, 255, 0.68);
-  --clip-select-glow: rgba(152, 196, 255, 0.42);
-  --kf-glow: rgba(214, 234, 255, 0.94);
-  --prism-alpha: 0.94;
-  --prism-focus-alpha: 0.58;
-  --prism-glow: rgba(152, 178, 255, 0.28);
+  --rim-top: rgba(255, 255, 255, 0.20);
+  --rim-edge: rgba(255, 255, 255, 0.11);
+  --specular-ring: rgba(255, 255, 255, 0.46);
+  --specular-wash: rgba(255, 255, 255, 0.048);
+  --stage-halo: rgba(200, 212, 228, 0.10);
+  --sheen-color: rgba(255, 255, 255, 0.28);
+
+  --comet-active-alpha: 1;
+  --comet-focus-alpha: 0.68;
+  --comet-spill-alpha: 0.72;
+  --comet-spill-blur: 12px;
+  --comet-width: 1.65px;
   --wire-pulse-opacity: 1;
-  --sheen-color: rgba(255, 255, 255, 0.30);
 }
 
-/* ── Optical Tokens: Light Theme (Alabaster Specular) ────────────────────── */
 :root[data-theme='light'] {
-  --rim-top: rgba(255, 255, 255, 0.94);
-  --rim-edge: rgba(255, 255, 255, 0.72);
-  --rim-focus: rgba(74, 122, 196, 0.40);
-  --glass-depth-shadow: 0 14px 36px rgba(20, 34, 54, 0.13), 0 2px 6px rgba(20, 34, 54, 0.06);
-  --specular-ring: rgba(76, 124, 198, 0.46);
-  --specular-wash: rgba(88, 134, 208, 0.05);
-  --node-select-glow: rgba(74, 122, 196, 0.22);
-  --canvas-ambient: rgba(96, 142, 212, 0.065);
-  --canvas-ambient-2: rgba(146, 120, 212, 0.035);
-  --stage-halo: rgba(78, 122, 192, 0.11);
-  --playhead-glow: rgba(66, 114, 190, 0.46);
-  --clip-select-rim: rgba(255, 255, 255, 0.88);
-  --clip-select-glow: rgba(74, 122, 196, 0.24);
-  --kf-glow: rgba(70, 122, 204, 0.65);
-  --prism-alpha: 0.62;
-  --prism-focus-alpha: 0.34;
-  --prism-glow: rgba(86, 132, 216, 0.15);
-  --prism-grad: conic-gradient(
-    from var(--cc-prism-angle),
-    rgba(68, 126, 232, 0.9),
-    rgba(136, 98, 224, 0.85),
-    rgba(218, 142, 66, 0.82),
-    rgba(52, 162, 212, 0.86),
-    rgba(68, 126, 232, 0.9)
-  );
-  --wire-pulse-opacity: 0.84;
-  --sheen-color: rgba(255, 255, 255, 0.55);
+  --rim-top: rgba(255, 255, 255, 0.98);
+  --rim-edge: rgba(255, 255, 255, 0.82);
+  --glass-depth-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 10px 28px rgba(15, 23, 42, 0.09);
+  --card-select-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 8px 24px rgba(15, 23, 42, 0.09);
+  --specular-ring: rgba(15, 23, 42, 0.20);
+  --specular-wash: rgba(255, 255, 255, 0.35);
+  /* Strict Video Zero-Tint Guardrail */
+  --stage-halo: rgba(15, 23, 42, 0.04);
+  --clip-select-rim: rgba(255, 255, 255, 0.92);
+  --sheen-color: rgba(255, 255, 255, 0.68);
+
+  /* Light Mode Physics: razor-crisp jewel comet rim, almost zero murky outer smudge! */
+  --comet-active-alpha: 0.92;
+  --comet-focus-alpha: 0.56;
+  --comet-spill-alpha: 0.22;
+  --comet-spill-blur: 7px;
+  --comet-width: 1.5px;
+  --wire-pulse-opacity: 0.88;
 }
 
 :root[data-theme='light'][data-glow='vivid'] {
-  --rim-top: rgba(255, 255, 255, 1);
-  --rim-focus: rgba(66, 118, 202, 0.58);
-  --specular-ring: rgba(68, 120, 204, 0.68);
-  --specular-wash: rgba(84, 134, 216, 0.09);
-  --node-select-glow: rgba(72, 122, 202, 0.34);
-  --canvas-ambient: rgba(94, 144, 220, 0.11);
-  --canvas-ambient-2: rgba(146, 118, 224, 0.06);
-  --stage-halo: rgba(74, 122, 202, 0.20);
-  --prism-alpha: 0.88;
-  --prism-focus-alpha: 0.54;
-  --prism-glow: rgba(88, 132, 224, 0.24);
-  --sheen-color: rgba(255, 255, 255, 0.76);
+  --comet-active-alpha: 1;
+  --comet-focus-alpha: 0.78;
+  --comet-spill-alpha: 0.34;
+  --comet-spill-blur: 9px;
+  --comet-width: 1.75px;
 }
 
-/* ── Settings Inline Segmented Control (Glow Intensity) ──────────────────── */
+/* ── Selectable Optical Light Color Themes (Dark + Light Calibrated) ─────── */
+/* 1. Emerald (Default · Qoder Jade/Mint) */
+:root,
+:root[data-glow-color='emerald'] {
+  --beam-core: #f0fdf4;
+  --beam-mid: #2adb5c;
+  --beam-tail: rgba(16, 185, 129, 0.36);
+  --beam-spill: rgba(16, 185, 129, 0.48);
+  --beam-focus-border: rgba(52, 211, 153, 0.46);
+  --fluid-1: rgba(16, 185, 129, 0.20);
+  --fluid-2: rgba(45, 212, 191, 0.13);
+  --wire-c1: #059669;
+  --wire-c2: #2adb5c;
+  --wire-c3: #f0fdf4;
+  --beam-progress-grad: linear-gradient(90deg, #059669, #2adb5c, #d1fae5);
+  --playhead-glow: rgba(42, 219, 92, 0.52);
+  --kf-glow: rgba(110, 231, 183, 0.72);
+}
+:root[data-theme='light'],
+:root[data-theme='light'][data-glow-color='emerald'] {
+  --beam-core: #047857;
+  --beam-mid: #10b981;
+  --beam-tail: rgba(16, 185, 129, 0.26);
+  --beam-spill: rgba(16, 185, 129, 0.30);
+  --beam-focus-border: rgba(16, 185, 129, 0.44);
+  --fluid-1: rgba(16, 185, 129, 0.11);
+  --fluid-2: rgba(45, 212, 191, 0.09);
+  --wire-c1: #047857;
+  --wire-c2: #10b981;
+  --wire-c3: #6ee7b7;
+  --beam-progress-grad: linear-gradient(90deg, #047857, #10b981, #34d399);
+  --playhead-glow: rgba(16, 185, 129, 0.44);
+  --kf-glow: rgba(16, 185, 129, 0.62);
+}
+
+/* 2. Silver (Minimalist Leica / Titanium Monochrome) */
+:root[data-glow-color='silver'] {
+  --beam-core: #ffffff;
+  --beam-mid: #cbd5e1;
+  --beam-tail: rgba(148, 163, 184, 0.30);
+  --beam-spill: rgba(226, 232, 240, 0.34);
+  --beam-focus-border: rgba(226, 232, 240, 0.36);
+  --fluid-1: rgba(226, 232, 240, 0.14);
+  --fluid-2: rgba(148, 163, 184, 0.09);
+  --wire-c1: #94a3b8;
+  --wire-c2: #e2e8f0;
+  --wire-c3: #ffffff;
+  --beam-progress-grad: linear-gradient(90deg, #64748b, #cbd5e1, #ffffff);
+  --playhead-glow: rgba(226, 232, 240, 0.52);
+  --kf-glow: rgba(241, 245, 249, 0.78);
+}
+:root[data-theme='light'][data-glow-color='silver'] {
+  --beam-core: #0f172a;
+  --beam-mid: #475569;
+  --beam-tail: rgba(100, 116, 139, 0.24);
+  --beam-spill: rgba(71, 85, 105, 0.22);
+  --beam-focus-border: rgba(71, 85, 105, 0.38);
+  --fluid-1: rgba(100, 116, 139, 0.09);
+  --fluid-2: rgba(148, 163, 184, 0.07);
+  --wire-c1: #334155;
+  --wire-c2: #64748b;
+  --wire-c3: #cbd5e1;
+  --beam-progress-grad: linear-gradient(90deg, #334155, #64748b, #94a3b8);
+  --playhead-glow: rgba(71, 85, 105, 0.42);
+  --kf-glow: rgba(51, 65, 85, 0.56);
+}
+
+/* 3. Cobalt (Optical Lens Blue) */
+:root[data-glow-color='cobalt'] {
+  --beam-core: #f0f9ff;
+  --beam-mid: #38bdf8;
+  --beam-tail: rgba(59, 130, 246, 0.36);
+  --beam-spill: rgba(56, 189, 248, 0.46);
+  --beam-focus-border: rgba(96, 165, 250, 0.46);
+  --fluid-1: rgba(59, 130, 246, 0.20);
+  --fluid-2: rgba(56, 189, 248, 0.14);
+  --wire-c1: #2563eb;
+  --wire-c2: #38bdf8;
+  --wire-c3: #f0f9ff;
+  --beam-progress-grad: linear-gradient(90deg, #2563eb, #38bdf8, #e0f2fe);
+  --playhead-glow: rgba(56, 189, 248, 0.54);
+  --kf-glow: rgba(125, 211, 252, 0.74);
+}
+:root[data-theme='light'][data-glow-color='cobalt'] {
+  --beam-core: #1d4ed8;
+  --beam-mid: #3b82f6;
+  --beam-tail: rgba(59, 130, 246, 0.26);
+  --beam-spill: rgba(59, 130, 246, 0.28);
+  --beam-focus-border: rgba(37, 99, 235, 0.42);
+  --fluid-1: rgba(59, 130, 246, 0.11);
+  --fluid-2: rgba(56, 189, 248, 0.09);
+  --wire-c1: #1d4ed8;
+  --wire-c2: #3b82f6;
+  --wire-c3: #93c5fd;
+  --beam-progress-grad: linear-gradient(90deg, #1d4ed8, #3b82f6, #60a5fa);
+  --playhead-glow: rgba(37, 99, 235, 0.44);
+  --kf-glow: rgba(37, 99, 235, 0.62);
+}
+
+/* 4. Amber (Warm Cinema Tungsten) */
+:root[data-glow-color='amber'] {
+  --beam-core: #fffbeb;
+  --beam-mid: #fbbf24;
+  --beam-tail: rgba(245, 158, 11, 0.36);
+  --beam-spill: rgba(245, 158, 11, 0.46);
+  --beam-focus-border: rgba(251, 191, 36, 0.44);
+  --fluid-1: rgba(245, 158, 11, 0.19);
+  --fluid-2: rgba(234, 88, 12, 0.12);
+  --wire-c1: #d97706;
+  --wire-c2: #fbbf24;
+  --wire-c3: #fffbeb;
+  --beam-progress-grad: linear-gradient(90deg, #d97706, #fbbf24, #fef3c7);
+  --playhead-glow: rgba(251, 191, 36, 0.54);
+  --kf-glow: rgba(253, 224, 71, 0.74);
+}
+:root[data-theme='light'][data-glow-color='amber'] {
+  --beam-core: #b45309;
+  --beam-mid: #d97706;
+  --beam-tail: rgba(217, 119, 6, 0.26);
+  --beam-spill: rgba(217, 119, 6, 0.28);
+  --beam-focus-border: rgba(217, 119, 6, 0.44);
+  --fluid-1: rgba(245, 158, 11, 0.11);
+  --fluid-2: rgba(234, 88, 12, 0.08);
+  --wire-c1: #b45309;
+  --wire-c2: #f59e0b;
+  --wire-c3: #fcd34d;
+  --beam-progress-grad: linear-gradient(90deg, #b45309, #f59e0b, #fbbf24);
+  --playhead-glow: rgba(217, 119, 6, 0.44);
+  --kf-glow: rgba(217, 119, 6, 0.62);
+}
+
+/* 5. Aurora (Emerald-to-Cyan Prism — Fresh, Zero Purple) */
+:root[data-glow-color='aurora'] {
+  --beam-core: #ffffff;
+  --beam-mid: #2dd4bf;
+  --beam-tail: rgba(56, 189, 248, 0.34);
+  --beam-spill: rgba(45, 212, 191, 0.46);
+  --beam-focus-border: rgba(45, 212, 191, 0.46);
+  --fluid-1: rgba(16, 185, 129, 0.18);
+  --fluid-2: rgba(56, 189, 248, 0.16);
+  --wire-c1: #10b981;
+  --wire-c2: #2dd4bf;
+  --wire-c3: #bae6fd;
+  --beam-progress-grad: linear-gradient(90deg, #10b981, #2dd4bf, #7dd3fc);
+  --playhead-glow: rgba(45, 212, 191, 0.54);
+  --kf-glow: rgba(94, 234, 212, 0.74);
+}
+:root[data-theme='light'][data-glow-color='aurora'] {
+  --beam-core: #0f766e;
+  --beam-mid: #0ea5e9;
+  --beam-tail: rgba(16, 185, 129, 0.26);
+  --beam-spill: rgba(20, 184, 166, 0.28);
+  --beam-focus-border: rgba(13, 148, 136, 0.44);
+  --fluid-1: rgba(16, 185, 129, 0.10);
+  --fluid-2: rgba(14, 165, 233, 0.10);
+  --wire-c1: #0d9488;
+  --wire-c2: #0ea5e9;
+  --wire-c3: #67e8f9;
+  --beam-progress-grad: linear-gradient(90deg, #0d9488, #0ea5e9, #38bdf8);
+  --playhead-glow: rgba(13, 148, 136, 0.44);
+  --kf-glow: rgba(14, 165, 233, 0.62);
+}
+
+/* ── Asymmetric Tracing Comet Gradients (70% Transparent + 30% Hot Comet!) ─ */
+:root {
+  --comet-rim-grad: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 246deg,
+    var(--beam-tail) 292deg,
+    var(--beam-mid) 334deg,
+    var(--beam-core) 354deg,
+    transparent 360deg
+  );
+  /* Localized head-only reflection: 80% transparent so NO uniform 4-sided neon box! */
+  --comet-spill-grad: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 286deg,
+    var(--beam-spill) 332deg,
+    var(--beam-mid) 352deg,
+    transparent 360deg
+  );
+}
+
+/* ── Settings Controls (Intensity Segmented + Color Swatch Pills) ────────── */
 .segmented-inline {
   display: inline-flex;
   align-items: center;
@@ -186,8 +355,52 @@
   box-shadow: inset 0 1px 0 var(--rim-top), 0 1px 3px rgba(0, 0, 0, 0.22);
 }
 
+.glow-color-swatches {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+.glow-swatch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
+}
+.glow-swatch-btn > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+.glow-swatch-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
+.glow-swatch-btn.active {
+  background: var(--panel);
+  border-color: var(--beam-focus-border);
+  color: var(--text);
+  font-weight: 550;
+  box-shadow: inset 0 1px 0 var(--rim-top), 0 1px 4px rgba(0, 0, 0, 0.16);
+}
+.glow-swatch-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
 /* ============================================================================
- * ZONE 3: Liquid Glass Rim Light (Titlebar, Modals, Popovers, Floating Docks)
+ * ZONE 3: Liquid Glass Surfaces (Pure Neutral Architecture, Zero Color Smudge)
  * ============================================================================ */
 :root:not([data-glow='off']) .titlebar {
   box-shadow:
@@ -196,6 +409,11 @@
 }
 
 :root:not([data-glow='off']) .modal,
+:root:not([data-glow='off']) .branch-fork-popover,
+:root:not([data-glow='off']) .cc-left-rail,
+:root:not([data-glow='off']) .cc-top-hud .cc-hud-pill,
+:root:not([data-glow='off']) .cc-hud-btn,
+:root:not([data-glow='off']) .cc-trace-banner,
 :root:not([data-glow='off']) .cc-multi-bar,
 :root:not([data-glow='off']) .cc-utility-pill,
 :root:not([data-glow='off']) .cc-popover,
@@ -211,26 +429,23 @@
     var(--glass-depth-shadow);
 }
 
-:root:not([data-glow='off']) .cc-fab-btn {
-  box-shadow:
-    inset 0 1px 0 var(--rim-top),
-    0 8px 24px rgba(0, 0, 0, 0.34);
-}
-:root:not([data-glow='off']) .cc-fab-btn:hover {
-  box-shadow:
-    inset 0 1px 0 var(--rim-top),
-    0 0 0 1px var(--rim-focus),
-    0 10px 28px rgba(0, 0, 0, 0.42),
-    0 0 18px var(--node-select-glow);
+/* ============================================================================
+ * ZONE 1: Omnibar, Agent Composer & Active Jobs Pill
+ * C+A Discipline:
+ *   - Calm/Focused (:focus-within): ZERO outer fog! Crisp physical shadow +
+ *     delicate single tracing comet gliding cleanly along the outer 1.4px bevel.
+ *   - AI Active (.ai-active): brighter white-core comet + localized head-only
+ *     exterior reflection strictly behind opaque solid input surface.
+ * ============================================================================ */
+:root:not([data-glow='off']) .cc-omnibar-shell,
+:root:not([data-glow='off']) .composer-wrap,
+:root:not([data-glow='off']) .titlebar-right {
+  isolation: isolate;
 }
 
-/* ============================================================================
- * ZONE 1: AI Omnibar, Agent Composer & Active Jobs Pill (A Base + B Prism Flow)
- * ============================================================================ */
 :root:not([data-glow='off']) .cc-ai-omnibar,
 :root:not([data-glow='off']) .composer {
   position: relative;
-  isolation: isolate;
   box-shadow:
     inset 0 1px 0 var(--rim-top),
     inset 0 0 0 0.5px var(--rim-edge),
@@ -240,15 +455,29 @@
     box-shadow 0.22s ease;
 }
 
-/* 1px Masked Prism Ring (does not clip child popovers!) */
+/* 100% opaque pure interiors so exterior optics NEVER bleed inside typing areas */
+:root:not([data-glow='off']) .cc-ai-omnibar {
+  background: var(--raised);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root:not([data-glow='off']) .composer {
+  background: var(--well);
+}
+:root[data-theme='light']:not([data-glow='off']) .cc-ai-omnibar,
+:root[data-theme='light']:not([data-glow='off']) .composer {
+  background: #ffffff;
+}
+
+/* Asymmetric Tracing Comet Rim (70% quiet, 30% white-hot comet arc) */
 :root:not([data-glow='off']) .cc-ai-omnibar::before,
 :root:not([data-glow='off']) .composer::before {
   content: '';
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  padding: 1px;
-  background: var(--prism-grad);
+  padding: var(--comet-width);
+  background: var(--comet-rim-grad);
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
@@ -256,94 +485,113 @@
   mask-composite: exclude;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.25s ease;
+  transition: opacity 0.24s ease;
   z-index: 2;
 }
 
-/* Soft ambient halo strictly behind the box */
+/* Localized Comet-Head Reflection ONLY (80% transparent — active state only!) */
 :root:not([data-glow='off']) .cc-ai-omnibar::after,
 :root:not([data-glow='off']) .composer::after {
   content: '';
   position: absolute;
-  inset: -4px -2px -6px;
-  border-radius: inherit;
-  background: radial-gradient(ellipse 75% 58% at 50% 100%, var(--prism-glow), transparent 72%);
-  filter: blur(10px);
+  inset: -3px -4px -5px;
+  border-radius: 24px;
+  background: var(--comet-spill-grad);
+  filter: blur(var(--comet-spill-blur));
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.28s ease;
   z-index: -1;
 }
+:root:not([data-glow='off']) .composer::after {
+  inset: -3px -4px -4px;
+  border-radius: 11px;
+}
 
-/* Focused state: calm optical highlight + delicate prism hint */
+/* Focused Input: razor-clean calm border + delicate travelling comet, ZERO smudge halo! */
 :root:not([data-glow='off']) .cc-ai-omnibar:focus-within,
 :root:not([data-glow='off']) .composer:focus-within {
-  border-color: var(--rim-focus);
-  box-shadow:
-    inset 0 1px 0 var(--rim-top),
-    0 0 0 1px color-mix(in srgb, var(--rim-focus) 50%, transparent),
-    var(--glass-depth-shadow);
+  border-color: color-mix(in srgb, var(--beam-focus-border) 55%, var(--line));
 }
 :root:not([data-glow='off']) .cc-ai-omnibar:focus-within::before,
 :root:not([data-glow='off']) .composer:focus-within::before {
-  opacity: var(--prism-focus-alpha);
-  animation: cc-prism-spin 7.5s linear infinite;
+  opacity: var(--comet-focus-alpha);
+  animation: cc-prism-spin 5.8s linear infinite;
 }
-:root:not([data-glow='off']) .cc-ai-omnibar:focus-within::after,
-:root:not([data-glow='off']) .composer:focus-within::after {
-  opacity: 0.65;
-}
+/* Note: ::after stays opacity: 0 on :focus-within -> zero muddy halo while typing! */
 
-/* AI Active state (Agent running / Cloud generation running): full B Prism Flow */
+/* AI Active (Agent Thinking / Cloud Rendering): crisp comet + localized head bounce */
 :root:not([data-glow='off']) .cc-ai-omnibar.ai-active::before,
 :root:not([data-glow='off']) .composer.ai-active::before {
-  opacity: var(--prism-alpha);
-  animation: cc-prism-spin 3.8s linear infinite;
+  opacity: var(--comet-active-alpha);
+  animation: cc-prism-spin 2.8s linear infinite;
 }
 :root:not([data-glow='off']) .cc-ai-omnibar.ai-active::after,
 :root:not([data-glow='off']) .composer.ai-active::after {
-  opacity: 1;
-  animation: cc-prism-breathe 2.6s ease-in-out infinite;
+  opacity: var(--comet-spill-alpha);
+  animation: cc-prism-spin 2.8s linear infinite;
 }
 
-/* Active Jobs Button in Titlebar */
+/* Active Jobs Spinner in Titlebar: crisp tracing comet, zero neon blob */
 :root:not([data-glow='off']) .icon-button.jobs-active-glow {
   position: relative;
+  background: var(--raised);
   color: var(--text);
-  box-shadow:
-    inset 0 1px 0 var(--rim-top),
-    0 0 0 1px var(--rim-focus),
-    0 0 14px var(--prism-glow);
+  box-shadow: inset 0 1px 0 var(--rim-top);
 }
 :root:not([data-glow='off']) .icon-button.jobs-active-glow::before {
   content: '';
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  padding: 1px;
-  background: var(--prism-grad);
+  padding: var(--comet-width);
+  background: var(--comet-rim-grad);
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   pointer-events: none;
-  opacity: var(--prism-alpha);
-  animation: cc-prism-spin 3.2s linear infinite;
+  opacity: var(--comet-active-alpha);
+  animation: cc-prism-spin 2.4s linear infinite;
+}
+:root:not([data-glow='off']) .icon-button.jobs-active-glow::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 8px;
+  background: var(--comet-spill-grad);
+  filter: blur(5px);
+  pointer-events: none;
+  opacity: var(--comet-spill-alpha);
+  animation: cc-prism-spin 2.4s linear infinite;
+  z-index: -1;
 }
 
 /* ============================================================================
- * ZONE 2: Create Canvas — Darkroom Ambient, Specular Cards & Wire Photons
+ * ZONE 2: Create Canvas — Option D Proximity Optical Flashlight,
+ * Calm Neutral Cards, Living Ghost Fluid (Option C) & Active Comets (Option A)
  * ============================================================================ */
-:root:not([data-glow='off']) .create-canvas-viewport {
+/* Subtle cursor optical loupe gently illuminating the dot-grid right beneath the pointer */
+:root:not([data-glow='off']) .create-canvas-viewport[data-pointer-in='1'] {
   background-image:
-    radial-gradient(ellipse 68% 46% at 50% 14%, var(--canvas-ambient), transparent 72%),
-    radial-gradient(ellipse 46% 38% at 78% 82%, var(--canvas-ambient-2), transparent 74%),
+    radial-gradient(
+      240px circle at var(--vx, -999px) var(--vy, -999px),
+      rgba(255, 255, 255, 0.036),
+      transparent 72%
+    ),
     radial-gradient(circle, var(--dot-grid) 1px, transparent 1px);
-  background-size:
-    100% 100%,
-    100% 100%,
-    20px 20px;
+  background-size: 100% 100%, 20px 20px;
+}
+:root[data-theme='light']:not([data-glow='off']) .create-canvas-viewport[data-pointer-in='1'] {
+  background-image:
+    radial-gradient(
+      240px circle at var(--vx, -999px) var(--vy, -999px),
+      rgba(255, 255, 255, 0.45),
+      transparent 72%
+    ),
+    radial-gradient(circle, var(--dot-grid) 1px, transparent 1px);
+  background-size: 100% 100%, 20px 20px;
 }
 
 :root:not([data-glow='off']) .cc-node-card {
@@ -354,17 +602,22 @@
     box-shadow 0.2s ease;
 }
 
-/* Cursor-tracking 1px specular border ring on node cards (zero React re-renders) */
-:root:not([data-glow='off']) .cc-node-card::after {
+/* Option D: Proximity Flashlight Machined Bevel Illumination (works even BEFORE cursor enters card!) */
+:root:not([data-glow='off']) .cc-node:not(.generating) .cc-node-card:not(.cc-ghost-card)::after,
+:root:not([data-glow='off']) .cc-left-rail::after,
+:root:not([data-glow='off']) .cc-hud-pill::after,
+:root:not([data-glow='off']) .cc-hud-btn::after,
+:root:not([data-glow='off']) .cc-utility-pill::after {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 11px;
+  border-radius: inherit;
   padding: 1px;
   background: radial-gradient(
-    200px circle at var(--mx, 50%) var(--my, 15%),
-    var(--specular-ring),
-    transparent 68%
+    210px circle at var(--lx, -999px) var(--ly, -999px),
+    var(--specular-ring) 0%,
+    color-mix(in srgb, var(--beam-mid) 34%, transparent) 38%,
+    transparent 70%
   );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
@@ -373,64 +626,161 @@
   mask-composite: exclude;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.18s ease;
+  transition: opacity 0.16s ease;
   z-index: 3;
 }
+:root:not([data-glow='off']) .cc-node-card::after {
+  border-radius: 11px;
+}
+:root:not([data-glow='off']) .cc-left-rail,
+:root:not([data-glow='off']) .cc-hud-pill,
+:root:not([data-glow='off']) .cc-hud-btn,
+:root:not([data-glow='off']) .cc-utility-pill {
+  position: relative;
+}
 
-/* Subtle interior specular wash under cursor */
+/* Delicate surface specular wash strictly when pointer is directly over a card */
 :root:not([data-glow='off']) .cc-node-card::before {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
   background: radial-gradient(
-    180px circle at var(--mx, 50%) var(--my, 15%),
+    180px circle at var(--lx, -999px) var(--ly, -999px),
     var(--specular-wash),
-    transparent 70%
+    transparent 68%
   );
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.2s ease;
   z-index: 2;
 }
-
-:root:not([data-glow='off']) .cc-node-card:hover::after,
+:root:not([data-glow='off']) .cc-node:not(.generating) .cc-node-card:not(.cc-ghost-card)[data-lit='1']::after,
+:root:not([data-glow='off']) .cc-left-rail[data-lit='1']::after,
+:root:not([data-glow='off']) .cc-hud-pill[data-lit='1']::after,
+:root:not([data-glow='off']) .cc-hud-btn[data-lit='1']::after,
+:root:not([data-glow='off']) .cc-utility-pill[data-lit='1']::after {
+  opacity: 1;
+}
 :root:not([data-glow='off']) .cc-node-card:hover::before {
   opacity: 1;
 }
 
+/* Selected Card: crisp architectural border + clean neutral studio lift (NO fog!) */
 :root:not([data-glow='off']) .cc-node.selected .cc-node-card {
+  border-color: var(--beam-focus-border);
   box-shadow:
     inset 0 1px 0 var(--rim-top),
-    0 0 0 1px var(--rim-focus),
-    0 10px 28px rgba(0, 0, 0, 0.34),
-    0 0 22px var(--node-select-glow);
+    var(--card-select-shadow);
 }
-
 :root:not([data-glow='off']) .cc-node.wire-target .cc-node-card {
+  border-color: var(--beam-mid);
   box-shadow:
     inset 0 1px 0 var(--rim-top),
-    0 0 0 1.5px var(--rim-focus),
-    0 0 26px var(--prism-glow);
+    0 0 0 1px var(--beam-focus-border),
+    var(--card-select-shadow);
 }
 
-/* SVG Bezier Wire Photon Pulse */
+/* SVG Bezier Wire Photon Pulse (auto-matches selected glowColor theme!) */
 .cc-wire-pulse {
   fill: none;
   stroke: url(#cc-wire-photon-grad);
   stroke-width: 2;
   stroke-linecap: round;
-  stroke-dasharray: 28 192;
+  stroke-dasharray: 26 194;
   stroke-dashoffset: 220;
   opacity: 0;
   pointer-events: none;
 }
-
 :root:not([data-glow='off']) .cc-wire-group.highlighted .cc-wire-pulse,
-:root:not([data-glow='off']) .cc-wire-pulse.dragging {
+:root:not([data-glow='off']) .cc-wire-pulse.dragging,
+:root:not([data-glow='off']) .cc-wire-pulse.ghost {
   opacity: var(--wire-pulse-opacity);
-  filter: drop-shadow(0 0 4px rgba(164, 206, 255, 0.72));
-  animation: cc-wire-photon 1.9s linear infinite;
+  filter: drop-shadow(0 0 3px var(--beam-spill));
+  animation: cc-wire-photon 1.85s linear infinite;
+}
+
+/* ── C + A Hero Moment: Actively Generating Ghost Card, Shot Card & Workshop Card ── */
+/* Localized comet-head reflection ONLY (80% quiet exterior!) */
+:root:not([data-glow='off']) .cc-ghost-node::after,
+:root:not([data-glow='off']) .cc-node.shot.generating::after,
+:root:not([data-glow='off']) .cc-node.generator.generating::after {
+  content: '';
+  position: absolute;
+  inset: 22px -4px -5px -4px;
+  border-radius: 15px;
+  background: var(--comet-spill-grad);
+  filter: blur(var(--comet-spill-blur));
+  pointer-events: none;
+  opacity: var(--comet-spill-alpha);
+  animation: cc-prism-spin 2.8s linear infinite;
+  z-index: -1;
+}
+
+:root:not([data-glow='off']) .cc-ghost-card,
+:root:not([data-glow='off']) .cc-node.shot.generating .cc-node-card,
+:root:not([data-glow='off']) .cc-node.generator.generating .cc-node-card {
+  position: relative;
+  background: var(--panel);
+  border-color: color-mix(in srgb, var(--beam-focus-border) 50%, var(--line));
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    var(--card-select-shadow);
+}
+:root[data-theme='light']:not([data-glow='off']) .cc-ghost-card,
+:root[data-theme='light']:not([data-glow='off']) .cc-node.shot.generating .cc-node-card,
+:root[data-theme='light']:not([data-glow='off']) .cc-node.generator.generating .cc-node-card {
+  background: #ffffff;
+}
+
+/* Razor-crisp White-Core Asymmetric Tracing Comet Rim (70% quiet, 30% comet!) */
+:root:not([data-glow='off']) .cc-ghost-card::after,
+:root:not([data-glow='off']) .cc-node.shot.generating .cc-node-card::after,
+:root:not([data-glow='off']) .cc-node.generator.generating .cc-node-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 11px;
+  padding: var(--comet-width);
+  background: var(--comet-rim-grad);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: var(--comet-active-alpha);
+  animation: cc-prism-spin 2.8s linear infinite;
+  z-index: 6;
+}
+
+/* Option C: Living Darkroom Fluid Light Field STRICTLY inside Ghost Rendering Card */
+.cc-ghost-fluid {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+}
+:root:not([data-glow='off']) .cc-ghost-fluid {
+  opacity: 1;
+  background:
+    radial-gradient(62% 58% at 24% 28%, var(--fluid-1), transparent 72%),
+    radial-gradient(56% 54% at 78% 76%, var(--fluid-2), transparent 74%);
+  animation: cc-fluid-drift 7.5s ease-in-out infinite;
+}
+
+/* Newly Materialized Canvas Card / Shot Take Completion Micro-Sheen */
+:root:not([data-glow='off']) .cc-node-card.cc-just-completed::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 54%;
+  background: linear-gradient(90deg, transparent, var(--sheen-color), transparent);
+  pointer-events: none;
+  opacity: 1;
+  animation: cc-micro-sheen 0.92s cubic-bezier(0.22, 1, 0.36, 1) 1 forwards;
+  z-index: 8;
 }
 
 /* ============================================================================
@@ -448,25 +798,24 @@
 :root:not([data-glow='off']) .preview-canvas {
   box-shadow:
     0 0 0 1px var(--rim-edge),
-    0 18px 54px rgba(0, 0, 0, 0.44),
-    0 0 54px var(--stage-halo);
+    0 18px 54px rgba(0, 0, 0, 0.42),
+    0 0 50px var(--stage-halo);
 }
 
 :root:not([data-glow='off']) .playhead {
-  box-shadow: 0 0 9px var(--playhead-glow);
+  box-shadow: 0 0 8px var(--playhead-glow);
 }
 
 :root:not([data-glow='off']) .playhead > span {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.65),
-    0 0 10px var(--playhead-glow);
+    0 0 9px var(--playhead-glow);
 }
 
 :root:not([data-glow='off']) .timeline-clip.selected {
   box-shadow:
     inset 0 1px 0 var(--clip-select-rim),
-    0 0 0 1px var(--rim-focus),
-    0 0 16px var(--clip-select-glow);
+    0 0 0 1px var(--beam-focus-border);
 }
 
 :root:not([data-glow='off']) .clip-kf-diamond:hover,
@@ -514,13 +863,23 @@
 
 /* ============================================================================
  * Motion Effects Off & OS prefers-reduced-motion Guard
- * Keeps static liquid-glass rims & specular borders, stops all animations!
+ * Stops all continuous comet/fluid/pulse animations while keeping clean glass!
  * ============================================================================ */
 :root[data-motion='off'] .cc-ai-omnibar::before,
 :root[data-motion='off'] .composer::before,
 :root[data-motion='off'] .cc-ai-omnibar::after,
 :root[data-motion='off'] .composer::after,
 :root[data-motion='off'] .icon-button.jobs-active-glow::before,
+:root[data-motion='off'] .icon-button.jobs-active-glow::after,
+:root[data-motion='off'] .cc-ghost-node::after,
+:root[data-motion='off'] .cc-node.shot.generating::after,
+:root[data-motion='off'] .cc-node.generator.generating::after,
+:root[data-motion='off'] .cc-ghost-card::after,
+:root[data-motion='off'] .cc-node.shot.generating .cc-node-card::after,
+:root[data-motion='off'] .cc-node.generator.generating .cc-node-card::after,
+:root[data-motion='off'] .cc-ghost-fluid,
+:root[data-motion='off'] .cc-node-card.cc-just-completed::before,
+:root[data-motion='off'] .cc-ghost-progress-fill.indeterminate,
 :root[data-motion='off'] .toast::after,
 :root[data-motion='off'] .export-button::after,
 :root[data-motion='off'] .button.primary::after {
@@ -530,6 +889,7 @@
 :root[data-motion='off'] .toast::after,
 :root[data-motion='off'] .export-button::after,
 :root[data-motion='off'] .button.primary::after,
+:root[data-motion='off'] .cc-node-card.cc-just-completed::before,
 :root[data-motion='off'] .cc-wire-pulse,
 :root[data-glow='off'] .cc-wire-pulse {
   display: none !important;
@@ -541,6 +901,16 @@
   .cc-ai-omnibar::after,
   .composer::after,
   .icon-button.jobs-active-glow::before,
+  .icon-button.jobs-active-glow::after,
+  .cc-ghost-node::after,
+  .cc-node.shot.generating::after,
+  .cc-node.generator.generating::after,
+  .cc-ghost-card::after,
+  .cc-node.shot.generating .cc-node-card::after,
+  .cc-node.generator.generating .cc-node-card::after,
+  .cc-ghost-fluid,
+  .cc-node-card.cc-just-completed::before,
+  .cc-ghost-progress-fill.indeterminate,
   .toast::after,
   .export-button::after,
   .button.primary::after {

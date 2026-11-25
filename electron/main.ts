@@ -12,7 +12,7 @@ import { studioCatalog, addStudioAsset } from './studio-media';
 import { GenerationService, downloadToFile } from './generation';
 import { importMaterialPack, exportMaterialPack } from './packs';
 import { createDemo } from './demo';
-import { importMedia } from './media';
+import { binary, importMedia, run } from './media';
 import { compileComponent } from './code';
 import { GlobalVault } from './vault';
 import { McpBridgeServer } from './mcp-bridge';
@@ -908,6 +908,135 @@ async function handle(method: string, arg: any = {}) {
       });
       await changed(target, envelope);
       return { envelope, asset, vaultItem };
+    }
+    case 'asset.extractFrame': {
+      const target = store;
+      const p = await target.project();
+      const src = p.assets.find((a) => a.id === arg.assetId);
+      if (!src || src.kind !== 'video') throw new Error('仅支持对视频素材抽取静态帧');
+      if (src.offline || !existsSync(src.path)) throw new Error('视频素材文件离线或不存在');
+      const mode: 'first' | 'last' | 'time' =
+        arg.mode === 'last' ? 'last' : arg.mode === 'time' ? 'time' : 'first';
+      const dur = Math.max(0, src.duration || 0);
+      const targetSec =
+        mode === 'last'
+          ? Math.max(0, dur - 0.12)
+          : mode === 'time'
+            ? Math.max(0, Math.min(dur > 0.1 ? dur - 0.05 : 0, Number(arg.seconds ?? 0)))
+            : 0;
+      const assetsDir = join(target.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+      const outPath = join(assetsDir, `frame-${uid('ext')}.png`);
+      await run(binary('ffmpeg'), [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-ss',
+        targetSec.toFixed(3),
+        '-i',
+        src.path,
+        '-frames:v',
+        '1',
+        outPath,
+      ]);
+      const frameAsset = await importMedia(outPath, target.path);
+      const tagLabel = mode === 'last' ? '尾帧' : mode === 'time' ? `${targetSec.toFixed(1)}s 帧` : '首帧';
+      const baseTitle = src.name.replace(/\.[^.]+$/, '').slice(0, 22);
+      frameAsset.name = `${baseTitle} · ${tagLabel}`;
+      frameAsset.derivedFrom = [
+        {
+          assetId: src.id,
+          via: 'extract-frame',
+          note: `抽取${tagLabel}`,
+        },
+      ];
+      const ops: EditOperation[] = [{ type: 'addAsset', asset: frameAsset }];
+      if (arg.placement && Number.isFinite(arg.placement.x) && Number.isFinite(arg.placement.y)) {
+        ops.push({
+          type: 'updateProject',
+          changes: {
+            canvasLayout: {
+              ...(p.canvasLayout || {}),
+              [`asset:${frameAsset.id}`]: {
+                x: Math.round(arg.placement.x),
+                y: Math.round(arg.placement.y),
+              },
+            },
+          },
+        });
+      }
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `抽取视频${tagLabel}「${frameAsset.name}」`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, asset: frameAsset };
+    }
+    case 'asset.detachAudio': {
+      const target = store;
+      const p = await target.project();
+      const src = p.assets.find((a) => a.id === arg.assetId);
+      if (!src || src.kind !== 'video') throw new Error('仅支持对视频素材提取音轨');
+      if (src.offline || !existsSync(src.path)) throw new Error('视频素材文件离线或不存在');
+      const assetsDir = join(target.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+      const outPath = join(assetsDir, `audio-${uid('ext')}.wav`);
+      try {
+        await run(binary('ffmpeg'), [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-i',
+          src.path,
+          '-vn',
+          '-c:a',
+          'pcm_s16le',
+          '-ar',
+          '44100',
+          outPath,
+        ]);
+      } catch (err) {
+        await rm(outPath, { force: true }).catch(() => {});
+        if (String(err).includes('matches no streams') || String(err).includes('Stream map')) {
+          throw new Error('该视频不包含可提取的音轨');
+        }
+        throw err;
+      }
+      const audioAsset = await importMedia(outPath, target.path);
+      const baseTitle = src.name.replace(/\.[^.]+$/, '').slice(0, 22);
+      audioAsset.name = `${baseTitle} · 提取音轨`;
+      audioAsset.derivedFrom = [
+        {
+          assetId: src.id,
+          via: 'detach-audio',
+          note: '提取音轨',
+        },
+      ];
+      const ops: EditOperation[] = [{ type: 'addAsset', asset: audioAsset }];
+      if (arg.placement && Number.isFinite(arg.placement.x) && Number.isFinite(arg.placement.y)) {
+        ops.push({
+          type: 'updateProject',
+          changes: {
+            canvasLayout: {
+              ...(p.canvasLayout || {}),
+              [`asset:${audioAsset.id}`]: {
+                x: Math.round(arg.placement.x),
+                y: Math.round(arg.placement.y),
+              },
+            },
+          },
+        });
+      }
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `提取视频音轨「${audioAsset.name}」`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, asset: audioAsset };
     }
     default:
       throw new Error('未知操作：' + method);

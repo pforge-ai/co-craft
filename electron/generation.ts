@@ -30,8 +30,10 @@ import {
 } from '../src/core/models';
 import type {
   Asset,
+  AssetLineageRef,
   ClipTake,
   EditOperation,
+  GenerationCanvasMeta,
   GenerationTarget,
   Job,
   ModelAdapter,
@@ -59,6 +61,7 @@ export interface GenerationRequest {
   language?: string;
   parameters?: Record<string, string | number | boolean>;
   target?: GenerationTarget;
+  canvas?: GenerationCanvasMeta;
 }
 
 interface GenerationSnapshot {
@@ -553,6 +556,40 @@ export class GenerationService {
             },
           }
         : {}),
+      ...(input.canvas || refIds.length || lastFrameId
+        ? {
+            canvas: {
+              ...(input.canvas?.placement &&
+              Number.isFinite(input.canvas.placement.x) &&
+              Number.isFinite(input.canvas.placement.y)
+                ? {
+                    placement: {
+                      x: Math.round(input.canvas.placement.x),
+                      y: Math.round(input.canvas.placement.y),
+                    },
+                  }
+                : {}),
+              ...(Array.isArray(input.canvas?.sourceNodeKeys) && input.canvas.sourceNodeKeys.length
+                ? {
+                    sourceNodeKeys: Array.from(
+                      new Set(
+                        input.canvas.sourceNodeKeys
+                          .filter((k): k is string => typeof k === 'string' && k.trim().length > 0)
+                          .slice(0, 8),
+                      ),
+                    ),
+                  }
+                : {}),
+              ...(refIds.length ? { referenceAssetIds: refIds } : {}),
+              ...(lastFrameId ? { lastFrameAssetId: lastFrameId } : {}),
+              promptPreview: String(input.canvas?.promptPreview || input.prompt || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 120),
+              use: input.use,
+            },
+          }
+        : {}),
     };
 
     if (['image', 'video', 'speech'].includes(req.use) && !req.prompt) throw new Error('请输入创作内容');
@@ -629,6 +666,7 @@ export class GenerationService {
       modelId: model.id,
       inputAssetId: req.assetId,
       ...(req.target ? { target: req.target } : {}),
+      ...(req.canvas ? { canvas: req.canvas } : {}),
       generation: {
         request: req,
         model: structuredClone(resolved.model),
@@ -773,9 +811,91 @@ export class GenerationService {
           prompt: req.prompt,
           parameters: p,
           referenceAssetId: req.referenceAssetId,
+          ...(req.referenceAssetIds?.length ? { referenceAssetIds: req.referenceAssetIds } : {}),
+          ...(req.lastFrameAssetId ? { lastFrameAssetId: req.lastFrameAssetId } : {}),
           jobId: job.id,
         };
         asset.source = source;
+        // Automatically attach canvas lineage refs so generated cards auto-wire to upstream references & source nodes
+        const derivedFrom: AssetLineageRef[] = [];
+        const seenAssetRefs = new Set<string>();
+        const seenVaultRefs = new Set<string>();
+        const reqRefs = normalizedReferenceIds(req);
+        if (req.lastFrameAssetId && reqRefs.length > 0) {
+          derivedFrom.push({
+            assetId: reqRefs[0],
+            via: 'first-last-frame',
+            modelOrSkill: model.modelId,
+            note: '首帧',
+          });
+          seenAssetRefs.add(reqRefs[0]);
+          if (req.lastFrameAssetId !== reqRefs[0]) {
+            derivedFrom.push({
+              assetId: req.lastFrameAssetId,
+              via: 'first-last-frame',
+              modelOrSkill: model.modelId,
+              note: '尾帧',
+            });
+            seenAssetRefs.add(req.lastFrameAssetId);
+          }
+        } else {
+          for (const rid of reqRefs) {
+            if (seenAssetRefs.has(rid)) continue;
+            seenAssetRefs.add(rid);
+            derivedFrom.push({
+              assetId: rid,
+              via: 'ai-generate',
+              modelOrSkill: model.modelId,
+              note: reqRefs.length > 1 ? '多图参考' : req.use === 'video' ? '图生视频' : 'AI 派生',
+            });
+          }
+        }
+        for (const srcKey of req.canvas?.sourceNodeKeys || []) {
+          if (srcKey.startsWith('ent:')) {
+            const vid = srcKey.slice(4);
+            if (!seenVaultRefs.has(vid)) {
+              seenVaultRefs.add(vid);
+              derivedFrom.push({
+                vaultItemId: vid,
+                via: req.use === 'speech' ? 'text-derive' : 'ai-generate',
+                modelOrSkill: model.modelId,
+                note: req.use === 'speech' ? '文本配音' : req.use === 'video' ? '设定生视频' : '设定生图',
+              });
+            }
+          } else if (srcKey.startsWith('gen:')) {
+            if (!seenVaultRefs.has(srcKey)) {
+              seenVaultRefs.add(srcKey);
+              derivedFrom.push({
+                vaultItemId: srcKey,
+                via: req.lastFrameAssetId ? 'first-last-frame' : 'ai-generate',
+                modelOrSkill: model.modelId,
+                note: req.use === 'video' ? '工坊生视频' : req.use === 'speech' ? '工坊配音' : '工坊生图',
+              });
+            }
+          } else if (srcKey.startsWith('shot:')) {
+            if (!seenVaultRefs.has(srcKey)) {
+              seenVaultRefs.add(srcKey);
+              derivedFrom.push({
+                vaultItemId: srcKey,
+                via: 'fork',
+                modelOrSkill: model.modelId,
+                note: '分镜派生',
+              });
+            }
+          } else if (srcKey.startsWith('asset:')) {
+            const aid = srcKey.slice(6);
+            if (!seenAssetRefs.has(aid)) {
+              seenAssetRefs.add(aid);
+              derivedFrom.push({
+                assetId: aid,
+                via: 'ai-generate',
+                modelOrSkill: model.modelId,
+                note: req.use === 'video' ? '图生视频' : 'AI 派生',
+              });
+            }
+          }
+        }
+        if (derivedFrom.length) asset.derivedFrom = derivedFrom;
         await atomicJSON(join(dir, 'provenance.json'), {
           source,
           request: req,
@@ -808,6 +928,40 @@ export class GenerationService {
       const assetExists = p.assets.some((existing) => existing.id === asset.id);
       const ops: EditOperation[] = [];
       if (!assetExists) ops.push({ type: 'addAsset', asset });
+      const projectChanges: NonNullable<Extract<EditOperation, { type: 'updateProject' }>['changes']> = {};
+      if (
+        !canAttachTake &&
+        job?.canvas?.placement &&
+        Number.isFinite(job.canvas.placement.x) &&
+        Number.isFinite(job.canvas.placement.y) &&
+        !p.canvasLayout?.[`asset:${asset.id}`]
+      ) {
+        projectChanges.canvasLayout = {
+          ...(p.canvasLayout || {}),
+          [`asset:${asset.id}`]: {
+            x: Math.round(job.canvas.placement.x),
+            y: Math.round(job.canvas.placement.y),
+          },
+        };
+      }
+      const sourceGenKey = job?.canvas?.sourceNodeKeys?.find((k) => k.startsWith('gen:'));
+      if (sourceGenKey && p.canvasGenerators?.length) {
+        const genId = sourceGenKey.slice(4);
+        const matchIdx = p.canvasGenerators.findIndex((g) => g.id === genId);
+        if (matchIdx >= 0) {
+          const prevOuts = p.canvasGenerators[matchIdx].outputAssetIds || [];
+          if (!prevOuts.includes(asset.id)) {
+            projectChanges.canvasGenerators = p.canvasGenerators.map((g, idx) =>
+              idx === matchIdx
+                ? { ...g, outputAssetIds: [...prevOuts, asset.id], updatedAt: new Date().toISOString() }
+                : g,
+            );
+          }
+        }
+      }
+      if (Object.keys(projectChanges).length > 0) {
+        ops.push({ type: 'updateProject', changes: projectChanges });
+      }
 
       let attachment: Job['targetAttachment'] | undefined;
       if (canAttachTake && target) {

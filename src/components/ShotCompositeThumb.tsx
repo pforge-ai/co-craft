@@ -11,6 +11,7 @@ interface ShotCompositeThumbProps {
   sequence: Sequence;
   shot: CompositeShot;
   previewOrigin: string;
+  hoverPlay?: boolean;
 }
 
 const trackRank: Record<string, number> = {
@@ -20,7 +21,13 @@ const trackRank: Record<string, number> = {
   audio: 3,
 };
 
-export function ShotCompositeThumb({ project, sequence, shot, previewOrigin }: ShotCompositeThumbProps) {
+export function ShotCompositeThumb({
+  project,
+  sequence,
+  shot,
+  previewOrigin,
+  hoverPlay = false,
+}: ShotCompositeThumbProps) {
   const portrait = sequence.height > sequence.width;
   const activeStyle = (project.vault || []).find((v) => v.id === project.activeBrandId);
   const bg =
@@ -82,6 +89,25 @@ export function ShotCompositeThumb({ project, sequence, shot, previewOrigin }: S
                     objectFit: (clip.props.fit as 'cover' | 'contain') || 'cover',
                   }}
                 />
+                {hoverPlay && asset.kind === 'video' && (
+                  <video
+                    className="scs-hover-video"
+                    src={mediaUrl(previewOrigin, asset.id)}
+                    muted
+                    autoPlay
+                    loop
+                    playsInline
+                    onLoadedMetadata={(ev) => {
+                      const sec = clip.sourceIn / Math.max(1, sequence.fps);
+                      if (sec > 0.05 && Number.isFinite(ev.currentTarget.duration) && sec < ev.currentTarget.duration) {
+                        ev.currentTarget.currentTime = sec;
+                      }
+                    }}
+                    style={{
+                      objectFit: (clip.props.fit as 'cover' | 'contain') || 'cover',
+                    }}
+                  />
+                )}
               </div>
             );
           }
