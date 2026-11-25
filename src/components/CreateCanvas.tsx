@@ -106,6 +106,7 @@ import {
   uid,
 } from '../core/project';
 import {
+  combineVisualAndAudioToShotOperations,
   computePrimaryTimelineShots,
   reorderCompositeShotOperations,
   scriptOutlineToShotOperations,
@@ -191,8 +192,15 @@ interface CreateCanvasProps {
   settings?: Settings;
   onCancelJob?: (jobId: string) => void;
   onJobsStarted?: (jobs: Job[]) => void;
-  onExtractVideoFrame?: (assetId: string, mode: 'first' | 'last', placement?: Pt) => Promise<void>;
+  onExtractVideoFrame?: (
+    assetId: string,
+    mode: 'first' | 'last',
+    placement?: Pt,
+  ) => Promise<import('../core/types').Asset | undefined>;
   onDetachVideoAudio?: (assetId: string, placement?: Pt) => Promise<void>;
+  onNormalizeAudio?: (assetId: string, placement?: Pt) => Promise<void>;
+  onTrimAudioSilence?: (assetId: string, placement?: Pt) => Promise<void>;
+  onVisionDescribeAsset?: (assetId: string, placement?: Pt) => Promise<void>;
 }
 
 export function CreateCanvas({
@@ -229,6 +237,9 @@ export function CreateCanvas({
   onJobsStarted,
   onExtractVideoFrame,
   onDetachVideoAudio,
+  onNormalizeAudio,
+  onTrimAudioSilence,
+  onVisionDescribeAsset,
 }: CreateCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const omnibarInputRef = useRef<HTMLTextAreaElement>(null);
@@ -306,6 +317,7 @@ export function CreateCanvas({
   const [subjDesc, setSubjDesc] = useState('');
   const [subjRef, setSubjRef] = useState('');
   const [rigPopoverFor, setRigPopoverFor] = useState<string | null>(null);
+  const [voicePopoverFor, setVoicePopoverFor] = useState<string | null>(null);
   const [takeMenuFor, setTakeMenuFor] = useState<string | null>(null);
 
   const [wireDrag, setWireDrag] = useState<null | {
@@ -2744,6 +2756,44 @@ export function CreateCanvas({
         onCollectRefs={collectRefsFromNodeKeys}
         onAddRefsToChat={onAddRefsToChat}
         onSpawnGeneratorNode={(opts) => void spawnGeneratorNode(opts)}
+        onBridgeTwoVideos={
+          onExtractVideoFrame
+            ? async (vidAId, vidBId, anchorPt) => {
+                const frameA = await onExtractVideoFrame(vidAId, 'last', {
+                  x: Math.round(anchorPt.x),
+                  y: Math.round(anchorPt.y - 70),
+                });
+                const frameB = await onExtractVideoFrame(vidBId, 'first', {
+                  x: Math.round(anchorPt.x),
+                  y: Math.round(anchorPt.y + 116),
+                });
+                if (frameA && frameB) {
+                  await spawnGeneratorNode({
+                    use: 'video',
+                    action: 'first-last-video',
+                    inputs: [
+                      { nodeKey: `asset:${frameA.id}`, slot: 'first-frame' },
+                      { nodeKey: `asset:${frameB.id}`, slot: 'last-frame' },
+                    ],
+                    prompt: '从前镜尾帧自然连贯运镜过渡到后镜首帧，无缝无缝衔接镜头运动',
+                    placement: { x: Math.round(anchorPt.x + 306), y: Math.round(anchorPt.y) },
+                  });
+                }
+              }
+            : undefined
+        }
+        onCombineVisualAudio={(visualId, audioId) => {
+          const vis = project.assets.find((a) => a.id === visualId);
+          const aud = project.assets.find((a) => a.id === audioId);
+          if (!vis || !aud) return;
+          const { operations } = combineVisualAndAudioToShotOperations(sequence, vis, aud, {
+            enableL1Cinema: vis.kind === 'image',
+            wordHighlight: true,
+          });
+          if (operations.length) {
+            void onEdit(`声画直合分镜「${vis.name}」`, operations);
+          }
+        }}
         onCreateGroup={(keys) => void createGroupFromNodeKeys(keys)}
         onPackNodes={(keys) => void packNodeKeys(keys, false)}
         onLinkNodes={(keys) => void linkSelectedNodes(keys)}
@@ -3425,10 +3475,15 @@ export function CreateCanvas({
                                 },
                               ]
                             : [];
-                          const ops = scriptOutlineToShotOperations(sequence, content, {
-                            entityId: ent.id,
-                            version: ent.version + (dirty ? 1 : 0),
-                          });
+                          const ops = scriptOutlineToShotOperations(
+                            sequence,
+                            content,
+                            {
+                              entityId: ent.id,
+                              version: ent.version + (dirty ? 1 : 0),
+                            },
+                            upstreamEntities,
+                          );
                           if (ops.length) await onEdit(`从「${ent.name}」拆解分镜`, [...saveOp, ...ops]);
                         }}
                       >
@@ -3504,16 +3559,27 @@ export function CreateCanvas({
                           <SlidersHorizontal size={12} /> 参数
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSubjVar('');
-                            setSubjDesc('');
-                            setSubjectModal({ mode: 'variant', entId: ent.id });
-                          }}
-                        >
-                          <GitBranch size={12} /> +状态
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSubjVar('');
+                              setSubjDesc('');
+                              setSubjectModal({ mode: 'variant', entId: ent.id });
+                            }}
+                          >
+                            <GitBranch size={12} /> +状态
+                          </button>
+                          <button
+                            type="button"
+                            title="为演员/角色绑定专属配音音色（剧本写「角色名：台词」时自动沿用）"
+                            onClick={() =>
+                              setVoicePopoverFor((prev) => (prev === ent.id ? null : ent.id))
+                            }
+                          >
+                            <AudioLines size={12} /> {ent.voiceProfile?.voice || ent.voiceId ? '声纹✓' : '声纹'}
+                          </button>
+                        </>
                       )}
                       <button type="button" onClick={() => void appendShotFromRigOrBlank(undefined, ent)}>
                         <Plus size={12} /> 派生镜头
@@ -3597,7 +3663,9 @@ export function CreateCanvas({
                 <small>
                   {isCompound && ent.compound
                     ? `${(ent.compound.durationFrames / ent.compound.fps).toFixed(1)}s`
-                    : `v${ent.version}`}
+                    : ent.voiceProfile?.voice || ent.voiceId
+                      ? `${ent.voiceProfile?.voice || ent.voiceId} · v${ent.version}`
+                      : `v${ent.version}`}
                 </small>
               </div>
 
@@ -3720,6 +3788,85 @@ export function CreateCanvas({
                 >
                   {deg.outCount} →
                 </button>
+              )}
+
+              {voicePopoverFor === ent.id && !isTextNote && !isCompound && !hasRig && (
+                <div
+                  className="cc-popover cc-rig-inspector"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="cc-card-head">
+                    <b>{ent.name} · 专属声纹</b>
+                    <button type="button" onClick={() => setVoicePopoverFor(null)} aria-label="关闭声纹设置">
+                      <X size={12} />
+                    </button>
+                  </div>
+                  <label className="cc-mini-field">
+                    <span>音色 ID（如 Cherry / Ethan / 沉稳男声）</span>
+                    <input
+                      aria-label="演员专属音色"
+                      placeholder="例如：Cherry / Ethan / alloy"
+                      value={ent.voiceProfile?.voice ?? ent.voiceId ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        void onEdit(`更新「${ent.name}」专属音色`, [
+                          {
+                            type: 'putVaultItem',
+                            item: {
+                              ...clone(ent),
+                              voiceId: v || undefined,
+                              voiceProfile: { ...(ent.voiceProfile || {}), voice: v || undefined },
+                            },
+                          },
+                        ]);
+                      }}
+                    />
+                  </label>
+                  <div className="cc-voice-presets">
+                    {['Cherry', 'Ethan', 'Chelsie', 'Serena', 'alloy'].map((presetVoice) => (
+                      <button
+                        key={presetVoice}
+                        type="button"
+                        className={`branch-fork-chip ${(ent.voiceProfile?.voice || ent.voiceId) === presetVoice ? 'active' : ''}`}
+                        onClick={() =>
+                          void onEdit(`绑定「${ent.name}」音色 ${presetVoice}`, [
+                            {
+                              type: 'putVaultItem',
+                              item: {
+                                ...clone(ent),
+                                voiceId: presetVoice,
+                                voiceProfile: { ...(ent.voiceProfile || {}), voice: presetVoice },
+                              },
+                            },
+                          ])
+                        }
+                      >
+                        {presetVoice}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="cc-mini-field">
+                    <span>表演语气备注</span>
+                    <input
+                      aria-label="演员表演语气"
+                      placeholder="如：低沉克制、略带冷幽默"
+                      value={ent.voiceProfile?.styleNote ?? ''}
+                      onChange={(e) => {
+                        const note = e.target.value;
+                        void onEdit(`更新「${ent.name}」配音语气`, [
+                          {
+                            type: 'putVaultItem',
+                            item: {
+                              ...clone(ent),
+                              voiceProfile: { ...(ent.voiceProfile || {}), styleNote: note || undefined },
+                            },
+                          },
+                        ]);
+                      }}
+                    />
+                  </label>
+                </div>
               )}
 
               {rigPopoverFor === ent.id && ent.rig?.presetId && (
@@ -3888,6 +4035,28 @@ export function CreateCanvas({
                 >
                   {isAudio ? (
                     <>
+                      {onTrimAudioSilence && (
+                        <button
+                          type="button"
+                          title="本地 FFmpeg 0 费用自动裁去口播停顿气口静音，生成紧凑版音频卡"
+                          onClick={() =>
+                            void onTrimAudioSilence(a.id, { x: pos.x + 300, y: pos.y })
+                          }
+                        >
+                          <Scissors size={11} /> 去静音
+                        </button>
+                      )}
+                      {onNormalizeAudio && (
+                        <button
+                          type="button"
+                          title="本地 FFmpeg 0 费用人声响度标准化至广播级 -14 LUFS"
+                          onClick={() =>
+                            void onNormalizeAudio(a.id, { x: pos.x + 300, y: pos.y + 108 })
+                          }
+                        >
+                          <AudioLines size={11} /> -14 LUFS
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onOpenGeneration({ use: 'transcription', assetId: a.id })}
@@ -3956,6 +4125,17 @@ export function CreateCanvas({
                           <AudioLines size={11} /> 抽音轨
                         </button>
                       )}
+                      {onVisionDescribeAsset && (
+                        <button
+                          type="button"
+                          title="用视觉模型反推画面提示词并落为可编辑文本节点"
+                          onClick={() =>
+                            void onVisionDescribeAsset(a.id, { x: pos.x + 300, y: pos.y - 160 })
+                          }
+                        >
+                          <Wand2 size={11} /> 反推提示词
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onOpenGeneration({ use: 'transcription', assetId: a.id })}
@@ -3990,6 +4170,17 @@ export function CreateCanvas({
                           }}
                         >
                           <Sparkles size={11} /> 衍生 ▾
+                        </button>
+                      )}
+                      {a.kind === 'image' && onVisionDescribeAsset && (
+                        <button
+                          type="button"
+                          title="用视觉模型反推该图提示词，在右侧生成可编辑文本节点（可直接拖线给工坊卡改图）"
+                          onClick={() =>
+                            void onVisionDescribeAsset(a.id, { x: pos.x + 306, y: pos.y })
+                          }
+                        >
+                          <Wand2 size={11} /> 反推提示词
                         </button>
                       )}
                       {a.kind === 'image' && hasAiSource && (
@@ -4695,7 +4886,7 @@ export function CreateCanvas({
             }
             if (cmd === 'breakdown') {
               if (text.includes('\n')) {
-                const ops = scriptOutlineToShotOperations(sequence, text);
+                const ops = scriptOutlineToShotOperations(sequence, text, undefined, upstreamEntities);
                 if (ops.length) {
                   void onEdit('从指令舱脚本拆解分镜', ops);
                   setOmnibarDraft('');

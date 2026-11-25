@@ -9008,6 +9008,18 @@ input[type='checkbox']:not(.switch) {
   stroke-opacity: 0.24;
 }
 
+.cc-voice-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.branch-fork-chip.active {
+  background: var(--action);
+  color: var(--action-fg);
+  border-color: var(--action);
+  font-weight: 600;
+}
+
 
 
 

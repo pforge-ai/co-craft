@@ -131,6 +131,8 @@ export interface AssetLineageRef {
     | 'first-last-frame'
     | 'extract-frame'
     | 'detach-audio'
+    | 'audio-normalize'
+    | 'silence-trim'
     | 'vision-describe'
     | 'transcribe-slice'
     | 'shell-wrap'
@@ -231,6 +233,21 @@ export interface VaultPackMember {
   compound?: CompoundClipBundle;
 }
 
+export type FilmOverlayEffect = 'none' | 'dust' | 'rain' | 'speedlines';
+
+export interface WordTiming {
+  word: string;
+  startSec: number;
+  endSec: number;
+}
+
+export interface ActorVoiceProfile {
+  modelId?: string;
+  voice?: string;
+  speed?: number;
+  styleNote?: string;
+}
+
 export interface VaultItem {
   id: string;
   name: string;
@@ -249,6 +266,10 @@ export interface VaultItem {
   /** Shared identity anchor across all variants of this entity */
   promptAnchor?: string;
   voiceId?: string;
+  /** Bound character voice profile for speaker-aware dialogue synthesis */
+  voiceProfile?: ActorVoiceProfile;
+  /** Optional linked .glb 3D character stand-in asset */
+  rigAssetId?: string;
   assetId?: string;
   libraryFile?: string;
   assetKind?: Asset['kind'];

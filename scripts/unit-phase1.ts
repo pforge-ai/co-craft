@@ -1344,4 +1344,192 @@ assert.ok(
   );
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 core regression tests');
+// 14. M1 Low-Cost Cinema Engine, Audio-First Shot Combo, Speaker Auto-Binding, Silence Trim & Cast Voice Profile
+{
+  const {
+    parseSpeakerDialogueLines,
+    scriptOutlineToShotOperations,
+    combineVisualAndAudioToShotOperations,
+    computePrimaryTimelineShots,
+    parseSilenceDetectLog,
+  } = await import('../src/core/storyboard');
+  const { collectVisualSelection } = await import('../src/components/canvas/types');
+
+  // 14a. Speaker-aware dialogue parsing matches registered characters without false-positives on timestamps/ratios
+  const castEntities = [
+    {
+      id: 'ent_lin',
+      name: '林夏',
+      category: 'subject' as const,
+      subkind: 'character' as const,
+      entityKind: 'image' as const,
+      assetId: 'a_lin',
+      promptAnchor: '黑色风衣女侦探',
+      voiceProfile: { voice: 'Cherry', styleNote: '冷静克制' },
+      version: 2,
+      updatedAt: '',
+    },
+    {
+      id: 'ent_chen',
+      name: '陈默',
+      category: 'subject' as const,
+      subkind: 'character' as const,
+      entityKind: 'image' as const,
+      assetId: 'a_chen',
+      version: 1,
+      updatedAt: '',
+    },
+  ];
+  const parsedDialogue = parseSpeakerDialogueLines(
+    [
+      '林夏：雨夜行动开始 [特写推镜]',
+      '00:05 镜头切到霓虹雨巷',
+      '16:9 宽银幕全景展开',
+      '陈默: 别回头，身后有人跟上来了（低声）',
+    ].join('\n'),
+    castEntities,
+  );
+  assert.equal(parsedDialogue.length, 4);
+  assert.equal(parsedDialogue[0].speakerName, '林夏');
+  assert.equal(parsedDialogue[0].entity?.id, 'ent_lin');
+  assert.equal(parsedDialogue[0].text, '雨夜行动开始');
+  assert.equal(parsedDialogue[0].stageNote, '特写推镜');
+  assert.equal(parsedDialogue[1].speakerName, undefined, 'Timestamp 00:05 must not be misparsed as speaker');
+  assert.equal(parsedDialogue[2].speakerName, undefined, 'Aspect ratio 16:9 must not be misparsed as speaker');
+  assert.equal(parsedDialogue[3].speakerName, '陈默');
+  assert.equal(parsedDialogue[3].entity?.id, 'ent_chen');
+  assert.equal(parsedDialogue[3].stageNote, '低声');
+
+  // 14b. scriptOutlineToShotOperations auto-binds matched character VaultItems & enables kinetic wordHighlight captions
+  let pM1 = newProject('M1CinemaTest');
+  pM1 = applyOperations(pM1, [
+    { type: 'putVaultItem', item: castEntities[0] },
+    { type: 'putVaultItem', item: castEntities[1] },
+  ]);
+  const savedLin = pM1.vault?.find((v) => v.id === 'ent_lin');
+  assert.equal(savedLin?.voiceProfile?.voice, 'Cherry', 'VaultItem voiceProfile persists cleanly');
+  assert.equal(savedLin?.voiceProfile?.styleNote, '冷静克制');
+
+  const scriptOps = scriptOutlineToShotOperations(
+    pM1.sequences[0],
+    '林夏：档案就在钟楼顶层 [雨夜特写]\n陈默：我来掩护你',
+    { entityId: 'ent_script', version: 1 },
+    castEntities,
+  );
+  pM1 = applyOperations(pM1, scriptOps);
+  const scriptShots = computePrimaryTimelineShots(pM1.sequences[0]);
+  assert.equal(scriptShots.length, 2);
+  assert.ok(
+    scriptShots[0].bindings.some((b) => b.entityId === 'ent_lin' && b.pinnedVersion === 2),
+    'Shot 1 auto-binds matched character 林夏 v2',
+  );
+  assert.ok(
+    scriptShots[1].bindings.some((b) => b.entityId === 'ent_chen' && b.pinnedVersion === 1),
+    'Shot 2 auto-binds matched character 陈默 v1',
+  );
+  const cap1 = pM1.sequences[0].clips.find((c) => c.kind === 'caption' && c.start === scriptShots[0].start);
+  assert.equal(cap1?.props.wordHighlight, true, 'Generated captions enable M1 wordHighlight by default');
+  assert.equal(cap1?.props.text, '档案就在钟楼顶层', 'Speaker prefix & stage notes stripped cleanly from subtitle text');
+
+  // 14c. Audio-First combo: combineVisualAndAudioToShotOperations matches audio duration + L1 cinematic still motion + transcript captions
+  const stillAsset = {
+    id: 'a_still_1',
+    name: '钟楼雨夜.png',
+    kind: 'image' as const,
+    path: '/tmp/tower.png',
+    duration: 0,
+    width: 1920,
+    height: 1080,
+    createdAt: '',
+  };
+  const voAsset = {
+    id: 'a_vo_1',
+    name: '林夏配音.wav',
+    kind: 'audio' as const,
+    path: '/tmp/vo.wav',
+    duration: 4.5,
+    transcript: {
+      text: '钟楼顶层的灯还亮着 看来我们赶上了最后一步',
+      segments: [
+        { start: 0.0, end: 2.1, text: '钟楼顶层的灯还亮着' },
+        { start: 2.2, end: 4.4, text: '看来我们赶上了最后一步' },
+      ],
+    },
+    createdAt: '',
+  };
+  const combo = combineVisualAndAudioToShotOperations(pM1.sequences[0], stillAsset, voAsset, {
+    enableL1Cinema: true,
+    wordHighlight: true,
+  });
+  pM1 = applyOperations(pM1, [
+    { type: 'addAsset', asset: stillAsset },
+    { type: 'addAsset', asset: voAsset },
+    ...combo.operations,
+  ]);
+  const comboVis = pM1.sequences[0].clips.find((c) => c.id === combo.visualClipId)!;
+  const comboAud = pM1.sequences[0].clips.find((c) => c.id === combo.audioClipId)!;
+  assert.equal(comboVis.duration, Math.round(4.5 * 30), 'Audio-First shot duration matches audio length');
+  assert.equal(comboVis.props.cameraBreath, 42, 'Still image receives L1 cameraBreath automatically');
+  assert.equal(comboVis.props.filmGrain, 18, 'Still image receives L1 filmGrain automatically');
+  assert.equal(comboAud.audioAttachMode, 'shot', 'Paired audio attaches to shot for ripple-safe reordering');
+  assert.equal(comboAud.start, comboVis.start);
+  const comboCaps = pM1.sequences[0].clips.filter(
+    (c) => c.kind === 'caption' && c.start >= comboVis.start && c.start < comboVis.start + comboVis.duration,
+  );
+  assert.equal(comboCaps.length, 2, 'Transcript segments materialize synced wordHighlight captions');
+  assert.equal(comboCaps[0].props.wordHighlight, true);
+
+  // 14d. FFmpeg silencedetect log parser trims leading/middle/trailing silences with 60ms natural breath padding
+  const fakeStderr = [
+    '[silencedetect @ 0x1] silence_start: 0',
+    '[silencedetect @ 0x1] silence_end: 0.80 | silence_duration: 0.80',
+    '[silencedetect @ 0x1] silence_start: 1.80',
+    '[silencedetect @ 0x1] silence_end: 3.00 | silence_duration: 1.20',
+    '[silencedetect @ 0x1] silence_start: 4.00',
+    '[silencedetect @ 0x1] silence_end: 4.80 | silence_duration: 0.80',
+  ].join('\n');
+  const trimPlan = parseSilenceDetectLog(fakeStderr, 4.8, 0.06);
+  assert.equal(trimPlan.kept.length, 2, 'Two spoken islands kept between 3 silence regions');
+  assert.ok(Math.abs(trimPlan.kept[0].start - 0.74) < 1e-3, '60ms pre-pad preserved before speech 1');
+  assert.ok(Math.abs(trimPlan.kept[0].end - 1.86) < 1e-3, '60ms post-pad preserved after speech 1');
+  assert.ok(Math.abs(trimPlan.kept[1].start - 2.94) < 1e-3);
+  assert.ok(Math.abs(trimPlan.kept[1].end - 4.06) < 1e-3);
+  assert.ok(trimPlan.removedSeconds > 2.4 && trimPlan.removedSeconds < 2.6, 'Accurate removed silence calculation');
+
+  // 14e. Multi-select summary collects images, videos, audios & text nodes cleanly
+  const textEnt = {
+    id: 'ent_prompt',
+    name: '反推提示词',
+    category: 'subject' as const,
+    subkind: 'note' as const,
+    entityKind: 'text' as const,
+    textContent: '赛博霓虹雨巷、35mm胶片颗粒',
+    version: 1,
+    updatedAt: '',
+  };
+  const pMulti = applyOperations(pM1, [
+    { type: 'addAsset', asset: { id: 'a_vid_1', name: 'v1.mp4', kind: 'video', path: '/tmp/v1.mp4', duration: 2, createdAt: '' } },
+    { type: 'putVaultItem', item: textEnt },
+  ]);
+  const multiSum = collectVisualSelection(
+    ['asset:a_still_1', 'asset:a_vid_1', 'asset:a_vo_1', 'ent:ent_prompt'],
+    pMulti,
+    [textEnt],
+    [],
+    {},
+    {
+      'asset:a_still_1': { x: 100, y: 100 },
+      'asset:a_vid_1': { x: 400, y: 100 },
+      'asset:a_vo_1': { x: 700, y: 100 },
+      'ent:ent_prompt': { x: 100, y: 360 },
+    },
+  );
+  assert.deepEqual(multiSum.imageAssetIds, ['a_still_1']);
+  assert.deepEqual(multiSum.videoAssetIds, ['a_vid_1']);
+  assert.deepEqual(multiSum.audioAssetIds, ['a_vo_1']);
+  assert.deepEqual(multiSum.visualAssetIds, ['a_still_1', 'a_vid_1']);
+  assert.deepEqual(multiSum.textNodeKeys, ['ent:ent_prompt']);
+  assert.deepEqual(multiSum.textSnippets, ['赛博霓虹雨巷、35mm胶片颗粒']);
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 Cinema/Audio regression tests');

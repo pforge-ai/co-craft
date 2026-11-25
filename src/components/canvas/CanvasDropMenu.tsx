@@ -113,10 +113,15 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
             onClick={async () => {
               onClose();
               if (!srcEnt || !rawText) return;
-              const ops = scriptOutlineToShotOperations(sequence, rawText, {
-                entityId: srcEnt.id,
-                version: srcEnt.version,
-              });
+              const ops = scriptOutlineToShotOperations(
+                sequence,
+                rawText,
+                {
+                  entityId: srcEnt.id,
+                  version: srcEnt.version,
+                },
+                upstreamEntities,
+              );
               if (ops.length) await onEdit(`从「${srcEnt.name}」拆解分镜`, ops);
             }}
           >

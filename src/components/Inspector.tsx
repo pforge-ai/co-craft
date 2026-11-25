@@ -1009,6 +1009,60 @@ export const Inspector = React.memo(function Inspector({
           disabled={clip.locked}
           onChange={(v) => prop('vignette', v)}
         />
+        <div className="ins-sec-head" style={{ marginTop: 10 }}>
+          <h4>电影质感与漫剧动效 (L1)</h4>
+        </div>
+        <div className="ins-quick-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+          {(
+            [
+              ['电影静图', { cameraBreath: 45, filmGrain: 22, vignette: 20, overlayEffect: 'none' }],
+              ['漫剧张力', { cameraBreath: 55, filmGrain: 15, vignette: 24, overlayEffect: 'speedlines' }],
+              ['雨夜氛围', { cameraBreath: 35, filmGrain: 25, vignette: 28, overlayEffect: 'rain' }],
+              ['浮尘柔光', { cameraBreath: 38, filmGrain: 18, vignette: 16, overlayEffect: 'dust' }],
+              ['清除', { cameraBreath: 0, filmGrain: 0, overlayEffect: 'none' }],
+            ] as const
+          ).map(([label, patch]) => (
+            <button
+              key={label}
+              type="button"
+              className="button subtle tiny"
+              disabled={clip.locked}
+              onClick={() => propsPatch(patch, `应用 L1 质感「${label}」`)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <CompactSliderRow
+          label="呼吸运镜"
+          value={Number(clip.props.cameraBreath || 0)}
+          min={0}
+          max={100}
+          disabled={clip.locked}
+          onChange={(v) => prop('cameraBreath', v)}
+        />
+        <CompactSliderRow
+          label="胶片颗粒"
+          value={Number(clip.props.filmGrain || 0)}
+          min={0}
+          max={100}
+          disabled={clip.locked}
+          onChange={(v) => prop('filmGrain', v)}
+        />
+        <div className="ins-row" style={{ marginTop: 4 }}>
+          <span>氛围叠层</span>
+          <select
+            aria-label="L1 氛围叠层"
+            disabled={clip.locked}
+            value={String(clip.props.overlayEffect || 'none')}
+            onChange={(e) => prop('overlayEffect', e.target.value)}
+          >
+            <option value="none">无叠层</option>
+            <option value="dust">浮尘光斑</option>
+            <option value="rain">电影雨丝</option>
+            <option value="speedlines">漫画速度线</option>
+          </select>
+        </div>
       </section>
     );
   };
@@ -1509,6 +1563,28 @@ export const Inspector = React.memo(function Inspector({
                 onCommit={(v) => prop('shadowOffsetY', v)}
               />
             </div>
+          </PropToggleSection>
+
+          <PropToggleSection
+            title="逐词动态高亮"
+            enabled={Boolean(clip.props.wordHighlight)}
+            disabled={clip.locked}
+            onToggle={(next) =>
+              propsPatch(
+                {
+                  wordHighlight: next,
+                  wordHighlightColor: clip.props.wordHighlightColor || '#fde047',
+                },
+                next ? '开启逐词动态高亮' : '关闭逐词动态高亮',
+              )
+            }
+          >
+            <ColorHexInput
+              label="高亮字色"
+              value={String(clip.props.wordHighlightColor || '#fde047')}
+              disabled={clip.locked}
+              onChange={(hex) => prop('wordHighlightColor', hex)}
+            />
           </PropToggleSection>
 
           {renderAlignAndTransform(true)}

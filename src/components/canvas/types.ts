@@ -114,8 +114,20 @@ export function detectStaleBindings(
   return out;
 }
 
+export interface CanvasMultiSelectionSummary {
+  imageAssetIds: string[];
+  videoAssetIds: string[];
+  audioAssetIds: string[];
+  visualAssetIds: string[];
+  textNodeKeys: string[];
+  textSnippets: string[];
+  labels: string[];
+  sourceNodeKeys: string[];
+  anchorPlacement: CanvasPt;
+}
+
 /**
- * Collects ordered visual image references from a list of selected canvas node keys.
+ * Collects ordered visual, video, audio & text references from selected canvas node keys.
  * Sorts nodes left-to-right (then top-to-bottom) so 2-node selection naturally maps Left -> First Frame, Right -> Last Frame.
  */
 export function collectVisualSelection(
@@ -125,12 +137,7 @@ export function collectVisualSelection(
   shots: readonly CompositeShot[],
   activeVarByEnt: Record<string, string>,
   layout: Record<string, CanvasPt>,
-): {
-  imageAssetIds: string[];
-  labels: string[];
-  sourceNodeKeys: string[];
-  anchorPlacement: CanvasPt;
-} {
+): CanvasMultiSelectionSummary {
   const sortedKeys = [...nodeKeys].sort((a, b) => {
     const pa = layout[a] || { x: 0, y: 0 };
     const pb = layout[b] || { x: 0, y: 0 };
@@ -139,6 +146,11 @@ export function collectVisualSelection(
   });
 
   const imageAssetIds: string[] = [];
+  const videoAssetIds: string[] = [];
+  const audioAssetIds: string[] = [];
+  const visualAssetIds: string[] = [];
+  const textNodeKeys: string[] = [];
+  const textSnippets: string[] = [];
   const labels: string[] = [];
   const sourceNodeKeys: string[] = [];
   let maxX = -Infinity;
@@ -157,21 +169,34 @@ export function collectVisualSelection(
       const a = project.assets.find((x) => `asset:${x.id}` === key);
       if (a && a.kind === 'image') {
         if (!imageAssetIds.includes(a.id)) imageAssetIds.push(a.id);
+        if (!visualAssetIds.includes(a.id)) visualAssetIds.push(a.id);
         labels.push(a.name.replace(/\.[^.]+$/, ''));
         sourceNodeKeys.push(key);
+      } else if (a && a.kind === 'video') {
+        if (!videoAssetIds.includes(a.id)) videoAssetIds.push(a.id);
+        if (!visualAssetIds.includes(a.id)) visualAssetIds.push(a.id);
+      } else if (a && a.kind === 'audio') {
+        if (!audioAssetIds.includes(a.id)) audioAssetIds.push(a.id);
       }
     } else if (key.startsWith('ent:')) {
       const ent = upstreamEntities.find((x) => `ent:${x.id}` === key);
       if (ent) {
-        const vr =
-          ent.variants?.find((v) => v.id === (activeVarByEnt[ent.id] || ent.defaultVariantId)) ||
-          ent.variants?.[0];
-        const aid = vr?.assetId || ent.assetId;
-        const img = aid ? project.assets.find((x) => x.id === aid && x.kind === 'image') : undefined;
-        if (img) {
-          if (!imageAssetIds.includes(img.id)) imageAssetIds.push(img.id);
-          labels.push(`@${ent.name}${vr ? `:${vr.name}` : ''}`);
-          sourceNodeKeys.push(key);
+        if (ent.entityKind === 'text') {
+          textNodeKeys.push(key);
+          const snippet = (ent.textContent || ent.name || '').trim();
+          if (snippet) textSnippets.push(snippet);
+        } else {
+          const vr =
+            ent.variants?.find((v) => v.id === (activeVarByEnt[ent.id] || ent.defaultVariantId)) ||
+            ent.variants?.[0];
+          const aid = vr?.assetId || ent.assetId;
+          const img = aid ? project.assets.find((x) => x.id === aid && x.kind === 'image') : undefined;
+          if (img) {
+            if (!imageAssetIds.includes(img.id)) imageAssetIds.push(img.id);
+            if (!visualAssetIds.includes(img.id)) visualAssetIds.push(img.id);
+            labels.push(`@${ent.name}${vr ? `:${vr.name}` : ''}`);
+            sourceNodeKeys.push(key);
+          }
         }
       }
     } else if (key.startsWith('shot:')) {
@@ -180,6 +205,7 @@ export function collectVisualSelection(
       const img = aid ? project.assets.find((x) => x.id === aid && x.kind === 'image') : undefined;
       if (sh && img) {
         if (!imageAssetIds.includes(img.id)) imageAssetIds.push(img.id);
+        if (!visualAssetIds.includes(img.id)) visualAssetIds.push(img.id);
         labels.push(`镜头 #${sh.index}`);
         sourceNodeKeys.push(key);
       }
@@ -191,5 +217,15 @@ export function collectVisualSelection(
       ? { x: Math.round(maxX + 312), y: Math.round(sumY / countPos) }
       : { x: 420, y: 120 };
 
-  return { imageAssetIds, labels, sourceNodeKeys, anchorPlacement };
+  return {
+    imageAssetIds,
+    videoAssetIds,
+    audioAssetIds,
+    visualAssetIds,
+    textNodeKeys,
+    textSnippets,
+    labels,
+    sourceNodeKeys,
+    anchorPlacement,
+  };
 }

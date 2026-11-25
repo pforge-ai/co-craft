@@ -2349,7 +2349,7 @@ export function App() {
                   });
                 }}
                 onExtractVideoFrame={async (assetId, mode, placement) => {
-                  await work(`抽取视频${mode === 'last' ? '尾帧' : '首帧'}`, async () => {
+                  return await work(`抽取视频${mode === 'last' ? '尾帧' : '首帧'}`, async () => {
                     const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>('asset.extractFrame', {
                       assetId,
                       mode,
@@ -2357,6 +2357,7 @@ export function App() {
                     });
                     accept(res.envelope);
                     notify(`已抽取新图片资产「${res.asset.name}」`);
+                    return res.asset;
                   });
                 }}
                 onDetachVideoAudio={async (assetId, placement) => {
@@ -2367,6 +2368,40 @@ export function App() {
                     });
                     accept(res.envelope);
                     notify(`已提取音轨「${res.asset.name}」`);
+                  });
+                }}
+                onNormalizeAudio={async (assetId, placement) => {
+                  await work('响度标准化 (-14 LUFS)', async () => {
+                    const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>('asset.normalizeAudio', {
+                      assetId,
+                      placement,
+                    });
+                    accept(res.envelope);
+                    notify(`已完成响度标准化「${res.asset.name}」`);
+                  });
+                }}
+                onTrimAudioSilence={async (assetId, placement) => {
+                  await work('自动去除气口静音', async () => {
+                    const res = await api<{
+                      envelope: ProjectEnvelope;
+                      asset: Asset;
+                      removedSeconds: number;
+                    }>('asset.trimSilence', {
+                      assetId,
+                      placement,
+                    });
+                    accept(res.envelope);
+                    notify(`已裁去 ${res.removedSeconds.toFixed(1)}s 静音气口，生成「${res.asset.name}」`);
+                  });
+                }}
+                onVisionDescribeAsset={async (assetId, placement) => {
+                  await work('反推画面视觉提示词', async () => {
+                    const res = await api<{ envelope: ProjectEnvelope; vaultItem: VaultItem }>(
+                      'asset.visionDescribe',
+                      { assetId, placement },
+                    );
+                    accept(res.envelope);
+                    notify(`已生成可编辑提示词卡「${res.vaultItem.name}」`);
                   });
                 }}
                 onAskAgentForShot={(shotClip, draftPrompt) => {

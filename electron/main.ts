@@ -12,7 +12,7 @@ import { studioCatalog, addStudioAsset } from './studio-media';
 import { GenerationService, downloadToFile } from './generation';
 import { importMaterialPack, exportMaterialPack } from './packs';
 import { createDemo } from './demo';
-import { binary, importMedia, run } from './media';
+import { binary, importMedia, parseSilenceDetectLog, run } from './media';
 import { compileComponent } from './code';
 import { GlobalVault } from './vault';
 import { McpBridgeServer } from './mcp-bridge';
@@ -1037,6 +1037,228 @@ async function handle(method: string, arg: any = {}) {
       });
       await changed(target, envelope);
       return { envelope, asset: audioAsset };
+    }
+    case 'asset.normalizeAudio': {
+      const target = store;
+      const p = await target.project();
+      const src = p.assets.find((a) => a.id === arg.assetId);
+      if (!src || (src.kind !== 'audio' && src.kind !== 'video')) throw new Error('仅支持对音频或视频素材做响度标准化');
+      if (src.offline || !existsSync(src.path)) throw new Error('素材文件离线或不存在');
+      const assetsDir = join(target.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+      const outPath = join(assetsDir, `norm-${uid('aud')}.wav`);
+      try {
+        await run(binary('ffmpeg'), [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-i',
+          src.path,
+          '-vn',
+          '-af',
+          'loudnorm=I=-14:TP=-1.5:LRA=11',
+          '-c:a',
+          'pcm_s16le',
+          '-ar',
+          '44100',
+          outPath,
+        ]);
+      } catch (err) {
+        await rm(outPath, { force: true }).catch(() => {});
+        throw err;
+      }
+      const normAsset = await importMedia(outPath, target.path);
+      const baseTitle = src.name.replace(/\.[^.]+$/, '').slice(0, 20);
+      normAsset.name = `${baseTitle} · -14 LUFS`;
+      normAsset.derivedFrom = [
+        {
+          assetId: src.id,
+          via: 'audio-normalize',
+          note: '响度标准化 (-14 LUFS)',
+        },
+      ];
+      const ops: EditOperation[] = [{ type: 'addAsset', asset: normAsset }];
+      if (arg.placement && Number.isFinite(arg.placement.x) && Number.isFinite(arg.placement.y)) {
+        ops.push({
+          type: 'updateProject',
+          changes: {
+            canvasLayout: {
+              ...(p.canvasLayout || {}),
+              [`asset:${normAsset.id}`]: {
+                x: Math.round(arg.placement.x),
+                y: Math.round(arg.placement.y),
+              },
+            },
+          },
+        });
+      }
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `人声响度标准化「${normAsset.name}」`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, asset: normAsset };
+    }
+    case 'asset.trimSilence': {
+      const target = store;
+      const p = await target.project();
+      const src = p.assets.find((a) => a.id === arg.assetId);
+      if (!src || (src.kind !== 'audio' && src.kind !== 'video')) throw new Error('仅支持对音频或视频素材去除气口静音');
+      if (src.offline || !existsSync(src.path)) throw new Error('素材文件离线或不存在');
+      const thresholdDb = Number.isFinite(Number(arg.thresholdDb)) ? Number(arg.thresholdDb) : -38;
+      const minSilenceSec = Number.isFinite(Number(arg.minSilenceSec)) ? Number(arg.minSilenceSec) : 0.35;
+      const detectStderr = await run(
+        binary('ffmpeg'),
+        [
+          '-hide_banner',
+          '-i',
+          src.path,
+          '-vn',
+          '-af',
+          `silencedetect=noise=${thresholdDb}dB:d=${minSilenceSec}`,
+          '-f',
+          'null',
+          '-',
+        ],
+        { captureStderr: true },
+      );
+      const { kept, removedSeconds } = parseSilenceDetectLog(detectStderr, src.duration || 0, 0.06);
+      if (!kept.length) throw new Error('音频整体低于静音阈值，未执行裁切');
+      if (removedSeconds < 0.15) throw new Error('未检测到超过 0.35s 的明显静音停顿');
+
+      const assetsDir = join(target.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+      const outPath = join(assetsDir, `trim-${uid('aud')}.wav`);
+      const filterParts: string[] = [];
+      const labels: string[] = [];
+      kept.forEach((seg, idx) => {
+        filterParts.push(
+          `[0:a]atrim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(3)},asetpts=PTS-STARTPTS[a${idx}]`,
+        );
+        labels.push(`[a${idx}]`);
+      });
+      const filterComplex =
+        kept.length === 1
+          ? `${filterParts[0]}`
+          : `${filterParts.join(';')};${labels.join('')}concat=n=${kept.length}:v=0:a=1[aout]`;
+      const mapLabel = kept.length === 1 ? '[a0]' : '[aout]';
+      try {
+        await run(binary('ffmpeg'), [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-i',
+          src.path,
+          '-filter_complex',
+          filterComplex,
+          '-map',
+          mapLabel,
+          '-c:a',
+          'pcm_s16le',
+          '-ar',
+          '44100',
+          outPath,
+        ]);
+      } catch (err) {
+        await rm(outPath, { force: true }).catch(() => {});
+        throw err;
+      }
+      const trimmedAsset = await importMedia(outPath, target.path);
+      const baseTitle = src.name.replace(/\.[^.]+$/, '').slice(0, 20);
+      trimmedAsset.name = `${baseTitle} · 去静音`;
+      trimmedAsset.derivedFrom = [
+        {
+          assetId: src.id,
+          via: 'silence-trim',
+          note: `裁去 ${removedSeconds.toFixed(1)}s 静音`,
+        },
+      ];
+      const ops: EditOperation[] = [{ type: 'addAsset', asset: trimmedAsset }];
+      if (arg.placement && Number.isFinite(arg.placement.x) && Number.isFinite(arg.placement.y)) {
+        ops.push({
+          type: 'updateProject',
+          changes: {
+            canvasLayout: {
+              ...(p.canvasLayout || {}),
+              [`asset:${trimmedAsset.id}`]: {
+                x: Math.round(arg.placement.x),
+                y: Math.round(arg.placement.y),
+              },
+            },
+          },
+        });
+      }
+      const envelope = await target.edit({
+        baseRevision: p.revision,
+        name: `去除静音气口「${trimmedAsset.name}」`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, asset: trimmedAsset, removedSeconds };
+    }
+    case 'asset.visionDescribe': {
+      const target = store;
+      const p = await target.project();
+      const src = p.assets.find((a) => a.id === arg.assetId);
+      if (!src || (src.kind !== 'image' && src.kind !== 'video')) throw new Error('仅支持对图片或视频反推视觉提示词');
+      if (src.offline || !existsSync(src.path)) throw new Error('素材文件离线或不存在');
+      const visionPrompt =
+        typeof arg.prompt === 'string' && arg.prompt.trim()
+          ? arg.prompt.trim()
+          : '请用简洁、精准、可直接用于 AI 生图或改图的中文视觉提示词描述这张画面：依次涵盖主体外貌/服饰、姿态表情、场景环境、光影色调、景别构图与美术风格。不要输出解释性客套话，直接输出一段可编辑提示词。';
+      const job = await generation.start(target, {
+        use: 'vision',
+        assetId: src.id,
+        modelId: arg.modelId,
+        prompt: visionPrompt,
+      });
+      const result = await jobs.wait(job.id);
+      const described = String(result.text || '').trim();
+      if (!described) throw new Error('视觉模型未返回有效画面描述');
+      const latest = await target.project();
+      const baseTitle = src.name.replace(/\.[^.]+$/, '').slice(0, 18);
+      const textItem: VaultItem = {
+        id: uid('pvault'),
+        name: `${baseTitle} · 反推提示词`,
+        entityKind: 'text',
+        category: 'subject',
+        subkind: 'text-note',
+        textContent: described,
+        derivedFrom: [
+          {
+            assetId: src.id,
+            via: 'vision-describe',
+            note: '视觉反推提示词',
+          },
+        ],
+        version: 1,
+        updatedAt: new Date().toISOString(),
+      };
+      const ops: EditOperation[] = [{ type: 'putVaultItem', item: textItem }];
+      if (arg.placement && Number.isFinite(arg.placement.x) && Number.isFinite(arg.placement.y)) {
+        ops.push({
+          type: 'updateProject',
+          changes: {
+            canvasLayout: {
+              ...(latest.canvasLayout || {}),
+              [`ent:${textItem.id}`]: {
+                x: Math.round(arg.placement.x),
+                y: Math.round(arg.placement.y),
+              },
+            },
+          },
+        });
+      }
+      const envelope = await target.edit({
+        baseRevision: latest.revision,
+        name: `反推画面提示词「${textItem.name}」`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, vaultItem: textItem };
     }
     default:
       throw new Error('未知操作：' + method);

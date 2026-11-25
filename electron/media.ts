@@ -6,7 +6,10 @@ import { createReadStream, existsSync } from 'node:fs';
 import { nativeImage } from 'electron';
 import { dir as compositorDir } from '@remotion/compositor-darwin-arm64';
 import { uid } from '../src/core/project';
+import { parseSilenceDetectLog } from '../src/core/storyboard';
 import type { Asset } from '../src/core/types';
+
+export { parseSilenceDetectLog };
 
 export async function hashFile(file: string): Promise<{ sha256: string; byteSize: number }> {
   const info = await stat(file);
@@ -94,7 +97,7 @@ export const binary = (name: string) => {
 export function run(
   command: string,
   args: string[],
-  opts: { cwd?: string; signal?: AbortSignal } = {},
+  opts: { cwd?: string; signal?: AbortSignal; captureStderr?: boolean } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
@@ -108,11 +111,11 @@ export function run(
       error = '';
     proc.stdout.on('data', (d) => (out += d));
     proc.stderr.on('data', (d) => {
-      error = (error + d).slice(-6000);
+      error = (error + d).slice(-24000);
     });
     proc.on('error', reject);
     proc.on('close', (code) =>
-      code === 0 ? resolve(out) : reject(new Error(error || `${command} 退出 (${code})`)),
+      code === 0 ? resolve(opts.captureStderr ? error : out) : reject(new Error(error || `${command} 退出 (${code})`)),
     );
   });
 }

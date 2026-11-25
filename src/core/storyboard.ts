@@ -1,6 +1,6 @@
 import { clone, newClip, uid } from './project';
 import { getPreset } from './presets';
-import type { Clip, EditOperation, Sequence, ShotBinding } from './types';
+import type { Asset, Clip, EditOperation, Sequence, ShotBinding, VaultItem } from './types';
 
 export interface CompositeShot {
   id: string;
@@ -467,22 +467,80 @@ export function updateShotScriptOperations(
   return ops;
 }
 
+export interface ParsedDialogueLine {
+  speakerName?: string;
+  entity?: VaultItem;
+  stageNote?: string;
+  text: string;
+  raw: string;
+}
+
+/**
+ * Parses multi-line scripts with optional speaker attribution (`林夏：台词 [特写]`),
+ * preserving numeric times (`00:05`, `16:9`) cleanly and matching bound character VaultItems.
+ */
+export function parseSpeakerDialogueLines(
+  outline: string,
+  entities: readonly VaultItem[] = [],
+): ParsedDialogueLine[] {
+  const lines = outline
+    .split(/\n+/)
+    .map(stripExplicitListMarker)
+    .filter(Boolean);
+  const actorEntities = entities.filter((e) => e.entityKind !== 'text' && e.entityKind !== 'compound');
+  return lines.map((raw) => {
+    let speakerName: string | undefined;
+    let body = raw;
+    // Match `Speaker：Dialogue` or `Speaker: Dialogue` where speaker is 1..12 non-digit-only chars
+    const m = raw.match(/^([^\s:：0-9][^\s:：]{0,11})\s*[:：]\s*(.+)$/);
+    if (m) {
+      speakerName = m[1].trim();
+      body = m[2].trim();
+    }
+    let stageNote: string | undefined;
+    const stageMatch = body.match(/\s*(?:[\[【]([^\]】]{1,28})[\]】]|[（(]([^）)]{1,20})[）)])\s*$/);
+    if (stageMatch) {
+      stageNote = (stageMatch[1] || stageMatch[2] || '').trim();
+      body = body.slice(0, stageMatch.index).trim() || body;
+    } else {
+      const inlineStage = body.match(/[\[【]([^\]】]{1,28})[\]】]/);
+      if (inlineStage) {
+        stageNote = inlineStage[1].trim();
+        body = body.replace(inlineStage[0], '').replace(/\s{2,}/g, ' ').trim() || body;
+      }
+    }
+    const entity = speakerName
+      ? actorEntities.find(
+          (e) =>
+            e.name.trim() === speakerName ||
+            e.name.trim().includes(speakerName) ||
+            speakerName.includes(e.name.trim()),
+        )
+      : undefined;
+    return {
+      speakerName,
+      entity,
+      stageNote,
+      text: body,
+      raw,
+    };
+  });
+}
+
 /**
  * Splits multi-line outline or script paragraphs into clean sequential Composite Shots:
  * - Preserves numeric data verbatim (only strips explicit list bullets/ordinals).
+ * - Automatically recognizes `角色名：台词` lines and binds matched character VaultItems.
  * - Places new shots right after existing visual/overlay/caption content (never pushed behind a 30s BGM).
- * - Avoids double-rendering identical full copy on both center title and bottom caption.
  */
 export function scriptOutlineToShotOperations(
   sequence: Sequence,
   outline: string,
   sourceBinding?: { entityId: string; version?: number },
+  entities: readonly VaultItem[] = [],
 ): EditOperation[] {
-  const lines = outline
-    .split(/\n+/)
-    .map(stripExplicitListMarker)
-    .filter(Boolean);
-  if (!lines.length) return [];
+  const parsed = parseSpeakerDialogueLines(outline, entities);
+  if (!parsed.length) return [];
 
   const fps = sequence.fps;
   const nonAudioClips = sequence.clips.filter((c) => c.track !== 'audio');
@@ -492,26 +550,36 @@ export function scriptOutlineToShotOperations(
 
   const existingShotCount = sequence.clips.filter((c) => c.track === 'visual').length;
   const ops: EditOperation[] = [];
-  lines.forEach((line, idx) => {
+  parsed.forEach((item, idx) => {
+    const line = item.text;
     const shotNum = existingShotCount + idx + 1;
     const sec = Math.max(3.5, Math.min(8, line.length * 0.24));
     const dur = Math.round(sec * fps);
+    const bindings: ShotBinding[] = [];
+    const subjectIds: string[] = [];
+    if (sourceBinding) {
+      bindings.push({ entityId: sourceBinding.entityId, pinnedVersion: sourceBinding.version });
+      subjectIds.push(sourceBinding.entityId);
+    }
+    if (item.entity && !subjectIds.includes(item.entity.id)) {
+      bindings.push({
+        entityId: item.entity.id,
+        variantId: item.entity.defaultVariantId,
+        pinnedVersion: item.entity.version,
+      });
+      subjectIds.push(item.entity.id);
+    }
     const visualShot: Clip = {
       ...clone(newClip('title', cursor)),
       id: uid('clip'),
       track: 'visual',
-      name: `镜头 ${String(shotNum).padStart(2, '0')} · ${line.slice(0, 14)}`,
+      name: `镜头 ${String(shotNum).padStart(2, '0')} · ${(item.speakerName ? `${item.speakerName}：` : '') + line.slice(0, 12)}`,
       duration: dur,
-      shotNotes: line,
-      ...(sourceBinding
-        ? {
-            subjectIds: [sourceBinding.entityId],
-            subjectBindings: [{ entityId: sourceBinding.entityId, pinnedVersion: sourceBinding.version }],
-          }
-        : {}),
+      shotNotes: item.raw,
+      ...(bindings.length ? { subjectIds, subjectBindings: bindings } : {}),
       props: {
         text: `镜头 ${String(shotNum).padStart(2, '0')}`,
-        subtitle: '分镜占位 · 可替换素材或生成画面',
+        subtitle: item.speakerName ? `${item.speakerName} · 分镜占位` : '分镜占位 · 可替换素材或生成画面',
         fontSize: 54,
         color: '#cbd5e1',
         background: '#111318',
@@ -532,6 +600,8 @@ export function scriptOutlineToShotOperations(
         position: 'bottom',
         background: '#00000088',
         animation: 'none',
+        wordHighlight: true,
+        wordHighlightColor: '#fde047',
       },
     };
     ops.push({ type: 'addClip', sequenceId: sequence.id, clip: visualShot });
@@ -539,4 +609,191 @@ export function scriptOutlineToShotOperations(
     cursor += dur;
   });
   return ops;
+}
+
+/**
+ * Audio-First Shot Assembly (画+音直合分镜):
+ * Creates a visual shot whose duration is strictly driven by the paired audio asset's duration,
+ * attaches the audio as shot-local audio, applies subtle L1 cinematic finish on still images,
+ * and auto-populates word-highlighted captions if the audio carries a transcript.
+ */
+export function combineVisualAndAudioToShotOperations(
+  sequence: Sequence,
+  visualAsset: Asset,
+  audioAsset: Asset,
+  options: {
+    subjectBindings?: ShotBinding[];
+    enableL1Cinema?: boolean;
+    wordHighlight?: boolean;
+  } = {},
+): { operations: EditOperation[]; visualClipId: string; audioClipId: string } {
+  const fps = sequence.fps;
+  const nonAudioClips = sequence.clips.filter((c) => c.track !== 'audio');
+  const start = nonAudioClips.length
+    ? Math.max(...nonAudioClips.map((c) => c.start + c.duration))
+    : 0;
+  const sec = Math.max(1.2, audioAsset.duration || 4);
+  const dur = Math.max(15, Math.round(sec * fps));
+  const isImage = visualAsset.kind === 'image';
+  const enableL1 = options.enableL1Cinema !== false && isImage;
+  const wordHighlight = options.wordHighlight !== false;
+
+  const visualClip: Clip = {
+    ...newClip(isImage ? 'image' : 'video', start, visualAsset.id),
+    id: uid('clip'),
+    track: 'visual',
+    name: visualAsset.name.replace(/\.[^.]+$/, '').slice(0, 24),
+    duration: dur,
+    ...(options.subjectBindings?.length
+      ? {
+          subjectBindings: options.subjectBindings,
+          subjectIds: options.subjectBindings.map((b) => b.entityId),
+        }
+      : {}),
+    ...(audioAsset.transcript?.text ? { shotNotes: audioAsset.transcript.text.slice(0, 200) } : {}),
+    props: {
+      fit: 'cover',
+      opacity: 1,
+      scale: 1,
+      ...(enableL1
+        ? {
+            cameraBreath: 42,
+            filmGrain: 18,
+            vignette: 16,
+          }
+        : {}),
+    },
+  };
+
+  const audioClip: Clip = {
+    ...newClip('audio', start, audioAsset.id),
+    id: uid('clip'),
+    track: 'audio',
+    name: audioAsset.name.replace(/\.[^.]+$/, '').slice(0, 24),
+    duration: dur,
+    audioAttachMode: 'shot',
+    props: { volume: 1 },
+  };
+
+  const ops: EditOperation[] = [
+    { type: 'addClip', sequenceId: sequence.id, clip: visualClip },
+    { type: 'addClip', sequenceId: sequence.id, clip: audioClip },
+  ];
+
+  const segments = audioAsset.transcript?.segments;
+  if (segments && segments.length > 0) {
+    for (const seg of segments) {
+      const segText = seg.text.trim();
+      if (!segText) continue;
+      const segStart = start + Math.max(0, Math.round(seg.start * fps));
+      const segEnd = start + Math.min(dur, Math.max(segStart - start + 8, Math.round(seg.end * fps)));
+      const segDur = Math.max(8, segEnd - segStart);
+      if (segStart >= start + dur) continue;
+      ops.push({
+        type: 'addClip',
+        sequenceId: sequence.id,
+        clip: {
+          ...newClip('caption', segStart),
+          id: uid('clip'),
+          duration: Math.min(segDur, start + dur - segStart),
+          name: segText.slice(0, 20),
+          props: {
+            text: segText,
+            fontSize: 44,
+            color: '#ffffff',
+            position: 'bottom',
+            background: '#00000088',
+            animation: 'none',
+            wordHighlight,
+            wordHighlightColor: '#fde047',
+          },
+        },
+      });
+    }
+  } else if (audioAsset.transcript?.text?.trim()) {
+    const t = audioAsset.transcript.text.trim();
+    ops.push({
+      type: 'addClip',
+      sequenceId: sequence.id,
+      clip: {
+        ...newClip('caption', start),
+        id: uid('clip'),
+        duration: dur,
+        name: t.slice(0, 20),
+        props: {
+          text: t,
+          fontSize: 44,
+          color: '#ffffff',
+          position: 'bottom',
+          background: '#00000088',
+          animation: 'none',
+          wordHighlight,
+          wordHighlightColor: '#fde047',
+        },
+      },
+    });
+  }
+
+  return { operations: ops, visualClipId: visualClip.id, audioClipId: audioClip.id };
+}
+
+/**
+ * Pure parser for FFmpeg `silencedetect` stderr output into non-silent speech intervals
+ * with natural breath padding (shared by Electron FFmpeg trimming & pure-Node unit tests).
+ */
+export function parseSilenceDetectLog(
+  stderrLog: string,
+  totalDuration: number,
+  padSec = 0.06,
+): { kept: { start: number; end: number }[]; removedSeconds: number } {
+  const dur = Math.max(0, totalDuration);
+  if (dur <= 0) return { kept: [], removedSeconds: 0 };
+  const silences: { start: number; end: number }[] = [];
+  let pendingStart: number | null = null;
+  for (const line of stderrLog.split(/\r?\n/)) {
+    const sm = line.match(/silence_start:\s*([0-9.]+)/);
+    if (sm) {
+      pendingStart = Math.max(0, Math.min(dur, Number(sm[1])));
+      continue;
+    }
+    const em = line.match(/silence_end:\s*([0-9.]+)/);
+    if (em) {
+      const end = Math.max(0, Math.min(dur, Number(em[1])));
+      const start = pendingStart !== null ? pendingStart : 0;
+      if (end > start) silences.push({ start, end });
+      pendingStart = null;
+    }
+  }
+  if (pendingStart !== null && dur > pendingStart) {
+    silences.push({ start: pendingStart, end: dur });
+  }
+  if (!silences.length) return { kept: [{ start: 0, end: dur }], removedSeconds: 0 };
+
+  const rawKept: { start: number; end: number }[] = [];
+  let cursor = 0;
+  for (const s of silences) {
+    if (s.start > cursor) {
+      rawKept.push({
+        start: Math.max(0, cursor - padSec),
+        end: Math.min(dur, s.start + padSec),
+      });
+    }
+    cursor = Math.max(cursor, s.end);
+  }
+  if (cursor < dur) {
+    rawKept.push({ start: Math.max(0, cursor - padSec), end: dur });
+  }
+
+  const merged: { start: number; end: number }[] = [];
+  for (const seg of rawKept) {
+    if (seg.end - seg.start < 0.04) continue;
+    const prev = merged[merged.length - 1];
+    if (prev && seg.start <= prev.end + 0.03) {
+      prev.end = Math.max(prev.end, seg.end);
+    } else {
+      merged.push({ ...seg });
+    }
+  }
+  const keptDur = merged.reduce((sum, x) => sum + (x.end - x.start), 0);
+  return { kept: merged, removedSeconds: Math.max(0, Number((dur - keptDur).toFixed(2))) };
 }

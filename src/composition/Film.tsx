@@ -97,6 +97,137 @@ function computeAudioVolume(f: number, clip: Clip, fps: number): number {
   return base * Math.min(inGain, outGain);
 }
 
+/**
+ * Splits Chinese/English caption strings into rhythmic karaoke tokens
+ * so word-level kinetic highlighting works deterministically with or without explicit wordTimings.
+ */
+function tokenizeCaptionUnits(text: string): string[] {
+  const out: string[] = [];
+  const re = /([a-zA-Z0-9]+(?:['’-][a-zA-Z0-9]+)*\s*|[\u4e00-\u9fff]{1,2}[，。！？、；：,.!?;:]*\s*|\s+|[^\sa-zA-Z0-9\u4e00-\u9fff]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[0]) out.push(m[0]);
+  }
+  return out.length ? out : [text];
+}
+
+/**
+ * Deterministic L1 Zero-Video-Cost Cinema Finish Overlay:
+ * Renders frame-accurate film grain, floating dust motes, diagonal cinema rain, or manga radial speedlines.
+ */
+function CinematicFinishOverlay({
+  frame,
+  fps,
+  filmGrain = 0,
+  overlayEffect = 'none',
+}: {
+  frame: number;
+  fps: number;
+  filmGrain?: number;
+  overlayEffect?: string;
+}) {
+  const t = frame / Math.max(1, fps);
+  const grainAlpha = Math.max(0, Math.min(1, filmGrain / 100));
+  const grainStep = Math.floor(frame / 2);
+  const gx = (grainStep * 47) % 160;
+  const gy = (grainStep * 73) % 160;
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+      {overlayEffect === 'dust' && (
+        <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+          {Array.from({ length: 24 }).map((_, i) => {
+            const seedX = ((i * 239 + 113) % 1920);
+            const seedY = ((i * 197 + 71) % 1080);
+            const r = 2 + (i % 5) * 1.6;
+            const speed = 14 + (i % 7) * 5;
+            const x = (seedX + t * speed + Math.sin(t * 0.9 + i) * 28 + 1920) % 1920;
+            const y = (seedY - t * (speed * 0.65) + Math.cos(t * 0.7 + i * 1.4) * 22 + 1080) % 1080;
+            const op = 0.16 + 0.22 * (0.5 + 0.5 * Math.sin(t * 1.7 + i * 2.1));
+            return (
+              <circle
+                key={i}
+                cx={x.toFixed(1)}
+                cy={y.toFixed(1)}
+                r={r}
+                fill={i % 3 === 0 ? '#fef3c7' : '#ffffff'}
+                opacity={op.toFixed(3)}
+              />
+            );
+          })}
+        </svg>
+      )}
+      {overlayEffect === 'rain' && (
+        <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+          {Array.from({ length: 42 }).map((_, i) => {
+            const laneX = (i * 193 + 41) % 2100 - 90;
+            const spd = 920 + (i % 5) * 210;
+            const len = 48 + (i % 4) * 26;
+            const yStart = ((i * 173 + t * spd) % 1280) - 120;
+            const xStart = laneX - yStart * 0.16;
+            const op = 0.18 + (i % 3) * 0.12;
+            return (
+              <line
+                key={i}
+                x1={xStart.toFixed(1)}
+                y1={yStart.toFixed(1)}
+                x2={(xStart - len * 0.16).toFixed(1)}
+                y2={(yStart + len).toFixed(1)}
+                stroke="#e0f2fe"
+                strokeWidth={i % 4 === 0 ? 2.1 : 1.25}
+                strokeLinecap="round"
+                opacity={op.toFixed(2)}
+              />
+            );
+          })}
+        </svg>
+      )}
+      {overlayEffect === 'speedlines' && (
+        <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+          {Array.from({ length: 56 }).map((_, i) => {
+            const angle = ((i / 56) * Math.PI * 2) + Math.sin(Math.floor(frame / 2) * 1.7 + i) * 0.015;
+            const pulse = 0.5 + 0.5 * Math.sin(Math.floor(frame / 2) * 2.3 + i * 3.1);
+            const innerR = 460 + (i % 5) * 42 + pulse * 65;
+            const outerR = 1180;
+            const cx = 960;
+            const cy = 540;
+            const x1 = cx + Math.cos(angle) * innerR;
+            const y1 = cy + Math.sin(angle) * innerR;
+            const x2 = cx + Math.cos(angle) * outerR;
+            const y2 = cy + Math.sin(angle) * outerR;
+            return (
+              <line
+                key={i}
+                x1={x1.toFixed(1)}
+                y1={y1.toFixed(1)}
+                x2={x2.toFixed(1)}
+                y2={y2.toFixed(1)}
+                stroke="#ffffff"
+                strokeWidth={(1.2 + (i % 3) * 1.4).toFixed(1)}
+                opacity={(0.22 + pulse * 0.34).toFixed(2)}
+              />
+            );
+          })}
+        </svg>
+      )}
+      {grainAlpha > 0.01 && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: '-160px',
+            backgroundImage:
+              'url("data:image/svg+xml,%3Csvg viewBox=%270 0 160 160%27 xmlns=%27http://www.w3.org/2000/svg%27%3E%3Cfilter id=%27g%27%3E%3CfeTurbulence type=%27fractalNoise%27 baseFrequency=%270.85%27 numOctaves=%272%27 stitchTiles=%27stitch%27/%3E%3C/filter%3E%3Crect width=%27100%25%27 height=%27100%25%27 filter=%27url(%23g)%27/%3E%3C/svg%3E")',
+            backgroundSize: '160px 160px',
+            transform: `translate(${gx}px, ${gy}px)`,
+            opacity: Number((grainAlpha * 0.32).toFixed(3)),
+            mixBlendMode: 'overlay',
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function Title({
   clip,
   project,
@@ -214,7 +345,61 @@ function Title({
             paintOrder: 'stroke fill',
           }}
         >
-          {visible}
+          {p.wordHighlight && animIn !== 'type' ? (() => {
+            const hlColor = String(p.wordHighlightColor || '#fde047');
+            const explicitTimings = Array.isArray(p.wordTimings)
+              ? (p.wordTimings as { word: string; startSec: number; endSec: number }[])
+              : null;
+            if (explicitTimings && explicitTimings.length > 0) {
+              const tSec = frame / Math.max(1, fps);
+              return explicitTimings.map((wt, i) => {
+                const isActive = tSec >= wt.startSec && tSec <= wt.endSec;
+                const isPast = tSec > wt.endSec;
+                return (
+                  <span
+                    key={i}
+                    style={{
+                      display: 'inline-block',
+                      color: isActive ? hlColor : undefined,
+                      opacity: isActive || isPast ? 1 : 0.62,
+                      transform: isActive ? 'scale(1.06)' : undefined,
+                      transformOrigin: 'center bottom',
+                    }}
+                  >
+                    {wt.word}
+                  </span>
+                );
+              });
+            }
+            const tokens = tokenizeCaptionUnits(visible);
+            const weights = tokens.map((tk) => Math.max(1, tk.trim().length));
+            const totalW = weights.reduce((a, b) => a + b, 0);
+            const progressW = (frame / Math.max(1, clip.duration - 1)) * totalW;
+            let acc = 0;
+            return tokens.map((tk, i) => {
+              const startW = acc;
+              acc += weights[i];
+              const isActive = progressW >= startW && progressW <= acc + 0.001;
+              const isPast = progressW > acc + 0.001;
+              if (!tk.trim()) return <React.Fragment key={i}>{tk}</React.Fragment>;
+              return (
+                <span
+                  key={i}
+                  style={{
+                    display: 'inline-block',
+                    color: isActive ? hlColor : undefined,
+                    opacity: isActive || isPast ? 1 : 0.64,
+                    transform: isActive ? 'scale(1.06)' : undefined,
+                    transformOrigin: 'center bottom',
+                  }}
+                >
+                  {tk}
+                </span>
+              );
+            });
+          })() : (
+            visible
+          )}
         </div>
         {editorial && (
           <div
@@ -517,7 +702,16 @@ function Content({
     );
   }
   const motion = clip.props.animation === 'none' ? 1 : 1 + Math.min(frame / (clip.duration || 1), 1) * 0.035;
-  const boxScale = Number(clip.props.scale || 1) * (clip.kind === 'image' ? motion : 1);
+  const cameraBreath = Math.max(0, Math.min(100, Number(clip.props.cameraBreath || 0)));
+  const filmGrain = Math.max(0, Math.min(100, Number(clip.props.filmGrain || 0)));
+  const overlayEffect = String(clip.props.overlayEffect || 'none');
+  const breathAmt = cameraBreath / 100;
+  const bt = frame / Math.max(1, fps);
+  const breathX = breathAmt > 0 ? (Math.sin(bt * 0.85) * 9 + Math.sin(bt * 1.9 + 1.2) * 3) * breathAmt : 0;
+  const breathY = breathAmt > 0 ? Math.cos(bt * 0.72 + 0.5) * 6.5 * breathAmt : 0;
+  const breathRot = breathAmt > 0 ? Math.sin(bt * 0.55) * 0.45 * breathAmt : 0;
+  const breathScale = breathAmt > 0 ? 1 + 0.034 * breathAmt + Math.sin(bt * 0.65) * 0.012 * breathAmt : 1;
+  const boxScale = Number(clip.props.scale || 1) * (clip.kind === 'image' ? motion : 1) * breathScale;
   const mediaStyle: React.CSSProperties = {
     width: '100%',
     height: '100%',
@@ -529,7 +723,7 @@ function Content({
     inset: 0,
     borderRadius,
     overflow: 'hidden',
-    transform: `translate(${Number(clip.props.x || 0)}px,${Number(clip.props.y || 0)}px) rotate(${rotation}deg) scale(${boxScale})`,
+    transform: `translate(${(Number(clip.props.x || 0) + breathX).toFixed(2)}px,${(Number(clip.props.y || 0) + breathY).toFixed(2)}px) rotate(${(rotation + breathRot).toFixed(3)}deg) scale(${boxScale.toFixed(4)})`,
     transformOrigin: 'center center',
     opacity: Number(clip.props.opacity ?? 1),
     filter: filterCss,
@@ -543,6 +737,14 @@ function Content({
           <OffthreadVideo src={src} startFrom={clip.sourceIn} volume={videoVol} style={mediaStyle} />
         ) : (
           <Html5Video src={src} startFrom={clip.sourceIn} volume={videoVol} style={mediaStyle} />
+        )}
+        {(filmGrain > 0 || overlayEffect !== 'none') && (
+          <CinematicFinishOverlay
+            frame={frame}
+            fps={fps}
+            filmGrain={filmGrain}
+            overlayEffect={overlayEffect}
+          />
         )}
         {vignette > 0 && (
           <div
