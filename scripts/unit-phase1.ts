@@ -30,6 +30,17 @@ import {
   splitKeyframesForSplit,
   upsertClipKeyframe,
 } from '../src/core/keyframes';
+import {
+  DEFAULT_SPATIAL_BOOKMARKS,
+  buildSpatialStageProps,
+  computeActorPathState,
+  computeParallaxLayerLayout,
+  computeParallaxPlaneScale,
+  computeSpatialCameraPose,
+  isSpatialClip,
+  isSplatAssetPath,
+  lensMmToFov,
+} from '../src/core/spatialStage';
 import { ProjectStore } from '../electron/store';
 import type { Asset, CodeComponent } from '../src/core/types';
 import {
@@ -921,7 +932,7 @@ assert.ok(
   const coreMatch = toolServiceSrc.match(/export const COCRAFT_CORE_TOOLS = \[([\s\S]*?)\] as const;/);
   assert.ok(coreMatch, 'COCRAFT_CORE_TOOLS exported in electron/tool-service.ts');
   const coreTools = [...coreMatch[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
-  assert.equal(coreTools.length, 19, `Expected 19 canonical shared core tools, got ${coreTools.length}`);
+  assert.equal(coreTools.length, 20, `Expected 20 canonical shared core tools, got ${coreTools.length}`);
   const workerSrc = readFileSync('electron/agent-worker.ts', 'utf8');
   const mcpSrc = readFileSync('scripts/cocraft-mcp.mjs', 'utf8');
   for (const tool of coreTools) {
@@ -946,6 +957,7 @@ assert.ok(
     'cocraft_preview_frame',
     'cocraft_preflight',
     'cocraft_export',
+    'cocraft_bake_spatial_video',
   ]) {
     assert.ok(mcpSrc.includes(`'${mcpTool}'`), `MCP server missing core tool: ${mcpTool}`);
   }
@@ -1757,4 +1769,76 @@ assert.ok(
   );
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 System 1 & Auto-Reframe regression tests');
+// 17. Unified Spatial Stage (2.5D Parallax / Director Camera / Dolly-Zoom / 3DGS Splat / Multi-Camera Bookmarks)
+{
+  // Full-frame 35mm lens -> FOV conversion sanity
+  const fov24 = lensMmToFov(24);
+  const fov35 = lensMmToFov(35);
+  const fov85 = lensMmToFov(85);
+  assert.ok(fov24 > 50 && fov24 < 56, `24mm vertical FOV expected ~53°, got ${fov24}`);
+  assert.ok(fov35 > 35 && fov35 < 41, `35mm vertical FOV expected ~38°, got ${fov35}`);
+  assert.ok(fov85 > 14 && fov85 < 19, `85mm vertical FOV expected ~16°, got ${fov85}`);
+
+  // Hitchcock Dolly-Zoom invariant: apparent half-height at Z=0 stays constant as camera pushes in & FOV widens!
+  const dzEarly = computeSpatialCameraPose({ preset: 'dolly-zoom', time: 0, is25D: true, lensMm: 35 });
+  const dzLate = computeSpatialCameraPose({ preset: 'dolly-zoom', time: 3.0, is25D: true, lensMm: 35 });
+  assert.ok(dzLate.position[2] < dzEarly.position[2] - 0.8, 'dolly-zoom pushes camera closer');
+  assert.ok(dzLate.fov > dzEarly.fov + 8, 'dolly-zoom widens FOV to counter dolly push');
+  const halfHEarly = Math.tan(((dzEarly.fov * Math.PI) / 180) / 2) * dzEarly.position[2];
+  const halfHLate = Math.tan(((dzLate.fov * Math.PI) / 180) / 2) * dzLate.position[2];
+  assert.ok(Math.abs(halfHEarly - halfHLate) < 0.08, `dolly-zoom apparent scale drift too high: ${halfHEarly} vs ${halfHLate}`);
+
+  // Portrait aspect distance compensation & interactive pan/yaw/pitch
+  const landPose = computeSpatialCameraPose({ preset: 'orbit', time: 1, isPortrait: false });
+  const portPose = computeSpatialCameraPose({ preset: 'orbit', time: 1, isPortrait: true });
+  assert.ok(
+    Math.hypot(...portPose.position) > Math.hypot(...landPose.position) * 1.25,
+    'portrait mode pulls camera back cleanly for framing',
+  );
+  const panned = computeSpatialCameraPose({ preset: 'static', time: 0, panX: 0.5, panY: -0.25 });
+  assert.ok(panned.target[0] > 1.0 && panned.target[1] < -0.3, 'camera pan shifts lookAt target');
+
+  // 2.5D multi-layer layout & perspective scale compensation
+  assert.equal(computeParallaxPlaneScale(5, 0), 1);
+  assert.ok(computeParallaxPlaneScale(5, -2) > 1.3, 'background plane scales up to preserve framing');
+  assert.ok(computeParallaxPlaneScale(5, 1.5) < 0.8, 'foreground plane scales down to preserve framing');
+  const layout3 = computeParallaxLayerLayout(3, 1.0);
+  assert.equal(layout3.length, 3);
+  assert.ok(layout3[0].z < layout3[1].z && layout3[1].z < layout3[2].z, '2.5D layers strictly ordered back-to-front');
+
+  // 3DGS splat format detection & unified spatial clip detector
+  assert.equal(isSplatAssetPath('world.spz'), true);
+  assert.equal(isSplatAssetPath('/tmp/scene.SPLAT'), true);
+  assert.equal(isSplatAssetPath('scan.ksplat'), true);
+  assert.equal(isSplatAssetPath('pointcloud.ply'), true);
+  assert.equal(isSplatAssetPath('hero.glb'), false);
+
+  const { createPresetClip, getPreset } = await import('../src/core/presets');
+  const spatialPreset = getPreset('spatial-stage');
+  assert.ok(spatialPreset, 'spatial-stage preset is registered');
+  const spatialClip = createPresetClip('spatial-stage', 0, 90, buildSpatialStageProps({ sceneMode: 'parallax-25d', layerAssetIds: ['a1', 'a2'] }));
+  assert.equal(isSpatialClip(spatialClip, null), true);
+  assert.equal(DEFAULT_SPATIAL_BOOKMARKS.length, 4);
+  assert.deepEqual(DEFAULT_SPATIAL_BOOKMARKS.map((b) => b.shortKey), ['A', 'B', 'C', 'D']);
+
+  // 3D actor blocking trajectory solver (approach, cross, circle-rival & custom Agent coordinates)
+  const appStart = computeActorPathState({ path: 'approach', time: 0, durationSec: 4, baseX: 0, baseZ: 0, baseYaw: 0 });
+  const appEnd = computeActorPathState({ path: 'approach', time: 4, durationSec: 4, baseX: 0, baseZ: 0, baseYaw: 0 });
+  assert.ok(appEnd.z > appStart.z + 2.5, 'approach path advances actor smoothly toward camera');
+  const crossStart = computeActorPathState({ path: 'cross-left-right', time: 0, durationSec: 4, baseX: 0, baseZ: 0, baseYaw: 0 });
+  const crossEnd = computeActorPathState({ path: 'cross-left-right', time: 4, durationSec: 4, baseX: 0, baseZ: 0, baseYaw: 0 });
+  assert.ok(crossStart.x < -2 && crossEnd.x > 2, 'cross-left-right moves actor across stage');
+  const customPath = computeActorPathState({
+    path: 'hold',
+    time: 2,
+    durationSec: 4,
+    baseX: 0,
+    baseZ: 0,
+    baseYaw: 0,
+    customStart: [-2, -2],
+    customEnd: [2, 2],
+  });
+  assert.ok(Math.abs(customPath.x) < 0.05 && Math.abs(customPath.z) < 0.05, 'custom Agent start->end midpoint lands at origin');
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage regression tests');

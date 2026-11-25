@@ -2,6 +2,7 @@ import { PresetContent } from './Presets';
 import { getPreset, isLightHex, resolveProjectStyle } from '../core/presets';
 import { evaluateKeyframeTrack, resolveClipPropsAtFrame } from '../core/keyframes';
 import { ThreeCanvas, TeardownStage } from './ThreeStage';
+import { SpatialStage } from './SpatialStage';
 import RoughPrimitives, { rough } from './RoughPrimitives';
 import React, { useMemo } from 'react';
 import * as Remotion from 'remotion';
@@ -484,7 +485,7 @@ function loadComponent(c: CodeComponent) {
       name === 'three/addons/loaders/GLTFLoader.js'
     )
       return { GLTFLoader };
-    if (name === '@remotion/three') return { ThreeCanvas, TeardownStage };
+    if (name === '@remotion/three') return { ThreeCanvas, TeardownStage, SpatialStage };
     if (name === 'roughjs') return rough;
     if (name === 'cocraft/rough') return RoughPrimitives;
     throw new Error(`组件不能加载 ${name}`);
@@ -653,16 +654,29 @@ function Content({
   if (linkedAsset?.kind === 'model-3d') {
     const modelSrc = mediaUrl(mediaOrigin, linkedAsset.id);
     return (
-      <TeardownStage
+      <SpatialStage
         modelUrl={modelSrc}
+        modelFilename={linkedAsset.name || linkedAsset.path}
         title={String(clip.props.text || clip.name)}
-        subtitle={String(clip.props.subtitle || '三维模型舞台')}
+        subtitle={String(clip.props.subtitle || (linkedAsset.subkind === 'splat-3d' ? '3DGS 空间世界' : '三维模型舞台'))}
         explode={Number(clip.props.explode ?? 0)}
         speed={Number(clip.props.speed ?? 1)}
         cameraPreset={String(clip.props.cameraPreset || 'orbit')}
+        cameraLens={Number(clip.props.cameraLens ?? 35)}
         cameraYaw={Number(clip.props.cameraYaw ?? 0)}
         cameraPitch={Number(clip.props.cameraPitch ?? 0)}
+        cameraDistance={Number(clip.props.cameraDistance ?? 1)}
+        cameraPanX={Number(clip.props.cameraPanX ?? 0)}
+        cameraPanY={Number(clip.props.cameraPanY ?? 0)}
+        lightingPreset={String(clip.props.lightingPreset || 'studio')}
+        lookPreset={String(clip.props.lookPreset || 'cinema')}
+        renderPass={String(clip.props.renderPass || 'beauty')}
+        particles3D={String(clip.props.particles3D || 'none')}
+        dofStrength={Number(clip.props.dofStrength ?? 16)}
+        bloomStrength={Number(clip.props.bloomStrength ?? 20)}
+        animationIndex={Number(clip.props.animationIndex ?? 0)}
         animateExplode={Boolean(clip.props.animateExplode ?? false)}
+        showHud={Boolean(clip.props.showHud ?? false)}
         focusLabel={String(clip.props.focusLabel || linkedAsset.name)}
         accent={String(clip.props.accent || projectStyle?.primaryColor || '#3b82f6')}
         secondary={String(clip.props.secondary || projectStyle?.secondaryColor || '#14b8a6')}

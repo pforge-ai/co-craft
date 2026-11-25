@@ -259,7 +259,7 @@ interface ExplodablePart {
   spinAxis?: 'x' | 'y' | 'z';
 }
 
-function buildProceduralScene(
+export function buildProceduralScene(
   sceneType: string,
   accentHex: string,
   secondaryHex: string,

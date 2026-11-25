@@ -107,7 +107,17 @@ export const CanvasLeftToolbar = React.memo(function CanvasLeftToolbar({
         <button
           type="button"
           className="cc-rail-btn"
-          title="上传本地图片 / 视频 / 音频素材 (U)"
+          title="新建统一空间摄影棚（2.5D 立体 / 导演白模 / 3D 硬件贴屏）"
+          aria-label="新建空间摄影棚"
+          onClick={onCreateRig3D}
+        >
+          <Box size={14} />
+        </button>
+
+        <button
+          type="button"
+          className="cc-rail-btn"
+          title="上传本地图片 / 视频 / 音频 / 3D (.glb/.spz) 素材 (U)"
           aria-label="上传本地素材"
           onClick={onImportMedia}
         >
@@ -214,7 +224,7 @@ export const CanvasLeftToolbar = React.memo(function CanvasLeftToolbar({
             }}
           >
             <span className="cc-menu-item-label">
-              <Box size={13} /> 3D 运镜组件
+              <Box size={13} /> 空间摄影棚（2.5D / 白模 / 3D）
             </span>
           </button>
           <button

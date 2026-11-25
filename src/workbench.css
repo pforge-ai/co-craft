@@ -9131,6 +9131,98 @@ input[type='checkbox']:not(.switch) {
   color: var(--dim);
 }
 
+/* Spatial Stage Director Floating Bar & Inspector Pill Controls */
+.stage-spatial-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(12, 16, 26, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+  z-index: 16;
+  white-space: nowrap;
+}
+.stage-spatial-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.stage-spatial-bar button {
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.05);
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.stage-spatial-bar button:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #f8fafc;
+}
+.stage-spatial-bar button.active {
+  background: color-mix(in srgb, var(--accent) 26%, rgba(15, 23, 42, 0.9));
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  color: #ffffff;
+}
+.stage-spatial-bar button.stage-spatial-capture {
+  background: color-mix(in srgb, var(--accent) 22%, rgba(15, 23, 42, 0.9));
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: #e0f2fe;
+}
+.stage-spatial-sep {
+  width: 1px;
+  height: 14px;
+  background: rgba(148, 163, 184, 0.24);
+}
+
+.ins-pill-row,
+.cc-spatial-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.ins-pill-btn,
+.cc-spatial-pills button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.ins-pill-btn:hover,
+.cc-spatial-pills button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.ins-pill-btn.active,
+.cc-spatial-pills button.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--well));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 
 
 

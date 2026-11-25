@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Crosshair, Lock, Move, RotateCcw } from 'lucide-react';
+import { Camera, Clapperboard, Crosshair, Lock, Move, Plus, RotateCcw } from 'lucide-react';
 import { evaluateKeyframeTrack, upsertClipKeyframe } from '../core/keyframes';
+import {
+  DEFAULT_SPATIAL_BOOKMARKS,
+  SPATIAL_RENDER_PASS_OPTIONS,
+  isSpatialClip,
+} from '../core/spatialStage';
 import { pointerDrag } from '../lib/pointerDrag';
 import { getPreset } from '../core/presets';
 import type { Clip, EditOperation, Project, Sequence } from '../core/types';
@@ -27,6 +32,9 @@ export interface StageOverlayProps {
   onSelect: (id: string | null) => void;
   onEdit: (name: string, ops: EditOperation[]) => void;
   onPin: (pin: { x: number; y: number; frame: number; clipId?: string }) => void;
+  onCaptureSpatialMultiPass?: (clip: Clip) => void;
+  onBakeSpatialVideo?: (clip: Clip) => void;
+  onSpawnCameraShot?: (clip: Clip) => void;
 }
 
 interface StageBox {
@@ -135,6 +143,9 @@ export function StageOverlay({
   onSelect,
   onEdit,
   onPin,
+  onCaptureSpatialMultiPass,
+  onBakeSpatialVideo,
+  onSpawnCameraShot,
 }: StageOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -235,8 +246,7 @@ export function StageOverlay({
   const selectedClip = visibleAtFrame.find((c) => c.id === selectedId);
   const editingClip = editingClipId ? visibleAtFrame.find((c) => c.id === editingClipId) : undefined;
   const linkedAsset = selectedClip?.assetId ? project?.assets.find((a) => a.id === selectedClip.assetId) : undefined;
-  const presetId = String(selectedClip?.props.presetId || '');
-  const is3DStage = Boolean(selectedClip && (presetId === 'teardown-3d' || linkedAsset?.kind === 'model-3d'));
+  const is3DStage = isSpatialClip(selectedClip, linkedAsset);
 
   // Compute fitted stage rectangle inside preview container (with live DOM fallback for first paint after empty -> active)
   const effectiveW = bounds.width || containerRef.current?.clientWidth || 0;
@@ -291,19 +301,28 @@ export function StageOverlay({
     e.stopPropagation();
     if (clip.locked) return;
     const clipAsset = clip.assetId ? project?.assets.find((a) => a.id === clip.assetId) : undefined;
-    const orbit3D = clip.props.presetId === 'teardown-3d' || clipAsset?.kind === 'model-3d';
+    const orbit3D = isSpatialClip(clip, clipAsset);
     const localFrame = Math.max(0, Math.min(Math.max(0, clip.duration - 1), frame - clip.start));
     const startClientX = e.clientX;
     const startClientY = e.clientY;
     if (orbit3D) {
+      const isPanMode = e.shiftKey;
       const origYaw = Math.round(
         evaluateKeyframeTrack(clip.keyframes?.cameraYaw, localFrame, Number(clip.props.cameraYaw || 0)),
       );
       const origPitch = Math.round(
         evaluateKeyframeTrack(clip.keyframes?.cameraPitch, localFrame, Number(clip.props.cameraPitch || 0)),
       );
+      const origPanX = Number(
+        evaluateKeyframeTrack(clip.keyframes?.cameraPanX, localFrame, Number(clip.props.cameraPanX || 0)),
+      );
+      const origPanY = Number(
+        evaluateKeyframeTrack(clip.keyframes?.cameraPanY, localFrame, Number(clip.props.cameraPanY || 0)),
+      );
       let nextYaw = origYaw;
       let nextPitch = origPitch;
+      let nextPanX = origPanX;
+      let nextPanY = origPanY;
       let moved = false;
       cleanupRef.current?.();
       cleanupRef.current = pointerDrag(
@@ -311,15 +330,30 @@ export function StageOverlay({
         (cx, cy) => {
           if (Math.hypot(cx - startClientX, cy - startClientY) > 2) moved = true;
           if (!moved) return;
-          const wrapYaw = Math.round(origYaw + (cx - startClientX) * 0.45);
-          nextYaw = Math.max(-180, Math.min(180, wrapYaw));
-          nextPitch = Math.max(-60, Math.min(60, Math.round(origPitch + (cy - startClientY) * 0.35)));
-          setLiveOrbit({ clipId: clip.id, yaw: nextYaw, pitch: nextPitch });
-          onLiveTransform?.({ clipId: clip.id, props: { cameraYaw: nextYaw, cameraPitch: nextPitch } });
+          if (isPanMode) {
+            nextPanX = Math.max(-2.5, Math.min(2.5, Number((origPanX - (cx - startClientX) * 0.004).toFixed(2))));
+            nextPanY = Math.max(-2.0, Math.min(2.0, Number((origPanY + (cy - startClientY) * 0.004).toFixed(2))));
+            onLiveTransform?.({ clipId: clip.id, props: { cameraPanX: nextPanX, cameraPanY: nextPanY } });
+          } else {
+            const wrapYaw = Math.round(origYaw + (cx - startClientX) * 0.45);
+            nextYaw = Math.max(-180, Math.min(180, wrapYaw));
+            nextPitch = Math.max(-60, Math.min(60, Math.round(origPitch + (cy - startClientY) * 0.35)));
+            setLiveOrbit({ clipId: clip.id, yaw: nextYaw, pitch: nextPitch });
+            onLiveTransform?.({ clipId: clip.id, props: { cameraYaw: nextYaw, cameraPitch: nextPitch } });
+          }
         },
         () => {
           setLiveOrbit(null);
-          if (moved && (nextYaw !== origYaw || nextPitch !== origPitch)) {
+          if (isPanMode && moved && (nextPanX !== origPanX || nextPanY !== origPanY)) {
+            let nextKf = clip.keyframes;
+            if (nextKf?.cameraPanX?.length) nextKf = upsertClipKeyframe(nextKf, 'cameraPanX', localFrame, nextPanX);
+            if (nextKf?.cameraPanY?.length) nextKf = upsertClipKeyframe(nextKf, 'cameraPanY', localFrame, nextPanY);
+            const changes: Partial<Clip> = { props: { cameraPanX: nextPanX, cameraPanY: nextPanY } };
+            if (nextKf !== clip.keyframes) changes.keyframes = nextKf;
+            onEdit(`平移三维机位「${clip.name}」`, [
+              { type: 'updateClip', sequenceId: sequence.id, clipId: clip.id, changes },
+            ]);
+          } else if (!isPanMode && moved && (nextYaw !== origYaw || nextPitch !== origPitch)) {
             let nextKf = clip.keyframes;
             if (nextKf?.cameraYaw?.length) nextKf = upsertClipKeyframe(nextKf, 'cameraYaw', localFrame, nextYaw);
             if (nextKf?.cameraPitch?.length) nextKf = upsertClipKeyframe(nextKf, 'cameraPitch', localFrame, nextPitch);
@@ -597,8 +631,8 @@ export function StageOverlay({
                 <span>{selectedClip.name}</span>
                 {is3DStage ? (
                   <small>
-                    视角 {Math.round(activeYaw)}° / {Math.round(activePitch)}°
-                    {isOrbitLive ? '' : ' · 拖拽旋转'}
+                    {Math.round(Number(selectedClip.props.cameraLens ?? 35))}mm · {Math.round(activeYaw)}° /{' '}
+                    {Math.round(activePitch)}°{isOrbitLive ? '' : ' · 拖转 / ⇧平移'}
                   </small>
                 ) : (
                   (activeX !== 0 || activeY !== 0 || activeScale !== 1) && (
@@ -629,7 +663,16 @@ export function StageOverlay({
                             clipId: selectedClip.id,
                             changes: {
                               props: is3DStage
-                                ? { x: 0, y: 0, scale: 1, cameraYaw: 0, cameraPitch: 0 }
+                                ? {
+                                    x: 0,
+                                    y: 0,
+                                    scale: 1,
+                                    cameraYaw: 0,
+                                    cameraPitch: 0,
+                                    cameraPanX: 0,
+                                    cameraPanY: 0,
+                                    cameraDistance: 1,
+                                  }
                                 : { x: 0, y: 0, scale: 1 },
                             },
                           },
@@ -640,6 +683,110 @@ export function StageOverlay({
                     </button>
                   )}
               </div>
+              {!selectedClip.locked && is3DStage && (
+                <div
+                  className="stage-spatial-bar"
+                  role="toolbar"
+                  aria-label="三维空间导演快捷控制"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="stage-spatial-group">
+                    {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => {
+                      const activeBm = String(selectedClip.props.activeBookmarkId || '') === bm.id;
+                      return (
+                        <button
+                          key={bm.id}
+                          type="button"
+                          className={activeBm ? 'active' : ''}
+                          title={`切换至 ${bm.label} (${bm.cameraLens}mm)`}
+                          onClick={() =>
+                            onEdit(`切换机位「${bm.label}」`, [
+                              {
+                                type: 'updateClip',
+                                sequenceId: sequence.id,
+                                clipId: selectedClip.id,
+                                changes: {
+                                  props: {
+                                    activeBookmarkId: bm.id,
+                                    cameraPreset: bm.cameraPreset,
+                                    cameraLens: bm.cameraLens,
+                                    cameraYaw: bm.cameraYaw,
+                                    cameraPitch: bm.cameraPitch,
+                                    cameraDistance: bm.cameraDistance,
+                                    cameraPanX: bm.cameraPanX ?? 0,
+                                    cameraPanY: bm.cameraPanY ?? 0,
+                                  },
+                                },
+                              },
+                            ])
+                          }
+                        >
+                          {bm.shortKey}机
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span className="stage-spatial-sep" />
+                  <div className="stage-spatial-group">
+                    {SPATIAL_RENDER_PASS_OPTIONS.slice(0, 4).map((rp) => {
+                      const activePass = String(selectedClip.props.renderPass || 'beauty') === rp.id;
+                      return (
+                        <button
+                          key={rp.id}
+                          type="button"
+                          className={activePass ? 'active' : ''}
+                          title={rp.label}
+                          onClick={() =>
+                            onEdit(`切换渲染通道「${rp.label}」`, [
+                              {
+                                type: 'updateClip',
+                                sequenceId: sequence.id,
+                                clipId: selectedClip.id,
+                                changes: { props: { renderPass: rp.id } },
+                              },
+                            ])
+                          }
+                        >
+                          {rp.short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {onCaptureSpatialMultiPass && (
+                    <>
+                      <span className="stage-spatial-sep" />
+                      <button
+                        type="button"
+                        className="stage-spatial-capture"
+                        title="一键将当前机位拍出「构图彩图 + 深度图 Depth + 法线图 Normal」三通道参考资产送入创造画布"
+                        onClick={() => onCaptureSpatialMultiPass(selectedClip)}
+                      >
+                        <Camera size={11} /> 拍彩图+深度
+                      </button>
+                    </>
+                  )}
+                  {onBakeSpatialVideo && (
+                    <button
+                      type="button"
+                      className="stage-spatial-capture"
+                      title="把当前 3D 摄像机运镜、人物动作、走线与环境直接录制成真实 MP4 预演视频送入画布，可直接用于动作迁移/视频换人/参考生视频"
+                      onClick={() => onBakeSpatialVideo(selectedClip)}
+                    >
+                      <Clapperboard size={11} /> 录预演视频
+                    </button>
+                  )}
+                  {onSpawnCameraShot && (
+                    <button
+                      type="button"
+                      title="保留原镜头不变，以当前调好的机位视角在时间线末尾新添一镜（实现真「一景多机位」）"
+                      onClick={() => onSpawnCameraShot(selectedClip)}
+                    >
+                      <Plus size={11} /> 新添此机位镜
+                    </button>
+                  )}
+                </div>
+              )}
               {!selectedClip.locked && !is3DStage && (
                 <>
                   <span

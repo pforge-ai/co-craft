@@ -131,6 +131,9 @@ export function KeyframeSection({
   const formatPropVal = (prop: KeyframeProperty, val: number) => {
     if (prop === 'scale' || prop === 'opacity' || prop === 'volume') return `${Math.round(val * 100)}%`;
     if (prop === 'rotation' || prop === 'cameraYaw' || prop === 'cameraPitch') return `${Math.round(val)}°`;
+    if (prop === 'cameraLens') return `${Math.round(val)}mm`;
+    if (prop === 'cameraDistance') return `${val.toFixed(2)}x`;
+    if (prop === 'cameraPanX' || prop === 'cameraPanY') return `${val.toFixed(2)}`;
     if (prop === 'explode') return `${Math.round(val * 100)}%`;
     return `${Math.round(val)}px`;
   };

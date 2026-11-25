@@ -3,6 +3,7 @@ import {
   AtSign,
   AudioLines,
   BookmarkPlus,
+  Box,
   Clapperboard,
   EyeOff,
   Film,
@@ -41,6 +42,7 @@ interface CanvasMultiBarProps {
   }) => void;
   onBridgeTwoVideos?: (videoAId: string, videoBId: string, placement: CanvasPt) => void;
   onCombineVisualAudio?: (visualAssetId: string, audioAssetId: string) => void;
+  onCreateSpatial25D?: (imageAssetIds: string[], placement: CanvasPt) => void;
   onTriageAssets?: (assetIds: string[]) => void;
   onAutoTagAssets?: (assetIds: string[]) => void;
   onCreateGroup: (keys: string[]) => void;
@@ -63,6 +65,7 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
   onSpawnGeneratorNode,
   onBridgeTwoVideos,
   onCombineVisualAudio,
+  onCreateSpatial25D,
   onTriageAssets,
   onAutoTagAssets,
   onCreateGroup,
@@ -102,6 +105,7 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
   const canCombineVisualAudio =
     visualAssetIds.length === 1 && audioAssetIds.length === 1 && Boolean(onCombineVisualAudio);
   const allSelectedAssetIds = Array.from(new Set([...imageAssetIds, ...videoAssetIds, ...audioAssetIds]));
+  const canSpatial25D = imgCount >= 2 && imgCount <= 4 && Boolean(onCreateSpatial25D);
   const canTriageImages = imgCount >= 2 && Boolean(onTriageAssets);
   const canAutoTag = allSelectedAssetIds.length >= 1 && Boolean(onAutoTagAssets);
   const hasAnyAiOrCombo =
@@ -112,6 +116,7 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
     canLipSync ||
     canBridgeTwoVideos ||
     canCombineVisualAudio ||
+    canSpatial25D ||
     canTriageImages ||
     canAutoTag;
   const promptSummary = labels.slice(0, 4).join(' + ');
@@ -327,6 +332,17 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
           onClick={() => onCombineVisualAudio?.(visualAssetIds[0], audioAssetIds[0])}
         >
           <AudioLines size={11} /> 合为带声分镜
+        </button>
+      )}
+
+      {canSpatial25D && (
+        <button
+          type="button"
+          className="cc-multi-ai"
+          title="零视频费把所选 2–4 张平面图按 Z 轴纵深立进统一空间摄影棚，自动配真 3D 电影推镜与体积粒子（¥0）"
+          onClick={() => onCreateSpatial25D?.(imageAssetIds.slice(0, 4), anchorPlacement)}
+        >
+          <Box size={11} /> 立为 2.5D 空间镜
         </button>
       )}
 

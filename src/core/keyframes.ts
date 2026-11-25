@@ -24,6 +24,10 @@ export const KEYFRAME_PROPERTY_LABELS: Record<KeyframeProperty, string> = {
   volume: '音量',
   cameraYaw: '3D 水平角',
   cameraPitch: '3D 俯仰角',
+  cameraDistance: '3D 推拉距离',
+  cameraLens: '镜头焦段 (mm)',
+  cameraPanX: '3D 水平平移',
+  cameraPanY: '3D 垂直平移',
   explode: '3D 爆炸拆解',
 };
 

@@ -274,6 +274,24 @@ const TOOLS = [
     },
   },
   {
+    name: 'cocraft_bake_spatial_video',
+    description: 'Render a choreographed 3D Spatial Stage (camera, actorAction, actorPath, environmentPreset, 2.5D layers, .glb, or .spz) into a real local MP4 video asset for timeline use or downstream AI video reference/motion-transfer.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sequenceId: { type: 'string' },
+        clipId: { type: 'string' },
+        vaultItemId: { type: 'string' },
+        assetId: { type: 'string' },
+        name: { type: 'string' },
+        durationSeconds: { type: 'number', minimum: 1, maximum: 10 },
+        pass: { type: 'string', enum: ['beauty', 'clay', 'depth', 'normal', 'wireframe'] },
+        scale: { type: 'number', minimum: 0.4, maximum: 1 },
+        props: { type: 'object' },
+      },
+    },
+  },
+  {
     name: 'cocraft_run_agent',
     description: 'Send a creative/editing prompt to CoCraft built-in Pi Agent using the user-configured agent model and wait for completion.',
     inputSchema: {
@@ -325,6 +343,7 @@ const TOOL_TO_ACTION = {
   cocraft_preview_frame: 'preview.frame',
   cocraft_preflight: 'export.preflight',
   cocraft_export: 'export.start',
+  cocraft_bake_spatial_video: 'stage.bakeSpatialVideo',
   cocraft_run_agent: 'agent.run',
   cocraft_undo: 'project.undo',
   cocraft_redo: 'project.redo',

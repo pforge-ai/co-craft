@@ -1,6 +1,8 @@
 import React from 'react';
 import {
   AudioLines,
+  Box,
+  Camera,
   Clapperboard,
   Film,
   Layers,
@@ -48,6 +50,10 @@ interface CanvasDropMenuProps {
   }) => void;
   onAppendShot: (fromItem?: VaultItem) => void;
   onAppendToTimeline: (keys: string[]) => void;
+  onBakeSpatialToAiVideo?: (sourceKey: string, placement: CanvasPt) => void;
+  onCapturePairToAiVideo?: (sourceKey: string, placement: CanvasPt) => void;
+  onCaptureRefToAiImage?: (sourceKey: string, placement: CanvasPt) => void;
+  onSpawnSpatialMultiCam?: (sourceKey: string) => void;
   onEdit: (name: string, ops: EditOperation[]) => Promise<void>;
 }
 
@@ -64,6 +70,10 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
   onSpawnGeneratorNode,
   onAppendShot,
   onAppendToTimeline,
+  onBakeSpatialToAiVideo,
+  onCapturePairToAiVideo,
+  onCaptureRefToAiImage,
+  onSpawnSpatialMultiCam,
   onEdit,
 }: CanvasDropMenuProps) {
   const sk = dropMenu.sourceKey;
@@ -78,6 +88,11 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
     : undefined;
 
   const isTextNode = srcEnt?.entityKind === 'text';
+  const isSpatialSource = Boolean(
+    srcEnt?.rig?.presetId === 'spatial-stage' ||
+      srcEnt?.rig?.presetId === 'teardown-3d' ||
+      srcAsset?.kind === 'model-3d',
+  );
   const rawText = isTextNode && srcEnt ? (textDrafts[srcEnt.id] ?? srcEnt.textContent ?? '').trim() : '';
 
   const hasVisualRef = Boolean(
@@ -104,7 +119,67 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
       style={{ left: dropMenu.screenX, top: dropMenu.screenY }}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="cc-menu-group">就地创建下游转换节点</div>
+      <div className="cc-menu-group">
+        {isSpatialSource ? '3D 空间摄影棚 → AI 视频 / 图像闭环' : '就地创建下游转换节点'}
+      </div>
+
+      {isSpatialSource && (
+        <>
+          {onBakeSpatialToAiVideo && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onBakeSpatialToAiVideo(sk, placement);
+              }}
+            >
+              <span className="cc-menu-item-label">
+                <Clapperboard size={13} /> 录 3D 预演视频 → 动作迁移 / 参考生视频
+              </span>
+            </button>
+          )}
+          {onCapturePairToAiVideo && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onCapturePairToAiVideo(sk, placement);
+              }}
+            >
+              <span className="cc-menu-item-label">
+                <Box size={13} /> A机→B机双拍 → 首尾帧生视频
+              </span>
+            </button>
+          )}
+          {onCaptureRefToAiImage && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onCaptureRefToAiImage(sk, placement);
+              }}
+            >
+              <span className="cc-menu-item-label">
+                <Camera size={13} /> 拍当前机位+深度图 → AI 风格重绘
+              </span>
+            </button>
+          )}
+          {onSpawnSpatialMultiCam && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onSpawnSpatialMultiCam(sk);
+              }}
+            >
+              <span className="cc-menu-item-label">
+                <Film size={13} /> 一键派生 A/B/C 三机位分镜组
+              </span>
+            </button>
+          )}
+          <div className="cc-menu-divider" />
+        </>
+      )}
 
       {isTextNode && (
         <>

@@ -202,7 +202,7 @@ export async function importMedia(
     ? 'image'
     : ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'].includes(ext)
       ? 'audio'
-      : ['.glb', '.gltf'].includes(ext)
+      : ['.glb', '.gltf', '.spz', '.splat', '.ksplat', '.ply'].includes(ext)
         ? 'model-3d'
         : 'video';
   const id = existingId || uid('asset');
@@ -267,7 +267,12 @@ export async function importMedia(
     name: basename(file),
     kind,
     category: kind === 'model-3d' ? 'rig' : 'media',
-    subkind: kind === 'model-3d' ? 'model-3d' : 'media',
+    subkind:
+      kind === 'model-3d'
+        ? ['.spz', '.splat', '.ksplat', '.ply'].includes(ext)
+          ? 'splat-3d'
+          : 'model-3d'
+        : 'media',
     path: file,
     duration,
     sha256,

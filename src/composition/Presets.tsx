@@ -3,6 +3,7 @@ import { useCurrentFrame, useVideoConfig } from 'remotion';
 import type { Clip, Project } from '../core/types';
 import { getPreset, isLightHex, phaseAtSecond, resolveProjectStyle } from '../core/presets';
 import { TeardownStage } from './ThreeStage';
+import { SpatialStage } from './SpatialStage';
 import { SeeCodeRig, TinychartsRig, WhiteboardSketchRig, AnatomyRig, ScreenFocusRig } from './ScienceRigs';
 
 const family = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif';
@@ -542,6 +543,10 @@ export interface PresetFrameProps {
   props?: Record<string, unknown>;
   assetUrl?: string;
   assetKind?: 'video' | 'image' | 'audio' | 'model-3d';
+  assetFilename?: string;
+  project?: Project;
+  mediaOrigin?: string;
+  standalone?: boolean;
   sourceIn?: number;
   videoVolume?: number | ((f: number) => number);
 }
@@ -555,6 +560,10 @@ export function PresetFrame({
   props: overrides = {},
   assetUrl,
   assetKind,
+  assetFilename,
+  project,
+  mediaOrigin,
+  standalone = true,
   sourceIn = 0,
   videoVolume = 1,
 }: PresetFrameProps) {
@@ -1469,28 +1478,85 @@ export function PresetFrame({
         </div>
       </>
     );
-  } else if (presetId === 'teardown-3d') {
+  } else if (presetId === 'spatial-stage' || presetId === 'teardown-3d') {
+    const rawLayerIds = Array.isArray(p.layerAssetIds)
+      ? (p.layerAssetIds as unknown[]).map(String).filter(Boolean)
+      : [];
+    const resolvedLayerUrls: string[] = [];
+    if (mediaOrigin && rawLayerIds.length > 0) {
+      for (const lid of rawLayerIds.slice(0, 4)) {
+        const a = project?.assets.find((item) => item.id === lid);
+        if (a?.kind === 'video') {
+          resolvedLayerUrls.push(
+            `${mediaOrigin}/media/${encodeURIComponent(lid)}?frame=${standalone ? 0 : Math.max(0, Math.round(frame))}&fps=${fps}`,
+          );
+        } else {
+          resolvedLayerUrls.push(`${mediaOrigin}/media/${encodeURIComponent(lid)}`);
+        }
+      }
+    } else if (assetKind === 'image' && assetUrl) {
+      resolvedLayerUrls.push(assetUrl);
+    }
+    const screenId = typeof p.screenAssetId === 'string' && p.screenAssetId ? p.screenAssetId : undefined;
+    let resolvedScreenUrl: string | undefined;
+    if (screenId && mediaOrigin) {
+      const sa = project?.assets.find((item) => item.id === screenId);
+      resolvedScreenUrl =
+        sa?.kind === 'video'
+          ? `${mediaOrigin}/media/${encodeURIComponent(screenId)}?frame=${standalone ? 0 : Math.max(0, Math.round(frame))}&fps=${fps}`
+          : `${mediaOrigin}/media/${encodeURIComponent(screenId)}`;
+    } else if (assetKind === 'image' && assetUrl) {
+      resolvedScreenUrl = assetUrl;
+    }
+    const isLegacyTeardown = presetId === 'teardown-3d';
     content = (
-      <TeardownStage
+      <SpatialStage
         title={text}
         subtitle={subtitle}
-        sceneType={textOf(p, 'sceneType', 'turbine')}
+        sceneType={textOf(p, 'sceneType', isLegacyTeardown ? 'turbine' : 'parallax-25d')}
         lightingPreset={textOf(p, 'lightingPreset', 'studio')}
-        cameraPreset={textOf(p, 'cameraPreset', 'orbit')}
+        lookPreset={textOf(p, 'lookPreset', 'cinema')}
+        renderPass={textOf(p, 'renderPass', 'beauty')}
+        cameraPreset={textOf(p, 'cameraPreset', isLegacyTeardown ? 'orbit' : 'dolly-in')}
+        cameraLens={Number(p.cameraLens ?? 35)}
         cameraYaw={Number(p.cameraYaw ?? 0)}
         cameraPitch={Number(p.cameraPitch ?? 0)}
-        explode={Number(p.explode ?? 0.65)}
+        cameraDistance={Number(p.cameraDistance ?? 1)}
+        cameraPanX={Number(p.cameraPanX ?? 0)}
+        cameraPanY={Number(p.cameraPanY ?? 0)}
+        explode={Number(p.explode ?? (isLegacyTeardown ? 0.65 : 0))}
         speed={Number(p.speed ?? 1)}
-        animateExplode={Boolean(p.animateExplode ?? true)}
+        animateExplode={Boolean(p.animateExplode ?? isLegacyTeardown)}
+        particles3D={textOf(p, 'particles3D', isLegacyTeardown ? 'none' : 'dust')}
+        depthStrength={Number(p.depthStrength ?? 0.65)}
+        depthSpread={Number(p.depthSpread ?? 1.0)}
+        dofStrength={Number(p.dofStrength ?? (isLegacyTeardown ? 10 : 24))}
+        bloomStrength={Number(p.bloomStrength ?? 22)}
+        animationIndex={Number(p.animationIndex ?? 0)}
+        blockingPose={textOf(p, 'blockingPose', 'standoff')}
+        actorAction={textOf(p, 'actorAction', 'walk')}
+        actorPath={textOf(p, 'actorPath', 'approach')}
+        environmentPreset={textOf(p, 'environmentPreset', 'rooftop-night')}
+        actorStartX={p.actorStartX !== undefined ? Number(p.actorStartX) : undefined}
+        actorStartZ={p.actorStartZ !== undefined ? Number(p.actorStartZ) : undefined}
+        actorEndX={p.actorEndX !== undefined ? Number(p.actorEndX) : undefined}
+        actorEndZ={p.actorEndZ !== undefined ? Number(p.actorEndZ) : undefined}
+        durationSec={Math.max(1, duration / Math.max(1, fps))}
+        deviceType={textOf(p, 'deviceType', 'phone')}
+        showHud={isLegacyTeardown ? p.showHud !== false : Boolean(p.showHud)}
         focusLabel={textOf(p, 'focusLabel', '')}
         accent={accent}
         secondary={secondary}
         surface={textOf(p, 'surface', 'dark')}
         modelUrl={assetKind === 'model-3d' ? assetUrl : undefined}
+        modelFilename={assetKind === 'model-3d' ? assetFilename : undefined}
+        layerUrls={resolvedLayerUrls}
+        screenUrl={resolvedScreenUrl}
         frame={frame}
         fps={fps}
         width={w}
         height={h}
+        standalone={standalone}
       />
     );
   } else if (presetId === 'seecode-architecture') {
@@ -1560,6 +1626,10 @@ export function PresetContent({
       props={resolvedProps}
       assetUrl={assetUrl}
       assetKind={linked?.kind}
+      assetFilename={linked?.name || linked?.path}
+      project={project}
+      mediaOrigin={mediaOrigin}
+      standalone={false}
       sourceIn={clip.sourceIn}
       videoVolume={videoVolume}
     />

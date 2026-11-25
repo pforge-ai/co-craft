@@ -753,7 +753,9 @@ export const AssetExplorer = React.memo(function AssetExplorer({
                                 {a.kind === 'video'
                                   ? `${a.duration.toFixed(1)}s`
                                   : a.kind === 'model-3d'
-                                    ? 'GLB'
+                                    ? a.subkind === 'splat-3d' || /\.(spz|splat|ksplat|ply)$/i.test(a.name)
+                                      ? '3DGS'
+                                      : 'GLB'
                                     : '图片'}
                               </span>
                               {uses.length > 0 && <span className="ae-card-use">{uses.length}x</span>}

@@ -37,7 +37,15 @@ export function formatAssetCardMeta(asset: Asset): string {
     if (asset.width && asset.height) return `${asset.width}×${asset.height}`;
     return '图片';
   }
-  if (asset.kind === 'model-3d') return 'GLB';
+  if (asset.kind === 'model-3d') {
+    if (
+      asset.subkind === 'splat-3d' ||
+      /\.(spz|splat|ksplat|ply)$/i.test(asset.name || asset.path || '')
+    ) {
+      return '3DGS';
+    }
+    return 'GLB';
+  }
   if (asset.duration > 0) return `${asset.duration.toFixed(1)}s`;
   return '';
 }

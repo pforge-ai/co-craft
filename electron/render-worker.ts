@@ -37,6 +37,7 @@ port.on('message', async ({ data }: any) => {
     if (!serveUrl) throw new Error('合成引擎未就绪，请先运行 npm run build');
     const inputProps = data.props;
     const binariesDirectory = data.binariesDirectory;
+    const chromiumOptions = process.platform === 'darwin' ? { gl: 'angle' as const } : undefined;
     send({ type: 'progress', progress: 0.03, stage: '读取固定版本' });
     const composition = await selectComposition({
       serveUrl,
@@ -44,6 +45,7 @@ port.on('message', async ({ data }: any) => {
       inputProps,
       browserExecutable,
       binariesDirectory,
+      chromiumOptions,
     });
     if (data.still) {
       await renderStill({
@@ -54,6 +56,7 @@ port.on('message', async ({ data }: any) => {
         frame: data.frame || 0,
         browserExecutable,
         binariesDirectory,
+        chromiumOptions,
         imageFormat: 'png',
         scale: data.scale || 0.5,
       });
@@ -66,6 +69,7 @@ port.on('message', async ({ data }: any) => {
         outputLocation: temporary,
         browserExecutable,
         binariesDirectory,
+        chromiumOptions,
         crf: data.crf || 20,
         pixelFormat: 'yuv420p',
         scale: data.scale || 1,

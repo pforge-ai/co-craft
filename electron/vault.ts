@@ -602,12 +602,18 @@ export class GlobalVault {
     }
 
     if (gItem.rig?.componentSource) {
+      const primitiveProps: Record<string, string | number | boolean> = {};
+      for (const [k, v] of Object.entries(gItem.rig.props || {})) {
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+          primitiveProps[k] = v;
+        }
+      }
       compiledComp = await compileComponent(
         gItem.rig.componentSource,
         uid('component'),
         gItem.rig.componentName || gItem.name,
         store.path,
-        gItem.rig.props || {},
+        primitiveProps,
       );
       ops.push({ type: 'putComponent', component: compiledComp });
     }

@@ -60,6 +60,15 @@ import {
   resolveNonOverlappingCanvasLayout,
 } from '../lib/canvasLayout';
 import { mediaUrl } from '../composition/Film';
+import {
+  buildSpatialStageProps,
+  DEFAULT_SPATIAL_BOOKMARKS,
+  SPATIAL_ACTOR_ACTION_OPTIONS,
+  SPATIAL_ACTOR_PATH_OPTIONS,
+  SPATIAL_ENVIRONMENT_OPTIONS,
+  SPATIAL_RENDER_PASS_OPTIONS,
+  type SpatialSceneMode,
+} from '../core/spatialStage';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
 import { CanvasQuickLook } from './CanvasQuickLook';
 import { CanvasUtilityControls } from './CanvasUtilityControls';
@@ -205,6 +214,28 @@ interface CreateCanvasProps {
   onTriageAssets?: (assetIds: string[]) => Promise<void>;
   onAutoTagAssets?: (assetIds: string[]) => Promise<void>;
   onAutoReframeVertical?: () => Promise<void>;
+  onBakeSpatialVideo?: (opts: {
+    vaultItemId?: string;
+    assetId?: string;
+    clipId?: string;
+    durationSeconds?: number;
+    pass?: string;
+    placement?: Pt;
+  }) => Promise<import('../core/types').Asset | undefined>;
+  onCaptureSpatialPair?: (opts: {
+    vaultItemId?: string;
+    assetId?: string;
+    clipId?: string;
+    startBookmarkId?: string;
+    endBookmarkId?: string;
+    placement?: Pt;
+  }) => Promise<{ startAsset: import('../core/types').Asset; endAsset: import('../core/types').Asset } | undefined>;
+  onCaptureSpatialReference?: (opts: {
+    vaultItemId?: string;
+    assetId?: string;
+    passes?: string[];
+    placement?: Pt;
+  }) => Promise<{ asset?: import('../core/types').Asset; captured?: { pass: string; asset: import('../core/types').Asset }[] } | undefined>;
 }
 
 export function CreateCanvas({
@@ -247,6 +278,9 @@ export function CreateCanvas({
   onTriageAssets,
   onAutoTagAssets,
   onAutoReframeVertical,
+  onBakeSpatialVideo,
+  onCaptureSpatialPair,
+  onCaptureSpatialReference,
 }: CreateCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const omnibarInputRef = useRef<HTMLTextAreaElement>(null);
@@ -1463,28 +1497,195 @@ export function CreateCanvas({
     spawnGeneratorNode,
   ]);
 
-  async function addQuickCanvasRigNode(presetId: string, role: VaultItem['role'], label: string) {
+  async function addQuickCanvasRigNode(
+    presetId: string,
+    role: VaultItem['role'],
+    label: string,
+    extraProps?: Record<string, unknown>,
+    derivedFrom?: VaultItem['derivedFrom'],
+    placement?: { x: number; y: number },
+  ) {
     setAddMenuOpen(false);
     const def = getPreset(presetId);
+    const isThree = presetId === 'spatial-stage' || presetId === 'teardown-3d';
     const item: VaultItem = {
       id: uid('pvault'),
       name: label,
-      entityKind: presetId === 'teardown-3d' ? 'three' : 'component',
+      entityKind: isThree ? 'three' : 'component',
       role,
-      tags: [],
+      tags: isThree ? ['空间摄影棚', 'L1零视频费'] : [],
       category: 'rig',
-      subkind: presetId === 'teardown-3d' ? 'three-rig' : 'motion-rig',
+      subkind: isThree ? 'three-rig' : 'motion-rig',
       description: def?.description || label,
+      derivedFrom,
       rig: {
         presetId,
-        props: clone(def?.defaultProps || {}),
+        props: { ...clone(def?.defaultProps || {}), ...(extraProps || {}) },
       },
       version: 1,
       updatedAt: new Date().toISOString(),
     };
-    await onEdit(`新建画布节点「${label}」`, [{ type: 'putVaultItem', item }]);
+    const ops: EditOperation[] = [{ type: 'putVaultItem', item }];
+    if (placement) {
+      const nextLayout = {
+        ...(project.canvasLayout || {}),
+        [`ent:${item.id}`]: { x: Math.round(placement.x), y: Math.round(placement.y) },
+      };
+      ops.push({ type: 'updateProject', changes: { canvasLayout: nextLayout } });
+    }
+    await onEdit(`新建画布节点「${label}」`, ops);
     setSelectedNodeIds([`ent:${item.id}`]);
     setRigPopoverFor(item.id);
+  }
+
+  async function createSpatialStageFromAssets(
+    assetIds: string[],
+    sceneMode: SpatialSceneMode,
+    placement?: { x: number; y: number },
+  ) {
+    setDeriveMenuFor(null);
+    const validAssets = assetIds
+      .map((id) => project.assets.find((a) => a.id === id))
+      .filter((a): a is Project['assets'][number] => Boolean(a));
+    if (!validAssets.length) return;
+    const isDevice = sceneMode === 'device-showcase';
+    const label = isDevice
+      ? `3D 贴屏 · ${formatCanvasDisplayName(validAssets[0].name, true)}`
+      : validAssets.length > 1
+        ? `2.5D 多层空间镜 (${validAssets.length}层)`
+        : `2.5D 空间镜 · ${formatCanvasDisplayName(validAssets[0].name, true)}`;
+    const props = buildSpatialStageProps({
+      sceneMode,
+      title: label,
+      layerAssetIds: isDevice ? undefined : validAssets.map((a) => a.id),
+      screenAssetId: isDevice ? validAssets[0].id : undefined,
+      cameraPreset: isDevice ? 'orbit' : 'dolly-in',
+      particles3D: isDevice ? 'none' : 'dust',
+      showHud: false,
+    });
+    const derivedFrom: VaultItem['derivedFrom'] = validAssets.map((a) => ({
+      assetId: a.id,
+      via: 'spatial-25d',
+      note: isDevice ? '贴屏至 3D 硬件样机舞台' : '立为 2.5D 立体空间镜',
+    }));
+    await addQuickCanvasRigNode('spatial-stage', isDevice ? 'product' : 'environment', label, props, derivedFrom, placement);
+  }
+
+  async function bakeSpatialSourceToAiVideo(sourceKey: string, placement: Pt) {
+    if (!onBakeSpatialVideo) return;
+    const isEnt = sourceKey.startsWith('ent:');
+    const isAsset = sourceKey.startsWith('asset:');
+    const vid = await onBakeSpatialVideo({
+      vaultItemId: isEnt ? sourceKey.slice(4) : undefined,
+      assetId: isAsset ? sourceKey.slice(6) : undefined,
+      durationSeconds: 3,
+      placement,
+    });
+    if (vid) {
+      await spawnGeneratorNode({
+        use: 'video',
+        action: 'motion-transfer',
+        inputs: [{ nodeKey: `asset:${vid.id}`, slot: 'motion-video' }],
+        prompt: '严格遵循 3D 预演视频中的摄像机运镜轨迹、人物动作走线与景深透视，渲染电影级真实光影与质感',
+        placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
+      });
+    }
+  }
+
+  async function captureSpatialPairToAiVideo(sourceKey: string, placement: Pt) {
+    if (!onCaptureSpatialPair) return;
+    const isEnt = sourceKey.startsWith('ent:');
+    const isAsset = sourceKey.startsWith('asset:');
+    const pair = await onCaptureSpatialPair({
+      vaultItemId: isEnt ? sourceKey.slice(4) : undefined,
+      assetId: isAsset ? sourceKey.slice(6) : undefined,
+      startBookmarkId: 'cam-a',
+      endBookmarkId: 'cam-b',
+      placement,
+    });
+    if (pair?.startAsset && pair?.endAsset) {
+      await spawnGeneratorNode({
+        use: 'video',
+        action: 'first-last-video',
+        inputs: [
+          { nodeKey: `asset:${pair.startAsset.id}`, slot: 'first-frame' },
+          { nodeKey: `asset:${pair.endAsset.id}`, slot: 'last-frame' },
+        ],
+        prompt: '从 A 机位构图平滑过渡到 B 机位过肩反打构图，保持角色站位、服装与三维透视严格连贯',
+        placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
+      });
+    }
+  }
+
+  async function captureSpatialRefToAiImage(sourceKey: string, placement: Pt) {
+    if (!onCaptureSpatialReference) return;
+    const isEnt = sourceKey.startsWith('ent:');
+    const isAsset = sourceKey.startsWith('asset:');
+    const res = await onCaptureSpatialReference({
+      vaultItemId: isEnt ? sourceKey.slice(4) : undefined,
+      assetId: isAsset ? sourceKey.slice(6) : undefined,
+      passes: ['beauty', 'depth'],
+      placement,
+    });
+    const first = res?.captured?.[0]?.asset || res?.asset;
+    if (first) {
+      const inputs: CanvasGeneratorInput[] = [{ nodeKey: `asset:${first.id}`, slot: 'scene' }];
+      const depthItem = res?.captured?.find((c) => c.pass === 'depth')?.asset;
+      if (depthItem) inputs.push({ nodeKey: `asset:${depthItem.id}`, slot: 'style' });
+      await spawnGeneratorNode({
+        use: 'image',
+        action: 'image-edit',
+        inputs,
+        prompt: '严格遵循 3D 机位透视、人物站位与深度纵深，重绘为高精度电影级实拍/国漫光影画面',
+        placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
+      });
+    }
+  }
+
+  async function spawnSpatialMultiCamShots(sourceKey: string) {
+    const ent = sourceKey.startsWith('ent:')
+      ? upstreamEntities.find((e) => `ent:${e.id}` === sourceKey)
+      : undefined;
+    const asset = sourceKey.startsWith('asset:')
+      ? project.assets.find((a) => `asset:${a.id}` === sourceKey)
+      : undefined;
+    if (!ent && !asset) return;
+    const tail = sequence.clips.length
+      ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
+      : 0;
+    const dur = Math.max(sequence.fps * 2, sequence.fps * 3);
+    const baseProps: Record<string, unknown> = ent?.rig?.presetId
+      ? { ...(ent.rig.props || {}), presetId: ent.rig.presetId }
+      : { cameraPreset: 'orbit', cameraLens: 35 };
+    const baseName = ent?.name || asset?.name || '空间摄影棚';
+    const ops: EditOperation[] = DEFAULT_SPATIAL_BOOKMARKS.slice(0, 3).map((bm, idx) => ({
+      type: 'addClip',
+      sequenceId: sequence.id,
+      clip: {
+        id: uid('clip'),
+        name: `${baseName} · ${bm.label}`,
+        kind: 'shape',
+        track: 'visual',
+        layer: 0,
+        start: tail + idx * dur,
+        duration: dur,
+        sourceIn: 0,
+        assetId: asset?.id || ent?.assetId,
+        locked: false,
+        props: {
+          ...clone(baseProps),
+          activeBookmarkId: bm.id,
+          cameraPreset: bm.cameraPreset,
+          cameraLens: bm.cameraLens,
+          cameraYaw: bm.cameraYaw,
+          cameraPitch: bm.cameraPitch,
+          cameraDistance: bm.cameraDistance,
+          cameraPanX: bm.cameraPanX ?? 0,
+          cameraPanY: bm.cameraPanY ?? 0,
+        },
+      },
+    }));
+    await onEdit(`一键派生 A/B/C 三机位分镜组「${baseName}」`, ops);
   }
 
   async function appendShotFromRigOrBlank(presetId?: string, fromItem?: VaultItem) {
@@ -2884,7 +3085,7 @@ export function CreateCanvas({
         onCloseAddMenu={() => setAddMenuOpen(false)}
         onCreateGenerator={(use, action) => void spawnGeneratorNode({ use, action })}
         onCreateTextNode={() => void createTextNode('')}
-        onCreateRig3D={() => void addQuickCanvasRigNode('teardown-3d', 'product', '三维空间结构预演')}
+        onCreateRig3D={() => void addQuickCanvasRigNode('spatial-stage', 'environment', '统一空间摄影棚')}
         onImportMedia={onImportMedia}
         onAppendShot={() => void appendShotFromRigOrBlank()}
         onGroupSelected={() => void createGroupFromNodeKeys(selectedNodeIds)}
@@ -2940,6 +3141,9 @@ export function CreateCanvas({
             void onEdit(`声画直合分镜「${vis.name}」`, operations);
           }
         }}
+        onCreateSpatial25D={(imgIds, anchorPt) =>
+          void createSpatialStageFromAssets(imgIds, 'parallax-25d', anchorPt)
+        }
         onTriageAssets={onTriageAssets ? (ids) => void onTriageAssets(ids) : undefined}
         onAutoTagAssets={onAutoTagAssets ? (ids) => void onAutoTagAssets(ids) : undefined}
         onCreateGroup={(keys) => void createGroupFromNodeKeys(keys)}
@@ -2979,6 +3183,10 @@ export function CreateCanvas({
           onSpawnGeneratorNode={(opts) => void spawnGeneratorNode(opts)}
           onAppendShot={(ent) => void appendShotFromRigOrBlank(undefined, ent)}
           onAppendToTimeline={(keys) => void appendSelectedNodesToTimeline(keys)}
+          onBakeSpatialToAiVideo={(sk, pt) => void bakeSpatialSourceToAiVideo(sk, pt)}
+          onCapturePairToAiVideo={(sk, pt) => void captureSpatialPairToAiVideo(sk, pt)}
+          onCaptureRefToAiImage={(sk, pt) => void captureSpatialRefToAiImage(sk, pt)}
+          onSpawnSpatialMultiCam={(sk) => void spawnSpatialMultiCamShots(sk)}
           onEdit={onEdit}
         />
       )}
@@ -3273,14 +3481,14 @@ export function CreateCanvas({
             <button
               type="button"
               className="cc-starter-card"
-              onClick={() => void addQuickCanvasRigNode('teardown-3d', 'product', '三维空间结构预演')}
+              onClick={() => void addQuickCanvasRigNode('spatial-stage', 'environment', '统一空间摄影棚')}
             >
               <div className="cc-starter-head">
                 <Box size={15} />
                 <span className="cc-starter-step">C</span>
               </div>
-              <b>三维与动态预演</b>
-              <small>置入可交互运镜 3D 舞台或流程图解节点</small>
+              <b>统一空间摄影棚</b>
+              <small>2.5D 立体漫剧、3D 白模多机位与深度图预演</small>
             </button>
           </div>
         </div>
@@ -3705,51 +3913,89 @@ export function CreateCanvas({
                     </>
                   ) : (
                     <>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onOpenGeneration({
-                            use: 'image',
-                            prompt: `${ent.name}，${activeVar?.promptDelta || ent.promptAnchor || ''}`,
-                            referenceAssetId: refAsset?.kind === 'image' ? refAsset.id : undefined,
-                          })
-                        }
-                      >
-                        <Sparkles size={12} /> AI 生成设定图
-                      </button>
-                      {hasRig ? (
-                        <button
-                          type="button"
-                          onClick={() => setRigPopoverFor(rigPopoverFor === ent.id ? null : ent.id)}
-                        >
-                          <SlidersHorizontal size={12} /> 参数
-                        </button>
+                      {ent.rig?.presetId === 'spatial-stage' || ent.rig?.presetId === 'teardown-3d' ? (
+                        <>
+                          <button
+                            type="button"
+                            title="把当前 3D 摄像机运镜、人物动作、走线与环境直接录成真实 MP4 预演视频，并自动连入动作迁移/参考生视频工坊"
+                            onClick={() =>
+                              void bakeSpatialSourceToAiVideo(nodeKey, { x: pos.x + 306, y: pos.y })
+                            }
+                          >
+                            <Clapperboard size={12} /> 录视频→AI生片
+                          </button>
+                          <button
+                            type="button"
+                            title="从当前 3D 空间自动拍下 A机(首帧) 与 B机(尾帧)，直接连入首尾帧生视频工坊"
+                            onClick={() =>
+                              void captureSpatialPairToAiVideo(nodeKey, { x: pos.x + 306, y: pos.y })
+                            }
+                          >
+                            <Box size={12} /> A→B首尾帧
+                          </button>
+                          <button
+                            type="button"
+                            title="用当前同一套 3D 布景一键派生 A主镜 + B过肩反打 + C低仰拍 三镜连续分镜组"
+                            onClick={() => void spawnSpatialMultiCamShots(nodeKey)}
+                          >
+                            <Film size={12} /> 派生3机位
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRigPopoverFor(rigPopoverFor === ent.id ? null : ent.id)}
+                          >
+                            <SlidersHorizontal size={12} /> 导演参数
+                          </button>
+                        </>
                       ) : (
                         <>
                           <button
                             type="button"
-                            onClick={() => {
-                              setSubjVar('');
-                              setSubjDesc('');
-                              setSubjectModal({ mode: 'variant', entId: ent.id });
-                            }}
-                          >
-                            <GitBranch size={12} /> +状态
-                          </button>
-                          <button
-                            type="button"
-                            title="为演员/角色绑定专属配音音色（剧本写「角色名：台词」时自动沿用）"
                             onClick={() =>
-                              setVoicePopoverFor((prev) => (prev === ent.id ? null : ent.id))
+                              onOpenGeneration({
+                                use: 'image',
+                                prompt: `${ent.name}，${activeVar?.promptDelta || ent.promptAnchor || ''}`,
+                                referenceAssetId: refAsset?.kind === 'image' ? refAsset.id : undefined,
+                              })
                             }
                           >
-                            <AudioLines size={12} /> {ent.voiceProfile?.voice || ent.voiceId ? '声纹✓' : '声纹'}
+                            <Sparkles size={12} /> AI 生成设定图
+                          </button>
+                          {hasRig ? (
+                            <button
+                              type="button"
+                              onClick={() => setRigPopoverFor(rigPopoverFor === ent.id ? null : ent.id)}
+                            >
+                              <SlidersHorizontal size={12} /> 参数
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSubjVar('');
+                                  setSubjDesc('');
+                                  setSubjectModal({ mode: 'variant', entId: ent.id });
+                                }}
+                              >
+                                <GitBranch size={12} /> +状态
+                              </button>
+                              <button
+                                type="button"
+                                title="为演员/角色绑定专属配音音色（剧本写「角色名：台词」时自动沿用）"
+                                onClick={() =>
+                                  setVoicePopoverFor((prev) => (prev === ent.id ? null : ent.id))
+                                }
+                              >
+                                <AudioLines size={12} /> {ent.voiceProfile?.voice || ent.voiceId ? '声纹✓' : '声纹'}
+                              </button>
+                            </>
+                          )}
+                          <button type="button" onClick={() => void appendShotFromRigOrBlank(undefined, ent)}>
+                            <Plus size={12} /> 派生镜头
                           </button>
                         </>
                       )}
-                      <button type="button" onClick={() => void appendShotFromRigOrBlank(undefined, ent)}>
-                        <Plus size={12} /> 派生镜头
-                      </button>
                       <button
                         type="button"
                         title="发布至跨项目个人库"
@@ -3914,6 +4160,8 @@ export function CreateCanvas({
                             ...(ent.rig!.props || {}),
                             ...(rigExplodeDrafts[ent.id] !== undefined ? { explode: rigExplodeDrafts[ent.id] } : {}),
                           }}
+                          project={project}
+                          mediaOrigin={previewOrigin}
                           playing={isPrimarySelected}
                           thumbnail={!isPrimarySelected && rigExplodeDrafts[ent.id] === undefined}
                         />
@@ -4076,85 +4324,229 @@ export function CreateCanvas({
                       }}
                     />
                   </label>
-                  {ent.rig.presetId === 'teardown-3d' && (
+                  {(ent.rig.presetId === 'spatial-stage' || ent.rig.presetId === 'teardown-3d') && (() => {
+                    const activeSceneType = String(
+                      ent.rig.props?.sceneType ||
+                        (ent.rig.presetId === 'teardown-3d' ? 'turbine' : 'parallax-25d'),
+                    );
+                    const isPrevisMode = activeSceneType === 'previs-blocking';
+                    const isDeviceMode = activeSceneType === 'device-showcase';
+                    const isTeardownMode =
+                      activeSceneType === 'turbine' ||
+                      activeSceneType === 'chip-stack' ||
+                      activeSceneType === 'factory-flow';
+                    const updateSpatialProp = (label: string, patch: Record<string, unknown>) => {
+                      const nextProps = { ...(ent.rig?.props || {}), ...patch };
+                      void onEdit(label, [
+                        {
+                          type: 'putVaultItem',
+                          item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
+                        },
+                      ]);
+                    };
+                    return (
                     <>
                       <label className="cc-mini-field">
-                        <span>三维视角</span>
+                        <span>置景模式</span>
                         <select
-                          value={String(ent.rig.props?.cameraPreset || 'orbit')}
-                          onChange={(e) => {
-                            const nextProps = { ...(ent.rig?.props || {}), cameraPreset: e.target.value };
-                            void onEdit('切换三维视角', [
-                              {
-                                type: 'putVaultItem',
-                                item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
-                              },
-                            ]);
-                          }}
+                          value={activeSceneType}
+                          onChange={(e) => updateSpatialProp('切换空间摄影棚模式', { sceneType: e.target.value })}
                         >
-                          <option value="orbit">环绕审视</option>
-                          <option value="isometric">等轴测俯视</option>
-                          <option value="dolly-in">推近特写</option>
+                          <option value="parallax-25d">2.5D 立体漫剧/原画</option>
+                          <option value="previs-blocking">3D 导演走线预演棚</option>
+                          <option value="device-showcase">3D 硬件动态贴屏</option>
+                          <option value="turbine">同轴光学镜组拆解</option>
+                          <option value="chip-stack">AI 芯片叠层</option>
+                          <option value="factory-flow">节点流水线沙盘</option>
+                        </select>
+                      </label>
+                      {isPrevisMode && (
+                        <>
+                          <label className="cc-mini-field">
+                            <span>3D 场景环境</span>
+                            <select
+                              value={String(ent.rig.props?.environmentPreset || 'rooftop-night')}
+                              onChange={(e) =>
+                                updateSpatialProp('切换 3D 场景环境', { environmentPreset: e.target.value })
+                              }
+                            >
+                              {SPATIAL_ENVIRONMENT_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="cc-mini-field">
+                            <span>人物动作表演</span>
+                            <select
+                              value={String(ent.rig.props?.actorAction || 'walk')}
+                              onChange={(e) =>
+                                updateSpatialProp('切换人物动作表演', { actorAction: e.target.value })
+                              }
+                            >
+                              {SPATIAL_ACTOR_ACTION_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="cc-mini-field">
+                            <span>人物走线路径</span>
+                            <select
+                              value={String(ent.rig.props?.actorPath || 'approach')}
+                              onChange={(e) =>
+                                updateSpatialProp('切换人物走线路径', { actorPath: e.target.value })
+                              }
+                            >
+                              {SPATIAL_ACTOR_PATH_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                      {isDeviceMode && (
+                        <label className="cc-mini-field">
+                          <span>硬件样机形态</span>
+                          <select
+                            value={String(ent.rig.props?.deviceType || 'phone')}
+                            onChange={(e) =>
+                              updateSpatialProp('切换硬件样机形态', { deviceType: e.target.value })
+                            }
+                          >
+                            <option value="phone">钛金属旗舰手机</option>
+                            <option value="laptop">超薄专业笔记本</option>
+                            <option value="cinema-display">悬浮电影级巨幕</option>
+                          </select>
+                        </label>
+                      )}
+                      <div className="cc-mini-field">
+                        <span>多机位书签</span>
+                        <div className="cc-spatial-pills">
+                          {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => (
+                            <button
+                              key={bm.id}
+                              type="button"
+                              className={String(ent.rig?.props?.activeBookmarkId || '') === bm.id ? 'active' : ''}
+                              title={`${bm.label} (${bm.cameraLens}mm)`}
+                              onClick={() =>
+                                updateSpatialProp(`切换空间机位「${bm.label}」`, {
+                                  activeBookmarkId: bm.id,
+                                  cameraPreset: bm.cameraPreset,
+                                  cameraLens: bm.cameraLens,
+                                  cameraYaw: bm.cameraYaw,
+                                  cameraPitch: bm.cameraPitch,
+                                  cameraDistance: bm.cameraDistance,
+                                })
+                              }
+                            >
+                              {bm.shortKey}机
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="cc-mini-field">
+                        <span>输出通道（成片 / AI 控图）</span>
+                        <div className="cc-spatial-pills">
+                          {SPATIAL_RENDER_PASS_OPTIONS.slice(0, 4).map((rp) => (
+                            <button
+                              key={rp.id}
+                              type="button"
+                              className={String(ent.rig?.props?.renderPass || 'beauty') === rp.id ? 'active' : ''}
+                              onClick={() =>
+                                updateSpatialProp(`切换空间通道「${rp.label}」`, { renderPass: rp.id })
+                              }
+                            >
+                              {rp.short}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <label className="cc-mini-field">
+                        <span>导演运镜轨迹</span>
+                        <select
+                          value={String(ent.rig.props?.cameraPreset || 'dolly-in')}
+                          onChange={(e) =>
+                            updateSpatialProp('切换三维视角', { cameraPreset: e.target.value })
+                          }
+                        >
+                          <option value="dolly-in">平滑推镜 (Dolly In)</option>
+                          <option value="dolly-zoom">希区柯克变焦 (Vertigo)</option>
+                          <option value="orbit">环绕审视 (Orbit)</option>
+                          <option value="pan-sweep">横摇巡视 (Pan Sweep)</option>
+                          <option value="crane-up">摇臂升降 (Crane Up)</option>
                           <option value="hero-low">低机位仰视</option>
+                          <option value="top-down">垂直俯瞰</option>
+                          <option value="isometric">等轴测俯视</option>
                         </select>
                       </label>
                       <label className="cc-mini-field">
-                        <span>
-                          拆解间距 (
-                          {Math.round(
-                            Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65) * 100,
-                          )}
-                          %)
-                        </span>
-                        <input
-                          type="range"
-                          min={0}
-                          max={1.3}
-                          step={0.05}
-                          value={Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65)}
-                          onChange={(e) => {
-                            const val = Number(e.target.value);
-                            setRigExplodeDrafts((prev) => ({ ...prev, [ent.id]: val }));
-                          }}
-                          onPointerUp={(e) => {
-                            const val = Number(e.currentTarget.value);
-                            setRigExplodeDrafts((prev) => {
-                              const next = { ...prev };
-                              delete next[ent.id];
-                              return next;
-                            });
-                            if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
-                              const nextProps = { ...(ent.rig?.props || {}), explode: val };
-                              void onEdit('调整三维拆解间距', [
-                                {
-                                  type: 'putVaultItem',
-                                  item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
-                                },
-                              ]);
-                            }
-                          }}
-                          onBlur={(e) => {
-                            const val = Number(e.currentTarget.value);
-                            if (rigExplodeDrafts[ent.id] === undefined) return;
-                            setRigExplodeDrafts((prev) => {
-                              const next = { ...prev };
-                              delete next[ent.id];
-                              return next;
-                            });
-                            if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
-                              const nextProps = { ...(ent.rig?.props || {}), explode: val };
-                              void onEdit('调整三维拆解间距', [
-                                {
-                                  type: 'putVaultItem',
-                                  item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
-                                },
-                              ]);
-                            }
-                          }}
-                        />
+                        <span>3D 空间体积粒子</span>
+                        <select
+                          value={String(ent.rig.props?.particles3D || 'none')}
+                          onChange={(e) =>
+                            updateSpatialProp('切换三维氛围粒子', { particles3D: e.target.value })
+                          }
+                        >
+                          <option value="none">关闭</option>
+                          <option value="dust">电影浮尘光粒</option>
+                          <option value="rain">三维空间雨丝</option>
+                          <option value="snow">立体飘雪</option>
+                          <option value="embers">炽热火星</option>
+                        </select>
                       </label>
+                      {isTeardownMode && (
+                        <label className="cc-mini-field">
+                          <span>
+                            拆解间距 (
+                            {Math.round(
+                              Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65) * 100,
+                            )}
+                            %)
+                          </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1.3}
+                            step={0.05}
+                            value={Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65)}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setRigExplodeDrafts((prev) => ({ ...prev, [ent.id]: val }));
+                            }}
+                            onPointerUp={(e) => {
+                              const val = Number(e.currentTarget.value);
+                              setRigExplodeDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[ent.id];
+                                return next;
+                              });
+                              if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
+                                updateSpatialProp('调整三维拆解间距', { explode: val });
+                              }
+                            }}
+                            onBlur={(e) => {
+                              const val = Number(e.currentTarget.value);
+                              if (rigExplodeDrafts[ent.id] === undefined) return;
+                              setRigExplodeDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[ent.id];
+                                return next;
+                              });
+                              if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
+                                updateSpatialProp('调整三维拆解间距', { explode: val });
+                              }
+                            }}
+                          />
+                        </label>
+                      )}
                     </>
-                  )}
+                    );
+                  })()}
                   {ent.rig.presetId === 'screen-focus-rig' && (
                     <label className="cc-mini-field">
                       <span>设备外壳样式</span>
@@ -4594,6 +4986,28 @@ export function CreateCanvas({
                   >
                     <span className="cc-menu-item-label">
                       <Layers size={12} /> 多图融合工坊卡
+                    </span>
+                  </button>
+                  <div className="cc-menu-divider" />
+                  <div className="cc-menu-group">空间摄影棚（L1 零视频费）</div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void createSpatialStageFromAssets([a.id], 'parallax-25d', { x: pos.x + 306, y: pos.y })
+                    }
+                  >
+                    <span className="cc-menu-item-label">
+                      <Box size={12} /> 立为 2.5D 立体空间镜（¥0）
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void createSpatialStageFromAssets([a.id], 'device-showcase', { x: pos.x + 306, y: pos.y + 42 })
+                    }
+                  >
+                    <span className="cc-menu-item-label">
+                      <Box size={12} /> 贴屏至 3D 硬件样机（¥0）
                     </span>
                   </button>
                 </div>

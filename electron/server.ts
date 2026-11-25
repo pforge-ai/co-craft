@@ -23,6 +23,10 @@ const mime: Record<string, string> = {
   '.m4a': 'audio/mp4',
   '.glb': 'model/gltf-binary',
   '.gltf': 'model/gltf+json',
+  '.spz': 'application/octet-stream',
+  '.splat': 'application/octet-stream',
+  '.ksplat': 'application/octet-stream',
+  '.ply': 'application/octet-stream',
   '.json': 'application/json',
   '.woff2': 'font/woff2',
 };

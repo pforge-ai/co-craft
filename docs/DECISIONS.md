@@ -1,6 +1,6 @@
 # CoCraft 决策记录
 
-更新日期：2026 年 11 月 25 日（对齐并启动下一代低成本创作与漫剧工业化统一架构：四维正交制片模型 `Who × Where × How × Story`、原位信号驱动统一工坊、声定画长 × 三档省钱出片引擎及默认关闭/零强制的可选 System 1 决策反射层）。
+更新日期：2026 年 11 月 26 日（落地统一空间摄影棚 `Spatial Stage` 架构与「3D 编排 → 录制预演视频/首尾帧/多通道 → AI 视频重绘」闭环，以及 2D↔2.5D 原位无损升维）。
 
 “已对齐”记录用户明确表达或拍板的方向；“当前建议”保留技术评估方案与待验证条件；“已替代”防止后续沿用旧前提。能力是否已经实现，以 [迭代计划](ROADMAP.md) 的验收记录为准。
 
@@ -34,6 +34,7 @@
 | 11 月 24 日 | **自有插件式多提供商驱动层（不接 fal / 不引入重封装 SDK）× 声明式模型能力 × B 方案多图/首尾帧** | 保留 CoCraft 作业持久化、`remote.id` 崩溃续传、SSRF 防护与流式下载底座，将厂商协议从 `electron/generation.ts` 拆分为纯 Node 独立驱动 `electron/providers/{dashscope,ark,minimax,openai}.ts`；新增纯函数 `modelInputCapabilities(model)` 统一驱动前端表单与后端校验；官方直连升级 **阿里百炼**（Qwen-Image 3.0/2.1/Edit、Wan 2.7 Image、Z-Image Turbo、Wan 3.0、Wan 2.7、**HappyHorse 1.1/1.0 快乐马**、百炼托管可灵 v3）、**火山方舟**（Seedream 5.5/5.0/4.5 含多图与透明底 PNG、Seedance 2.5/2.0/1.5）与新增 **MiniMax**（国内/国际双区、H3 v2、Hailuo 2.3/02 v1 两步取回、H3-Image、image-01、Speech 2.8/2.6、M2.5/M2.7）；「素材工作室」、内置 Agent 与 MCP 工具同步支持多图参考（`referenceAssetIds`）、视频首尾帧（`lastFrameAssetId`）、清晰度/画幅比例、原生音画同步与透明底 PNG |
 | 11 月 25 日 | **C+A+D 光学微光系统 v3（5 套可切换主题光色）与创造画布 v3 系统重构** | 落地视口固定 `CanvasTopHud`、可折叠三语义分区、左侧暗房玻璃工具轨、统一 `/` 导演栏、零抖动锚定 `.branch-fork-popover`、4 类聚焦/链路溯源连线与原位 `CanvasGeneratorNode`；光效升级为 C（静/动分层 + Ghost 流体光场）+ A（70% 留白白芯非对称彗星）+ D（60fps 邻近光学手电），设置页支持 5 色实时切换 |
 | 11 月 25 日 | **低成本影视与漫剧工业化统一架构（四维正交 × 信号工坊 × 三档出片 × 可选 System 1）** | 拒绝为动作迁移/对口型/换人/调人物堆砌碎片菜单，统一收口到「演员卡（含专属音色与可选 3D 替身）+ 原位工坊卡信号槽位路由」；推进 **M1（零视频费 L1 电影化叠层/逐词高亮字幕 + 声定画长/FFmpeg 去静音与 -14 LUFS + 4 项画布高频连招）→ M2（动作迁移/视频换人/对口型统一信号工坊 + Recipe）→ M3（可选 System 1 与真横转竖）**；TypeSafe Jev 等 System 1 严格作为**默认关闭、零强制、三档降级（Tier 0 本地免费 / Tier 1 已配快模 / Tier 2 Jev）且按能力独立开关**的可选增强，绝不静默扣费 |
+| 11 月 26 日 | **统一空间摄影棚（`Spatial Stage`）：3D 不做重型建模软件，专攻「2.5D 零算力成片 + 3D 导演编排录片驱动 AI 视频 + 3DGS 世界取景」** | 将 2.5D 多层/景深视差、3D 导演白模动作/走线/场景、3D 硬件贴屏、`.glb` 骨骼动画与 `.spz/.splat/.ksplat/.ply` 原生 WebGL2 高斯泼溅收敛为单一 `spatial-stage` 引擎，彻底告别碎片化 3D 功能；通过「一键录真 MP4 预演视频（`stage.bakeSpatialVideo` + Agent/MCP 共享 `bake_spatial_video`）」「A→B 首尾帧双拍」「Beauty/Depth/Normal 多通道拍摄」与「2D 原画原位无损升维 2.5D / 装入 3D 屏幕」把 3D 深度融入 2D 与 AI 视频创作主工作流；macOS 无头渲染启用 Metal `gl: 'angle'` 硬件加速并强制偶数整数尺寸，兼顾速度与确定性 |
 
 ## 已替代的前提
 

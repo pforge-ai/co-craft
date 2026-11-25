@@ -34,6 +34,13 @@ import { AudioWaveformPlayer } from './AudioWaveformPlayer';
 import { KeyframeSection } from './KeyframeSection';
 import { PresetControls, ParameterControls } from './PresetControls';
 import { BUILT_IN_TRANSITIONS, getPreset } from '../core/presets';
+import {
+  DEFAULT_SPATIAL_BOOKMARKS,
+  SPATIAL_LENS_OPTIONS,
+  SPATIAL_RENDER_PASS_OPTIONS,
+  buildSpatialStageProps,
+  isSpatialClip,
+} from '../core/spatialStage';
 import { pointerDrag } from '../lib/pointerDrag';
 import { IconButton } from './ui';
 
@@ -1669,6 +1676,76 @@ export const Inspector = React.memo(function Inspector({
             onEdit={onEdit}
           />
           <section className="ins-sec">
+            <h4>空间升维（L1 零视频费）</h4>
+            <div className="ins-pill-row">
+              {clip.kind === 'image' && clip.assetId && (
+                <button
+                  type="button"
+                  className="ins-pill-btn active"
+                  disabled={clip.locked}
+                  title="不丢时长、音频与字幕，原位将这张 2D 剧照升维为带真 3D 推镜、希区柯克变焦与体积粒子的 2.5D 空间镜（随时可退回 2D）"
+                  onClick={() =>
+                    onEdit(`升维为 2.5D 立体空间镜「${clip.name}」`, [
+                      {
+                        type: 'updateClip',
+                        sequenceId: sequence.id,
+                        clipId: clip.id,
+                        changes: {
+                          props: {
+                            ...clip.props,
+                            ...buildSpatialStageProps({
+                              sceneMode: 'parallax-25d',
+                              layerAssetIds: [clip.assetId!],
+                              title: clip.name,
+                              cameraPreset: 'dolly-in',
+                              particles3D: 'dust',
+                              showHud: false,
+                            }),
+                          },
+                        },
+                      },
+                    ])
+                  }
+                >
+                  升维 2.5D 立体镜 (¥0)
+                </button>
+              )}
+              {clip.assetId && (
+                <button
+                  type="button"
+                  className="ins-pill-btn"
+                  disabled={clip.locked}
+                  title="将当前画面/录屏原位贴进 3D 钛金属手机或笔记本硬件舞台（随时可退回 2D）"
+                  onClick={() =>
+                    onEdit(`装入 3D 硬件屏幕「${clip.name}」`, [
+                      {
+                        type: 'updateClip',
+                        sequenceId: sequence.id,
+                        clipId: clip.id,
+                        changes: {
+                          props: {
+                            ...clip.props,
+                            ...buildSpatialStageProps({
+                              sceneMode: 'device-showcase',
+                              screenAssetId: clip.assetId!,
+                              deviceType: clip.kind === 'video' ? 'laptop' : 'phone',
+                              title: clip.name,
+                              cameraPreset: 'orbit',
+                              particles3D: 'dust',
+                              showHud: false,
+                            }),
+                          },
+                        },
+                      },
+                    ])
+                  }
+                >
+                  装入 3D 设备屏幕
+                </button>
+              )}
+            </div>
+          </section>
+          <section className="ins-sec">
             <h4>画幅适应与裁切</h4>
             <div className="ins-inline-row">
               <span>填充方式</span>
@@ -1785,6 +1862,132 @@ export const Inspector = React.memo(function Inspector({
       {/* ── PRESET / CODE / 3D / SHAPE ── */}
       {preset && presetTab === 'params' && (
         <>
+          {isSpatialClip(clip, asset) && (
+            <section className="ins-sec">
+              <h4>空间摄影棚 · 导演机位</h4>
+              <div className="ins-pill-row" role="group" aria-label="多机位书签">
+                {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => (
+                  <button
+                    key={bm.id}
+                    type="button"
+                    className={`ins-pill-btn ${String(clip.props.activeBookmarkId || '') === bm.id ? 'active' : ''}`}
+                    disabled={clip.locked}
+                    title={`${bm.label} · ${bm.cameraLens}mm`}
+                    onClick={() =>
+                      onEdit(`切换机位「${bm.label}」`, [
+                        {
+                          type: 'updateClip',
+                          sequenceId: sequence.id,
+                          clipId: clip.id,
+                          changes: {
+                            props: {
+                              activeBookmarkId: bm.id,
+                              cameraPreset: bm.cameraPreset,
+                              cameraLens: bm.cameraLens,
+                              cameraYaw: bm.cameraYaw,
+                              cameraPitch: bm.cameraPitch,
+                              cameraDistance: bm.cameraDistance,
+                              cameraPanX: bm.cameraPanX ?? 0,
+                              cameraPanY: bm.cameraPanY ?? 0,
+                            },
+                          },
+                        },
+                      ])
+                    }
+                  >
+                    {bm.shortKey} · {bm.label.split(' · ')[1]}
+                  </button>
+                ))}
+              </div>
+              <div className="ins-pill-row" role="group" aria-label="镜头焦段">
+                {SPATIAL_LENS_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.mm}
+                    type="button"
+                    className={`ins-pill-btn ${Math.round(Number(clip.props.cameraLens ?? 35)) === opt.mm ? 'active' : ''}`}
+                    disabled={clip.locked}
+                    onClick={() => prop('cameraLens', opt.mm)}
+                  >
+                    {opt.mm}mm
+                  </button>
+                ))}
+              </div>
+              <div className="ins-pill-row" role="group" aria-label="渲染通道">
+                {SPATIAL_RENDER_PASS_OPTIONS.map((rp) => (
+                  <button
+                    key={rp.id}
+                    type="button"
+                    className={`ins-pill-btn ${String(clip.props.renderPass || 'beauty') === rp.id ? 'active' : ''}`}
+                    disabled={clip.locked}
+                    title={rp.label}
+                    onClick={() => prop('renderPass', rp.id)}
+                  >
+                    {rp.short}
+                  </button>
+                ))}
+              </div>
+              <div className="ins-pill-row">
+                <button
+                  type="button"
+                  className="ins-pill-btn"
+                  disabled={clip.locked}
+                  title="保留当前场景与人物走线，在时间线末尾一次性派生 A 主镜 (35mm) + B 过肩反打 (85mm) + C 低位仰拍 (24mm) 三镜分镜组"
+                  onClick={() => {
+                    const tail = sequence.clips.length
+                      ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
+                      : 0;
+                    const dur = Math.max(sequence.fps * 2, Math.min(sequence.fps * 5, clip.duration));
+                    const ops: EditOperation[] = DEFAULT_SPATIAL_BOOKMARKS.slice(0, 3).map((bm, idx) => ({
+                      type: 'addClip',
+                      sequenceId: sequence.id,
+                      clip: {
+                        ...clone(clip),
+                        id: uid('clip'),
+                        name: `${clip.name} · ${bm.label}`,
+                        start: tail + idx * dur,
+                        duration: dur,
+                        locked: false,
+                        props: {
+                          ...clone(clip.props),
+                          activeBookmarkId: bm.id,
+                          cameraPreset: bm.cameraPreset,
+                          cameraLens: bm.cameraLens,
+                          cameraYaw: bm.cameraYaw,
+                          cameraPitch: bm.cameraPitch,
+                          cameraDistance: bm.cameraDistance,
+                          cameraPanX: bm.cameraPanX ?? 0,
+                          cameraPanY: bm.cameraPanY ?? 0,
+                        },
+                      },
+                    }));
+                    onEdit(`派生 A/B/C 三机位分镜组「${clip.name}」`, ops);
+                  }}
+                >
+                  + 一键派生 A/B/C 三机位镜组
+                </button>
+                {clip.assetId && asset?.kind !== 'model-3d' && (
+                  <button
+                    type="button"
+                    className="ins-pill-btn"
+                    disabled={clip.locked}
+                    title="无损退回原始 2D 图片/视频平面播放"
+                    onClick={() =>
+                      onEdit(`退回 2D 平面「${clip.name}」`, [
+                        {
+                          type: 'updateClip',
+                          sequenceId: sequence.id,
+                          clipId: clip.id,
+                          changes: { props: { presetId: undefined } },
+                        },
+                      ])
+                    }
+                  >
+                    退回 2D 平面
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
           <section className="ins-sec">
             <h4>{preset.name} · 参数</h4>
             <fieldset disabled={clip.locked} className="preset-inspector">
@@ -1799,7 +2002,7 @@ export const Inspector = React.memo(function Inspector({
           </section>
           {asset?.kind === 'model-3d' && (
             <section className="ins-sec">
-              <h4>三维机位</h4>
+              <h4>三维资产参数</h4>
               <div className="ins-grid-2">
                 <ScrubInput
                   prefix="拆"
@@ -1821,6 +2024,26 @@ export const Inspector = React.memo(function Inspector({
                   disabled={clip.locked}
                   onCommit={(v) => prop('speed', v)}
                 />
+                <ScrubInput
+                  prefix="动"
+                  label="骨骼动画槽位"
+                  value={Math.max(0, Math.round(Number(clip.props.animationIndex ?? 0)))}
+                  step={1}
+                  min={0}
+                  max={12}
+                  disabled={clip.locked}
+                  onCommit={(v) => prop('animationIndex', Math.max(0, Math.round(v)))}
+                />
+                <ScrubInput
+                  prefix="距"
+                  label="机位远近"
+                  value={Number(Number(clip.props.cameraDistance ?? 1).toFixed(2))}
+                  step={0.05}
+                  min={0.5}
+                  max={2.2}
+                  disabled={clip.locked}
+                  onCommit={(v) => prop('cameraDistance', v)}
+                />
               </div>
             </section>
           )}
@@ -1836,8 +2059,19 @@ export const Inspector = React.memo(function Inspector({
             sequence={sequence}
             playheadClock={playheadClock}
             properties={
-              preset.id === 'teardown-3d' || asset?.kind === 'model-3d'
-                ? ['x', 'y', 'scale', 'rotation', 'opacity', 'cameraYaw', 'cameraPitch', 'explode']
+              isSpatialClip(clip, asset)
+                ? [
+                    'x',
+                    'y',
+                    'scale',
+                    'rotation',
+                    'opacity',
+                    'cameraYaw',
+                    'cameraPitch',
+                    'cameraDistance',
+                    'cameraLens',
+                    'explode',
+                  ]
                 : ['x', 'y', 'scale', 'rotation', 'opacity']
             }
             onSeek={onSeek}
@@ -1929,6 +2163,130 @@ export const Inspector = React.memo(function Inspector({
             sequence={sequence}
             playheadClock={playheadClock}
             properties={['x', 'y', 'scale', 'rotation', 'opacity']}
+            onSeek={onSeek}
+            onEdit={onEdit}
+          />
+          {renderOpacityAndBlend()}
+          {renderTransitionSection()}
+          {renderTimeAndLayer()}
+        </>
+      )}
+
+      {!preset && !component && asset?.kind === 'model-3d' && (
+        <>
+          <section className="ins-sec">
+            <h4>{asset.subkind === 'splat-3d' ? '3DGS 空间世界 · 机位' : '三维模型舞台 · 导演控制'}</h4>
+            <div className="ins-pill-row" role="group" aria-label="多机位书签">
+              {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => (
+                <button
+                  key={bm.id}
+                  type="button"
+                  className={`ins-pill-btn ${String(clip.props.activeBookmarkId || '') === bm.id ? 'active' : ''}`}
+                  disabled={clip.locked}
+                  onClick={() =>
+                    onEdit(`切换机位「${bm.label}」`, [
+                      {
+                        type: 'updateClip',
+                        sequenceId: sequence.id,
+                        clipId: clip.id,
+                        changes: {
+                          props: {
+                            activeBookmarkId: bm.id,
+                            cameraPreset: bm.cameraPreset,
+                            cameraLens: bm.cameraLens,
+                            cameraYaw: bm.cameraYaw,
+                            cameraPitch: bm.cameraPitch,
+                            cameraDistance: bm.cameraDistance,
+                            cameraPanX: bm.cameraPanX ?? 0,
+                            cameraPanY: bm.cameraPanY ?? 0,
+                          },
+                        },
+                      },
+                    ])
+                  }
+                >
+                  {bm.shortKey} · {bm.label.split(' · ')[1]}
+                </button>
+              ))}
+            </div>
+            <div className="ins-pill-row" role="group" aria-label="镜头焦段">
+              {SPATIAL_LENS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.mm}
+                  type="button"
+                  className={`ins-pill-btn ${Math.round(Number(clip.props.cameraLens ?? 35)) === opt.mm ? 'active' : ''}`}
+                  disabled={clip.locked}
+                  onClick={() => prop('cameraLens', opt.mm)}
+                >
+                  {opt.mm}mm
+                </button>
+              ))}
+            </div>
+            <div className="ins-pill-row" role="group" aria-label="渲染输出通道">
+              {SPATIAL_RENDER_PASS_OPTIONS.map((rp) => (
+                <button
+                  key={rp.id}
+                  type="button"
+                  className={`ins-pill-btn ${String(clip.props.renderPass || 'beauty') === rp.id ? 'active' : ''}`}
+                  disabled={clip.locked}
+                  onClick={() => prop('renderPass', rp.id)}
+                >
+                  {rp.short}
+                </button>
+              ))}
+            </div>
+            <div className="ins-grid-2">
+              <ScrubInput
+                prefix="距"
+                label="机位远近"
+                value={Number(Number(clip.props.cameraDistance ?? 1).toFixed(2))}
+                step={0.05}
+                min={0.5}
+                max={2.2}
+                disabled={clip.locked}
+                onCommit={(v) => prop('cameraDistance', v)}
+              />
+              <ScrubInput
+                prefix="速"
+                label="运转速率"
+                value={Number(Number(clip.props.speed ?? 1).toFixed(1))}
+                step={0.1}
+                min={0}
+                max={3}
+                disabled={clip.locked}
+                onCommit={(v) => prop('speed', v)}
+              />
+              {asset.subkind !== 'splat-3d' && (
+                <>
+                  <ScrubInput
+                    prefix="动"
+                    label="骨骼动作槽位"
+                    value={Math.max(0, Math.round(Number(clip.props.animationIndex ?? 0)))}
+                    step={1}
+                    min={0}
+                    max={12}
+                    disabled={clip.locked}
+                    onCommit={(v) => prop('animationIndex', Math.max(0, Math.round(v)))}
+                  />
+                  <ScrubInput
+                    prefix="拆"
+                    label="爆炸拆解度"
+                    value={Number(Number(clip.props.explode ?? 0).toFixed(2))}
+                    step={0.05}
+                    min={0}
+                    max={1.4}
+                    disabled={clip.locked}
+                    onCommit={(v) => prop('explode', v)}
+                  />
+                </>
+              )}
+            </div>
+          </section>
+          <KeyframeSection
+            clip={clip}
+            sequence={sequence}
+            playheadClock={playheadClock}
+            properties={['cameraYaw', 'cameraPitch', 'cameraDistance', 'cameraLens', 'explode', 'opacity']}
             onSeek={onSeek}
             onEdit={onEdit}
           />

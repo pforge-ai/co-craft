@@ -46,6 +46,7 @@ export type VaultSubkind =
   | 'motion-rig'
   | 'three-rig'
   | 'model-3d'
+  | 'splat-3d'
   | 'recipe'
   | 'text-note'
   | 'compound-clip'
@@ -133,6 +134,11 @@ export interface AssetLineageRef {
   version?: number;
   via:
     | 'capture-3d'
+    | 'capture-depth'
+    | 'capture-normal'
+    | 'capture-clay'
+    | 'bake-3d-video'
+    | 'spatial-25d'
     | 'ai-generate'
     | 'first-last-frame'
     | 'motion-transfer'
@@ -317,7 +323,7 @@ export interface VaultItem {
     componentId?: string;
     componentName?: string;
     componentSource?: string;
-    props?: Record<string, string | number | boolean>;
+    props?: Record<string, unknown>;
     cameraPreset?: string;
     slots?: { key: string; label: string; accepts: ('video' | 'image' | 'model-3d')[] }[];
   };
@@ -391,6 +397,10 @@ export type KeyframeProperty =
   | 'volume'
   | 'cameraYaw'
   | 'cameraPitch'
+  | 'cameraDistance'
+  | 'cameraLens'
+  | 'cameraPanX'
+  | 'cameraPanY'
   | 'explode';
 
 export interface ClipKeyframe {

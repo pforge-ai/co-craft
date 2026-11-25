@@ -2501,6 +2501,47 @@ export function App() {
                     );
                   });
                 }}
+                onBakeSpatialVideo={async (opts) => {
+                  let created: Asset | undefined;
+                  await work('录制 3D 预演视频', async () => {
+                    const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>(
+                      'stage.bakeSpatialVideo',
+                      { sequenceId: sequence.id, ...opts },
+                    );
+                    accept(res.envelope);
+                    created = res.asset;
+                    notify(`已录制 3D 预演视频「${res.asset.name}」，已接入画布并可用于动作迁移/参考生视频`);
+                  });
+                  return created;
+                }}
+                onCaptureSpatialPair={async (opts) => {
+                  let pair: { startAsset: Asset; endAsset: Asset } | undefined;
+                  await work('双拍 A→B 空间首尾机位帧', async () => {
+                    const res = await api<{
+                      envelope: ProjectEnvelope;
+                      startAsset: Asset;
+                      endAsset: Asset;
+                    }>('stage.captureSpatialPair', { sequenceId: sequence.id, ...opts });
+                    accept(res.envelope);
+                    pair = { startAsset: res.startAsset, endAsset: res.endAsset };
+                    notify('已拍下 A机→B机 首尾透视帧，已连入首尾帧生视频工坊');
+                  });
+                  return pair;
+                }}
+                onCaptureSpatialReference={async (opts) => {
+                  let captured: { asset?: Asset; captured?: { pass: string; asset: Asset }[] } | undefined;
+                  await work('拍摄空间机位与深度图', async () => {
+                    const res = await api<{
+                      envelope: ProjectEnvelope;
+                      asset?: Asset;
+                      captured?: { pass: string; asset: Asset }[];
+                    }>('stage.captureReference', { sequenceId: sequence.id, ...opts });
+                    accept(res.envelope);
+                    captured = { asset: res.asset, captured: res.captured };
+                    notify(`已捕获 ${res.captured?.length || 1} 通道空间参考图，已接入 AI 生图工坊`);
+                  });
+                  return captured;
+                }}
                 onAskAgentForShot={(shotClip, draftPrompt) => {
                   setScope(clone(shotClip));
                   setStrictScope(true);
@@ -2586,6 +2627,54 @@ export function App() {
                   onLiveTransform={handleLiveTransformCb}
                   onSelect={selectClip}
                   onEdit={editVoidCb}
+                  onCaptureSpatialMultiPass={() =>
+                    void work('捕获 3 通道空间参考', async () => {
+                      const res = await api<{
+                        envelope: ProjectEnvelope;
+                        captured?: { pass: string; asset: { id: string; name: string } }[];
+                      }>('stage.captureReference', {
+                        sequenceId: sequence.id,
+                        frame: frameRef.current,
+                        passes: ['beauty', 'depth', 'normal'],
+                      });
+                      accept(res.envelope);
+                      const count = res.captured?.length || 1;
+                      notify(`已捕获 ${count} 通道空间参考（构图 + 深度图 Depth + 法线图 Normal），已送入画布资产库`);
+                    })
+                  }
+                  onBakeSpatialVideo={(targetClip) =>
+                    void work('录制 3D 预演视频', async () => {
+                      const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>(
+                        'stage.bakeSpatialVideo',
+                        {
+                          sequenceId: sequence.id,
+                          clipId: targetClip.id,
+                          durationSeconds: Math.max(2, Math.min(5, targetClip.duration / Math.max(1, sequence.fps))),
+                          pass: String(targetClip.props.renderPass || 'beauty'),
+                        },
+                      );
+                      accept(res.envelope);
+                      notify(`已录制 3D 预演视频「${res.asset.name}」，切换「创造」画布即可连线做动作迁移/参考生视频`);
+                    })
+                  }
+                  onSpawnCameraShot={(targetClip) => {
+                    const tail = sequence.clips.length
+                      ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
+                      : 0;
+                    const clonedClip: Clip = {
+                      ...clone(targetClip),
+                      id: uid('clip'),
+                      name: `${targetClip.name} · 机位 ${Math.round(Number(targetClip.props.cameraLens ?? 35))}mm`,
+                      start: tail,
+                      locked: false,
+                    };
+                    void edit(`以当前机位新添一镜「${clonedClip.name}」`, [
+                      { type: 'addClip', sequenceId: sequence.id, clip: clonedClip },
+                    ]).then(() => {
+                      selectClip(clonedClip.id);
+                      seek(tail);
+                    });
+                  }}
                   onPin={({ x, y, frame: pinFrame, clipId }) => {
                     setStagePin({ x, y, frame: pinFrame });
                     setPinMode(false);

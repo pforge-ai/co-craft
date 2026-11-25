@@ -99,6 +99,7 @@ export const COCRAFT_CORE_TOOLS = [
   'preview_frame',
   'preflight_sequence',
   'export_sequence',
+  'bake_spatial_video',
 ] as const;
 
 export type CoreToolName = (typeof COCRAFT_CORE_TOOLS)[number];
@@ -860,6 +861,128 @@ export class CoCraftToolService {
       return { jobId: job.id, status: 'completed', output, issues };
     }
 
+    if (method === 'bake_spatial_video') {
+      const p = await ctx.store.project();
+      const baseSeq =
+        p.sequences.find((s) => s.id === (args.sequenceId || ctx.defaultSequenceId)) || p.sequences[0];
+      if (!baseSeq) throw new Error('成片序列不存在');
+      const fps = baseSeq.fps || 30;
+      const durationSec = Math.max(1, Math.min(10, Number(args.durationSeconds ?? 3)));
+      const durationFrames = Math.max(fps, Math.round(durationSec * fps));
+      const pass: 'beauty' | 'clay' | 'depth' | 'normal' | 'wireframe' =
+        args.pass === 'clay' ||
+        args.pass === 'depth' ||
+        args.pass === 'normal' ||
+        args.pass === 'wireframe'
+          ? (args.pass as 'clay' | 'depth' | 'normal' | 'wireframe')
+          : 'beauty';
+
+      const cloned = structuredClone(p);
+      const srcClip = args.clipId ? baseSeq.clips.find((c) => c.id === String(args.clipId)) : undefined;
+      const srcVault = args.vaultItemId
+        ? (p.vault || []).find((v) => v.id === String(args.vaultItemId))
+        : undefined;
+      const srcAsset = args.assetId
+        ? p.assets.find((a) => a.id === String(args.assetId))
+        : undefined;
+
+      const userProps =
+        args.props && typeof args.props === 'object' ? (args.props as Record<string, unknown>) : {};
+      const baseProps: Record<string, unknown> = srcClip
+        ? { ...srcClip.props }
+        : srcVault?.rig?.presetId
+          ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
+          : srcAsset?.kind === 'model-3d'
+            ? { cameraPreset: 'orbit', cameraLens: 35 }
+            : {
+                presetId: 'spatial-stage',
+                sceneType: 'previs-blocking',
+                environmentPreset: 'rooftop-night',
+                actorAction: 'walk',
+                actorPath: 'approach',
+                cameraPreset: 'dolly-in',
+                cameraLens: 35,
+              };
+
+      const bakeName =
+        typeof args.name === 'string' && args.name.trim()
+          ? args.name.trim()
+          : `3D预演视频 · ${srcClip?.name || srcVault?.name || srcAsset?.name || '空间导演镜'}`;
+      const rawScale = Math.max(0.4, Math.min(1, Number(args.scale ?? 2 / 3)));
+      const bakeWidth = Math.max(320, Math.round((baseSeq.width * rawScale) / 2) * 2);
+      const bakeHeight = Math.max(320, Math.round((baseSeq.height * rawScale) / 2) * 2);
+      const tempSeqId = uid('seq_bake');
+      cloned.sequences.push({
+        ...baseSeq,
+        id: tempSeqId,
+        name: bakeName,
+        width: bakeWidth,
+        height: bakeHeight,
+        clips: [
+          {
+            id: uid('clip_bake'),
+            name: bakeName,
+            kind: 'shape',
+            track: 'visual',
+            layer: 0,
+            start: 0,
+            duration: srcClip ? Math.min(durationFrames, Math.max(fps, srcClip.duration)) : durationFrames,
+            sourceIn: 0,
+            assetId: srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+            locked: false,
+            keyframes: srcClip?.keyframes ? structuredClone(srcClip.keyframes) : undefined,
+            props: { ...baseProps, ...userProps, renderPass: pass, showHud: false },
+          },
+        ],
+      });
+
+      const assetsDir = join(ctx.store.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+      const outPath = join(assetsDir, `spatial-previs-${pass}-${uid('vid')}.mp4`);
+      const job = await this.deps.jobs.render(cloned, tempSeqId, outPath, {
+        scale: 1,
+        projectPath: ctx.store.path,
+      });
+      ctx.trackJob?.(job.id);
+      try {
+        await this.deps.jobs.wait(job.id, ctx.abortSignal);
+      } finally {
+        if (ctx.isActive && !ctx.isActive()) await this.deps.jobs.cancel(job.id);
+        ctx.untrackJob?.(job.id);
+      }
+      this.ensureActive(ctx);
+
+      const asset = await importMedia(outPath, ctx.store.path);
+      asset.name = bakeName;
+      asset.role = 'footage';
+      asset.tags = ['3D预演视频', pass === 'depth' ? '深度视频' : '空间运镜驱动'];
+      asset.derivedFrom = [
+        {
+          ...(srcVault ? { vaultItemId: srcVault.id } : {}),
+          ...(srcAsset ? { assetId: srcAsset.id } : {}),
+          via: 'bake-3d-video',
+          note: `由 Agent/空间摄影棚录制（${pass} 通道），可用于动作迁移或参考生视频`,
+        },
+      ];
+
+      const latest = await ctx.store.project();
+      const envelope = await ctx.store.edit({
+        baseRevision: latest.revision,
+        name: `录制 3D 预演视频「${bakeName}」`,
+        operations: [{ type: 'addAsset', asset }],
+      });
+      await this.deps.changed(ctx.store, envelope);
+      return {
+        assetId: asset.id,
+        name: asset.name,
+        path: asset.path,
+        duration: asset.duration,
+        pass,
+        revision: envelope.project.revision,
+        message: '已将 3D 空间镜头录制成真实 MP4 资产并入库，可直接将其作为参考/驱动视频传入 generate_media 或放入时间线。',
+      };
+    }
+
     throw new Error(`未知工具：${method}`);
   }
 
@@ -988,6 +1111,8 @@ export class CoCraftToolService {
         return this.execute('preflight_sequence', params, mcpCtx());
       case 'export.start':
         return this.execute('export_sequence', params, mcpCtx());
+      case 'stage.bakeSpatialVideo':
+        return this.execute('bake_spatial_video', params, mcpCtx());
       default:
         throw new Error(`未知的 MCP 操作：${action}`);
     }

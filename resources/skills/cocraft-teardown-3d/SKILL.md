@@ -1,48 +1,30 @@
 ---
 name: cocraft-teardown-3d
-description: 制作三维立体结构爆炸拆解、多层架构透视、空间节点沙盘或 .glb 模型环绕运镜（纯空间运镜规范，可搭配任意灯光与品牌材质）。
+description: 使用 CoCraft 统一空间摄影棚（Spatial Stage）编排 3D 摄像机、人物动作（walk/run/confront/turn/wave/idle）、走线路径、场景环境与 2.5D 立体漫剧镜头，一键调用 bake_spatial_video 录制成真实 MP4 预演视频反哺 AI 动作迁移/参考生视频，或导入 .glb/.spz 模型。
 ---
 
-# Teardown 3D · 三维爆炸拆解与流转沙盘范式
+# Spatial Stage · CoCraft 统一空间摄影棚与 3D→AI 视频闭环范式
 
-当用户要求 3D 产品/机械结构拆解、半导体叠层展示、高并发工厂流水线三维沙盘，或为 AI 视频生成摆设精确透视三维机位预演（Previs）时，启用本范式。
+当用户要求 **2.5D 立体原画/漫剧推拉镜头、3D 导演走线预演（摄像机 + 人物动作 + 走线 + 环境）、把 3D 场景录成预演视频再参考生成最终 AI 视频、3D 手机/电脑产品贴屏演示、`.glb` 骨骼动画、`.spz/.splat` 3D 高斯泼溅实景世界，或 3D 机械/芯片结构拆解**时，统一启用本范式。
 
-## 快速选择：内置 3D 舞台 vs 自定义 Three.js 组件
+## 1. 3D 导演编排 → 录为预演视频 → 参考生成最终 AI 视频（黄金闭环）
 
-1. **内置 Three.js 拆解舞台**：直接调用 `prepare_preset({presetId: "teardown-3d", sequenceId, start, duration, props: {text, subtitle, sceneType: "turbine" | "chip-stack" | "factory-flow", cameraPreset: "orbit" | "isometric" | "dolly-in" | "top-down" | "hero-low", explode: 0.65, speed: 1, focusLabel, accent, secondary}})`。
-2. **导入本地 `.glb` / `.gltf` 模型**：工程中已有 `kind === "model-3d"` 资产时，直接放置引用该 `assetId` 的视觉片段（或绑定到 `teardown-3d`），通过 `explode`（`0–1.4`）即可将子网格从质心径向平滑拆解展开。
-3. **编写全新 Three.js 场景组件**：在 `.tsx` 组件中可直接导入宿主内置的 `three` 与 `@remotion/three`（无需额外 npm 安装）：
+1. **编排 3D 场景参数（`spatial-stage`）**：
+   - `sceneType`: `"previs-blocking"`（3D 走线导演棚）| `"parallax-25d"`（2.5D 多层立体原画）| `"device-showcase"`（3D 硬件贴屏）| `"turbine"` / `"chip-stack"` / `"factory-flow"`
+   - `environmentPreset`: `"rooftop-night"`（雨夜天台都市）| `"neon-alley"`（赛博霓虹窄巷）| `"cyber-corridor"`（科幻长廊）| `"open-horizon"`（开阔逆光）| `"studio-grid"`（白箱影棚）
+   - `actorAction`: `"walk"` | `"run"` | `"confront"` | `"turn"` | `"wave"` | `"idle"`
+   - `actorPath`: `"approach"` | `"cross-left-right"` | `"cross-right-left"` | `"circle-rival"` | `"retreat"` | `"hold"`，或直接传入精确坐标 `actorStartX / actorStartZ / actorEndX / actorEndZ`！
+   - `cameraPreset`: `"dolly-in"` | `"dolly-zoom"` | `"orbit"` | `"pan-sweep"` | `"crane-up"` | `"hero-low"` | `"top-down"`，配合 `cameraLens: 24 | 35 | 50 | 85` 与 `particles3D: "rain" | "dust" | "snow" | "embers"`。
+2. **录制为真实 MP4 预演视频**：
+   - 直接调用 `bake_spatial_video({ props: {...}, durationSeconds: 3, pass: "beauty" | "depth" })`（或引用已有 `clipId` / `vaultItemId` / `assetId`）。
+   - 返回的 `assetId` 即为项目内真实 MP4 视频资产，可直接放上时间线，或作为驱动/参考视频喂给 `generate_media`（如 `wan2.2-animate-move` 动作迁移、`wan2.2-animate-mix` 视频换人或参考生视频）！
 
-```tsx
-import React, { useCallback } from 'react';
-import * as THREE from 'three';
-import { ThreeCanvas } from '@remotion/three';
+## 2. 导入 `.glb/.gltf`（含骨骼动画）与 `.spz/.splat/.ksplat/.ply`（3DGS 世界模型）
 
-export default function CustomRig({ explode = 0.5, accent = '#3b82f6' }) {
-  const setup = useCallback((scene: THREE.Scene) => {
-    scene.add(new THREE.AmbientLight('#ffffff', 0.9));
-    const dir = new THREE.DirectionalLight('#ffffff', 2.2);
-    dir.position.set(5, 8, 6);
-    scene.add(dir);
-    const core = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(1.1, 1),
-      new THREE.MeshStandardMaterial({ color: accent, metalness: 0.6, roughness: 0.2 })
-    );
-    core.name = 'core';
-    scene.add(core);
-  }, [accent]);
+- 工程中已有 `kind === "model-3d"` 资产时，直接放置引用该 `assetId` 的片段：
+  - `.glb/.gltf` 自动启用 PBR 棚光、软阴影、径向 `explode` 及内置 `AnimationMixer` 骨骼动画播放（`animationIndex`）。
+  - `.spz/.splat/.ksplat/.ply` 自动走 WebGL2 确定性深度排序高斯泼溅渲染器，帧同步导出 MP4。
 
-  const onFrame = useCallback(({ scene, camera, time }: any) => {
-    camera.position.set(Math.cos(time * 0.5) * 5, 2.4 + explode, Math.sin(time * 0.5) * 5);
-    camera.lookAt(0, 0, 0);
-    const core = scene.getObjectByName('core');
-    if (core) core.rotation.y = time * 0.8;
-  }, [explode]);
+## 3. 编写全新自定义 Three.js 组件
 
-  return <ThreeCanvas setup={setup} onFrame={onFrame} />;
-}
-```
-
-## 必须暴露的标准参数
-
-任何新建 3D 组件均应在默认 `props` 中暴露：`explode`（拆解度 `0–1`）、`speed`（运转速率）、`accent`（主光/材质强调色），方便用户无需改代码即可在属性面板拉动滑杆调节镜头。
+在 `.tsx` 组件中可直接导入宿主内置的 `three`、`GLTFLoader` 与 `@remotion/three`（含 `ThreeCanvas`、`SpatialStage`、`TeardownStage`，无需额外 npm 安装），并建议暴露 `cameraLens`、`cameraYaw`、`cameraPitch`、`explode`、`speed`、`accent` 参数供右侧属性面板无代码微调。

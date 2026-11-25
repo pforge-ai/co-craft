@@ -65,7 +65,14 @@ export function inferAssetEntityKind(item: Asset | VaultItem): AssetEntityKind {
   }
   if (item.entityKind) return item.entityKind;
   if (item.styleTokens || item.brand || item.category === 'brand') return 'style';
-  if (item.subkind === 'three-rig' || item.subkind === 'model-3d' || item.assetKind === 'model-3d') return 'three';
+  if (
+    item.subkind === 'three-rig' ||
+    item.subkind === 'model-3d' ||
+    item.subkind === 'splat-3d' ||
+    item.assetKind === 'model-3d'
+  ) {
+    return 'three';
+  }
   if (item.category === 'rig' || item.rig) return 'component';
   if (item.category === 'recipe') return 'skill';
   if (item.assetKind === 'video' || item.assetKind === 'audio') return item.assetKind;

@@ -426,6 +426,30 @@ async function start(data: any) {
         fileName: optionalText,
       }),
     ),
+    hostTool(
+      'bake_spatial_video',
+      '录制 3D 空间预演视频',
+      'Render a choreographed 3D Spatial Stage scene (camera trajectory, actorAction: walk/run/confront/turn/wave/idle, actorPath: approach/cross-left-right/circle-rival or custom actorStartX/Z->actorEndX/Z, environmentPreset: rooftop-night/neon-alley/cyber-corridor/open-horizon/studio-grid, or 2.5D layers / .glb / .spz) into a real local MP4 video asset in the project vault so it can be placed on the timeline OR passed into generate_media as a driving/reference video.',
+      Type.Object({
+        sequenceId: optionalText,
+        clipId: optionalText,
+        vaultItemId: optionalText,
+        assetId: optionalText,
+        name: optionalText,
+        durationSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 10 })),
+        pass: Type.Optional(
+          Type.Union([
+            Type.Literal('beauty'),
+            Type.Literal('clay'),
+            Type.Literal('depth'),
+            Type.Literal('normal'),
+            Type.Literal('wireframe'),
+          ]),
+        ),
+        scale: Type.Optional(Type.Number({ minimum: 0.4, maximum: 1 })),
+        props: Type.Optional(Type.Record(Type.String(), Type.Any())),
+      }),
+    ),
   ];
   const skillsReal = await realpath(skillsPath);
   const mediaToolsReal =
@@ -622,7 +646,7 @@ async function start(data: any) {
     noThemes: true,
     noContextFiles: true,
     appendSystemPrompt: [
-      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion, apply_keyframe_preset for smooth Ken Burns / fade / BGM auto-ducking, detach_audio for J/L cut audio separation, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Call pull_vault_item to adopt assets from the personal library, preflight_sequence to verify export readiness, and export_sequence when the user asks to render MP4. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
+      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion (including spatial-stage for 2.5D layered parallax, 3D choreographed camera/actorAction/actorPath/environmentPreset previs, 3D hardware screens, and .glb/.spz worlds), call bake_spatial_video to record a choreographed 3D scene into a real MP4 video asset that can drive downstream AI video generation via generate_media, apply_keyframe_preset for smooth Ken Burns / fade / BGM auto-ducking, detach_audio for J/L cut audio separation, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Call pull_vault_item to adopt assets from the personal library, preflight_sequence to verify export readiness, and export_sequence when the user asks to render MP4. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
     ],
   });
   await loader.reload();

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getPreset, type PresetParameter } from '../core/presets';
+import type { Project } from '../core/types';
 import { PresetFrame } from '../composition/Presets';
 import './ResourceLibrary.css';
 
@@ -23,6 +24,8 @@ export function PresetPreview({
   thumbnail = false,
   backdrop,
   className = '',
+  project,
+  mediaOrigin,
 }: {
   presetId: string;
   values?: Record<string, unknown>;
@@ -31,6 +34,8 @@ export function PresetPreview({
   thumbnail?: boolean;
   backdrop?: string;
   className?: string;
+  project?: Project;
+  mediaOrigin?: string;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const preset = getPreset(presetId)!;
@@ -119,6 +124,9 @@ export function PresetPreview({
               width={cw}
               height={ch}
               props={values}
+              project={project}
+              mediaOrigin={mediaOrigin}
+              standalone
             />
           </div>
         </div>

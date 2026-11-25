@@ -303,27 +303,13 @@
   --kf-glow: rgba(14, 165, 233, 0.62);
 }
 
-/* ── Asymmetric Tracing Comet Gradients (70% Transparent + 30% Hot Comet!) ─ */
-:root {
-  --comet-rim-grad: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 246deg,
-    var(--beam-tail) 292deg,
-    var(--beam-mid) 334deg,
-    var(--beam-core) 354deg,
-    transparent 360deg
-  );
-  /* Localized head-only reflection: 80% transparent so NO uniform 4-sided neon box! */
-  --comet-spill-grad: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 286deg,
-    var(--beam-spill) 332deg,
-    var(--beam-mid) 352deg,
-    transparent 360deg
-  );
-}
+/* ── Asymmetric Tracing Comet Gradients Note ───────────────────────────────
+ * IMPORTANT: Never store `conic-gradient(from var(--cc-prism-angle), ...)` in a
+ * `:root` custom property! Per CSS Variables spec, `:root` resolves `--cc-prism-angle`
+ * statically to `0deg` before inheritance, freezing the comet at 12 o'clock.
+ * Keep `conic-gradient(from var(--cc-prism-angle), ...)` directly on each animated
+ * pseudo-element so `@property --cc-prism-angle` animates smoothly at 60fps!
+ * ─────────────────────────────────────────────────────────────────────────── */
 
 /* ── Settings Controls (Intensity Segmented + Color Swatch Pills) ────────── */
 .segmented-inline {
@@ -477,7 +463,15 @@
   inset: -1px;
   border-radius: inherit;
   padding: var(--comet-width);
-  background: var(--comet-rim-grad);
+  background: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 246deg,
+    var(--beam-tail) 292deg,
+    var(--beam-mid) 334deg,
+    var(--beam-core) 354deg,
+    transparent 360deg
+  );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
@@ -496,7 +490,14 @@
   position: absolute;
   inset: -3px -4px -5px;
   border-radius: 24px;
-  background: var(--comet-spill-grad);
+  background: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 286deg,
+    var(--beam-spill) 332deg,
+    var(--beam-mid) 352deg,
+    transparent 360deg
+  );
   filter: blur(var(--comet-spill-blur));
   pointer-events: none;
   opacity: 0;
@@ -545,7 +546,15 @@
   inset: -1px;
   border-radius: inherit;
   padding: var(--comet-width);
-  background: var(--comet-rim-grad);
+  background: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 246deg,
+    var(--beam-tail) 292deg,
+    var(--beam-mid) 334deg,
+    var(--beam-core) 354deg,
+    transparent 360deg
+  );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
@@ -560,7 +569,14 @@
   position: absolute;
   inset: -2px;
   border-radius: 8px;
-  background: var(--comet-spill-grad);
+  background: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 286deg,
+    var(--beam-spill) 332deg,
+    var(--beam-mid) 352deg,
+    transparent 360deg
+  );
   filter: blur(5px);
   pointer-events: none;
   opacity: var(--comet-spill-alpha);
@@ -709,7 +725,14 @@
   position: absolute;
   inset: 22px -4px -5px -4px;
   border-radius: 15px;
-  background: var(--comet-spill-grad);
+  background: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 286deg,
+    var(--beam-spill) 332deg,
+    var(--beam-mid) 352deg,
+    transparent 360deg
+  );
   filter: blur(var(--comet-spill-blur));
   pointer-events: none;
   opacity: var(--comet-spill-alpha);
@@ -742,7 +765,15 @@
   inset: 0;
   border-radius: 11px;
   padding: var(--comet-width);
-  background: var(--comet-rim-grad);
+  background: conic-gradient(
+    from var(--cc-prism-angle),
+    transparent 0deg,
+    transparent 246deg,
+    var(--beam-tail) 292deg,
+    var(--beam-mid) 334deg,
+    var(--beam-core) 354deg,
+    transparent 360deg
+  );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
