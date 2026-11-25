@@ -2904,7 +2904,7 @@ export function CreateCanvas({
       onDoubleClick={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-top-hud, .cc-left-rail-wrap, .cc-popover, .cc-multi-bar, .cc-group-frame, .cc-group-stack, .cc-zone-frame, .cc-zone-stack, .cc-hidden-popover, .cc-quicklook-backdrop, .cc-animatic-backdrop',
+            '.cc-node, .cc-bottom-dock, .cc-bottom-right-controls, .cc-utility-pill, .cc-top-hud, .cc-left-rail-wrap, .cc-popover, .cc-multi-bar, .cc-group-frame, .cc-group-stack, .cc-zone-frame, .cc-zone-stack, .cc-hidden-popover, .cc-quicklook-backdrop, .cc-animatic-backdrop',
           )
         ) {
           return;
@@ -2918,7 +2918,7 @@ export function CreateCanvas({
       onPointerDown={(e) => {
         if (
           (e.target as HTMLElement).closest(
-            '.cc-node, .cc-bottom-dock, .cc-utility-pill, .cc-top-hud, .cc-left-rail-wrap, .cc-popover, .cc-empty-hero, .cc-multi-bar, .cc-zone-header, .cc-zone-stack, .cc-hidden-popover, .cc-group-header, .cc-group-stack, .cc-quicklook-backdrop, .cc-animatic-backdrop, button, input, textarea, select, audio',
+            '.cc-node, .cc-bottom-dock, .cc-bottom-right-controls, .cc-utility-pill, .cc-top-hud, .cc-left-rail-wrap, .cc-popover, .cc-empty-hero, .cc-multi-bar, .cc-zone-header, .cc-zone-stack, .cc-hidden-popover, .cc-group-header, .cc-group-stack, .cc-quicklook-backdrop, .cc-animatic-backdrop, button, input, textarea, select, audio',
           )
         ) {
           return;
@@ -5410,199 +5410,205 @@ export function CreateCanvas({
         />
       </div>
 
-      {/* Bottom-Right TapNow 3-in-1 Utility Capsule + Popover Minimap */}
-      <CanvasUtilityControls
-        showMinimap={showMinimap}
-        onToggleMinimap={() => setShowMinimap((v) => !v)}
-        minimapDots={minimapDots}
-        rightAgentOpen={rightAgentOpen}
-        onToggleRightAgent={onToggleRightAgent}
-        zoom={zoom}
-        onZoomOut={() => setZoom((z) => Math.max(0.45, Math.round((z - 0.1) * 100) / 100))}
-        onZoomIn={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 100) / 100))}
-        onTidy={() => void tidyCanvasNodes()}
-        onFit={fitCanvasToNodes}
-      />
+      {/* Unified Bottom Responsive Bar: Center Omnibar + Right Utility Controls (Zero Collision at Any Width) */}
+      <div className="cc-bottom-bar">
+        <div className="cc-bottom-spacer" aria-hidden="true" />
+        {!rightAgentOpen ? (
+          (() => {
+            const singleRefs = selectedNodeIds.length > 0 ? collectRefsFromNodeKeys(selectedNodeIds) : [];
+            const selectedShot =
+              primarySelectedId?.startsWith('shot:')
+                ? shots.find((s) => `shot:${s.id}` === primarySelectedId)
+                : undefined;
+            const activeVal = omnibarDraft || floatingPrompt;
 
-      {/* Unified Bottom-Centered AI Director Bar (Zero Mode Tabs, Zero Detached White Orb) */}
-      {!rightAgentOpen &&
-        (() => {
-          const singleRefs = selectedNodeIds.length > 0 ? collectRefsFromNodeKeys(selectedNodeIds) : [];
-          const selectedShot =
-            primarySelectedId?.startsWith('shot:')
-              ? shots.find((s) => `shot:${s.id}` === primarySelectedId)
-              : undefined;
-          const activeVal = omnibarDraft || floatingPrompt;
+            const handleSlashAction = (cmd: OmnibarSlashAction) => {
+              const text = activeVal.replace(/^\/\S*\s*/, '').trim();
+              if (cmd === 'tidy') {
+                void tidyCanvasNodes();
+                return;
+              }
+              if (cmd === 'new-text') {
+                void createTextNode(text);
+                setOmnibarDraft('');
+                onFloatingPromptChange('');
+                return;
+              }
+              if (cmd === 'gen-image') {
+                const inputs: CanvasGeneratorInput[] = visualSelection.sourceNodeKeys
+                  .slice(0, 6)
+                  .map((k, idx) => ({ nodeKey: k, slot: idx === 0 ? 'subject' : 'style' }));
+                void spawnGeneratorNode({
+                  use: 'image',
+                  action: inputs.length >= 2 ? 'multi-ref-image' : inputs.length === 1 ? 'image-edit' : 'text-to-image',
+                  inputs,
+                  prompt: text || undefined,
+                  placement: inputs.length > 0 ? visualSelection.anchorPlacement : viewportCenterWorld(),
+                });
+                setOmnibarDraft('');
+                onFloatingPromptChange('');
+                return;
+              }
+              if (cmd === 'gen-video') {
+                const imgKeys = visualSelection.sourceNodeKeys;
+                const inputs: CanvasGeneratorInput[] =
+                  imgKeys.length === 2
+                    ? [
+                        { nodeKey: imgKeys[0], slot: 'first-frame' },
+                        { nodeKey: imgKeys[1], slot: 'last-frame' },
+                      ]
+                    : imgKeys.slice(0, 4).map((k, idx) => ({
+                        nodeKey: k,
+                        slot: idx === 0 ? 'first-frame' : 'subject',
+                      }));
+                void spawnGeneratorNode({
+                  use: 'video',
+                  action: imgKeys.length === 2 ? 'first-last-video' : imgKeys.length >= 3 ? 'ref-video' : 'image-to-video',
+                  inputs,
+                  prompt: text || undefined,
+                  placement: inputs.length > 0 ? visualSelection.anchorPlacement : viewportCenterWorld(),
+                });
+                setOmnibarDraft('');
+                onFloatingPromptChange('');
+                return;
+              }
+              if (cmd === 'gen-speech') {
+                void spawnGeneratorNode({
+                  use: 'speech',
+                  action: 'tts',
+                  prompt: text,
+                  placement: viewportCenterWorld(),
+                });
+                setOmnibarDraft('');
+                onFloatingPromptChange('');
+                return;
+              }
+              if (cmd === 'breakdown') {
+                if (text.includes('\n')) {
+                  const ops = scriptOutlineToShotOperations(sequence, text, undefined, upstreamEntities);
+                  if (ops.length) {
+                    void onEdit('从指令舱脚本拆解分镜', ops);
+                    setOmnibarDraft('');
+                    onFloatingPromptChange('');
+                  }
+                } else {
+                  onSendCanvasInstruction(
+                    text
+                      ? `请围绕以下创意主题为当前分支拆解生成多镜头分镜脚本、字幕与匹配画面：${text}`
+                      : '请根据当前画布上的剧本与设定资产拆解生成多镜头分镜序列。',
+                    selectedShot?.anchorClip,
+                  );
+                  setOmnibarDraft('');
+                  onFloatingPromptChange('');
+                }
+              }
+            };
 
-          const handleSlashAction = (cmd: OmnibarSlashAction) => {
-            const text = activeVal.replace(/^\/\S*\s*/, '').trim();
-            if (cmd === 'tidy') {
-              void tidyCanvasNodes();
-              return;
-            }
-            if (cmd === 'new-text') {
-              void createTextNode(text);
-              setOmnibarDraft('');
-              onFloatingPromptChange('');
-              return;
-            }
-            if (cmd === 'gen-image') {
-              const inputs: CanvasGeneratorInput[] = visualSelection.sourceNodeKeys
-                .slice(0, 6)
-                .map((k, idx) => ({ nodeKey: k, slot: idx === 0 ? 'subject' : 'style' }));
-              void spawnGeneratorNode({
-                use: 'image',
-                action: inputs.length >= 2 ? 'multi-ref-image' : inputs.length === 1 ? 'image-edit' : 'text-to-image',
-                inputs,
-                prompt: text || undefined,
-                placement: inputs.length > 0 ? visualSelection.anchorPlacement : viewportCenterWorld(),
-              });
-              setOmnibarDraft('');
-              onFloatingPromptChange('');
-              return;
-            }
-            if (cmd === 'gen-video') {
-              const imgKeys = visualSelection.sourceNodeKeys;
-              const inputs: CanvasGeneratorInput[] =
-                imgKeys.length === 2
-                  ? [
-                      { nodeKey: imgKeys[0], slot: 'first-frame' },
-                      { nodeKey: imgKeys[1], slot: 'last-frame' },
-                    ]
-                  : imgKeys.slice(0, 4).map((k, idx) => ({
-                      nodeKey: k,
-                      slot: idx === 0 ? 'first-frame' : 'subject',
-                    }));
-              void spawnGeneratorNode({
-                use: 'video',
-                action: imgKeys.length === 2 ? 'first-last-video' : imgKeys.length >= 3 ? 'ref-video' : 'image-to-video',
-                inputs,
-                prompt: text || undefined,
-                placement: inputs.length > 0 ? visualSelection.anchorPlacement : viewportCenterWorld(),
-              });
-              setOmnibarDraft('');
-              onFloatingPromptChange('');
-              return;
-            }
-            if (cmd === 'gen-speech') {
-              void spawnGeneratorNode({
-                use: 'speech',
-                action: 'tts',
-                prompt: text,
-                placement: viewportCenterWorld(),
-              });
-              setOmnibarDraft('');
-              onFloatingPromptChange('');
-              return;
-            }
-            if (cmd === 'breakdown') {
-              if (text.includes('\n')) {
+            const handleOmnibarSubmit = async () => {
+              const text = activeVal.trim();
+              if (!text) return;
+              // Fast 0-cost local intent check (and optional System 1 router when explicitly enabled)
+              let intent: OmnibarLocalIntent = 'agent';
+              const localHit = routeOmnibarLocally(text);
+              if (localHit.intent !== 'agent' && localHit.confidence >= 0.85) {
+                intent = localHit.intent;
+              } else if (
+                settings?.system1 &&
+                settings.system1.mode !== 'off' &&
+                settings.system1.features?.omnibarRouter
+              ) {
+                try {
+                  const res = await window.cocraft.call<{ intent: OmnibarLocalIntent; confidence: number }>(
+                    'system1.routeOmnibar',
+                    { text },
+                  );
+                  if (res?.intent && res.intent !== 'agent' && res.confidence >= 0.75) {
+                    intent = res.intent;
+                  }
+                } catch {
+                  intent = 'agent';
+                }
+              }
+              if (intent === 'tidy') {
+                void tidyCanvasNodes();
+                setOmnibarDraft('');
+                onFloatingPromptChange('');
+                return;
+              }
+              if (intent === 'new-text') {
+                const cleaned = text.replace(/^(新建|加一个?|创建)(文本|便签|剧本|脚本)(卡|节点)?[:：]?\s*/i, '').trim();
+                void createTextNode(cleaned);
+                setOmnibarDraft('');
+                onFloatingPromptChange('');
+                return;
+              }
+              if (intent === 'breakdown' && text.includes('\n')) {
                 const ops = scriptOutlineToShotOperations(sequence, text, undefined, upstreamEntities);
                 if (ops.length) {
                   void onEdit('从指令舱脚本拆解分镜', ops);
                   setOmnibarDraft('');
                   onFloatingPromptChange('');
+                  return;
                 }
-              } else {
-                onSendCanvasInstruction(
-                  text
-                    ? `请围绕以下创意主题为当前分支拆解生成多镜头分镜脚本、字幕与匹配画面：${text}`
-                    : '请根据当前画布上的剧本与设定资产拆解生成多镜头分镜序列。',
-                  selectedShot?.anchorClip,
-                );
-                setOmnibarDraft('');
-                onFloatingPromptChange('');
               }
-            }
-          };
-
-          const handleOmnibarSubmit = async () => {
-            const text = activeVal.trim();
-            if (!text) return;
-            // Fast 0-cost local intent check (and optional System 1 router when explicitly enabled)
-            let intent: OmnibarLocalIntent = 'agent';
-            const localHit = routeOmnibarLocally(text);
-            if (localHit.intent !== 'agent' && localHit.confidence >= 0.85) {
-              intent = localHit.intent;
-            } else if (
-              settings?.system1 &&
-              settings.system1.mode !== 'off' &&
-              settings.system1.features?.omnibarRouter
-            ) {
-              try {
-                const res = await window.cocraft.call<{ intent: OmnibarLocalIntent; confidence: number }>(
-                  'system1.routeOmnibar',
-                  { text },
-                );
-                if (res?.intent && res.intent !== 'agent' && res.confidence >= 0.75) {
-                  intent = res.intent;
-                }
-              } catch {
-                intent = 'agent';
-              }
-            }
-            if (intent === 'tidy') {
-              void tidyCanvasNodes();
-              setOmnibarDraft('');
-              onFloatingPromptChange('');
-              return;
-            }
-            if (intent === 'new-text') {
-              const cleaned = text.replace(/^(新建|加一个?|创建)(文本|便签|剧本|脚本)(卡|节点)?[:：]?\s*/i, '').trim();
-              void createTextNode(cleaned);
-              setOmnibarDraft('');
-              onFloatingPromptChange('');
-              return;
-            }
-            if (intent === 'breakdown' && text.includes('\n')) {
-              const ops = scriptOutlineToShotOperations(sequence, text, undefined, upstreamEntities);
-              if (ops.length) {
-                void onEdit('从指令舱脚本拆解分镜', ops);
+              if (intent === 'reframe-vertical' && onAutoReframeVertical) {
+                void onAutoReframeVertical();
                 setOmnibarDraft('');
                 onFloatingPromptChange('');
                 return;
               }
-            }
-            if (intent === 'reframe-vertical' && onAutoReframeVertical) {
-              void onAutoReframeVertical();
+              const ctxPrefix =
+                singleRefs.length > 0 || chatRefs.length > 0
+                  ? `参考上下文（${[...chatRefs, ...singleRefs].map((r) => `@${r.label}`).join('、')}）：`
+                  : '';
+              onSendCanvasInstruction(`${ctxPrefix}${text}`, selectedShot?.anchorClip);
               setOmnibarDraft('');
               onFloatingPromptChange('');
-              return;
-            }
-            const ctxPrefix =
-              singleRefs.length > 0 || chatRefs.length > 0
-                ? `参考上下文（${[...chatRefs, ...singleRefs].map((r) => `@${r.label}`).join('、')}）：`
-                : '';
-            onSendCanvasInstruction(`${ctxPrefix}${text}`, selectedShot?.anchorClip);
-            setOmnibarDraft('');
-            onFloatingPromptChange('');
-          };
+            };
 
-          return (
-            <div className="cc-bottom-dock" onPointerDown={(e) => e.stopPropagation()}>
-              <CanvasOmnibar
-                aiBusy={aiBusy}
-                value={activeVal}
-                onChange={(val) => {
-                  setOmnibarDraft(val);
-                  onFloatingPromptChange(val);
-                }}
-                onSubmit={handleOmnibarSubmit}
-                onSlashAction={handleSlashAction}
-                inputRef={omnibarInputRef}
-                chatRefs={chatRefs}
-                singleRefs={singleRefs}
-                onRemoveChatRef={onRemoveChatRef}
-                onRemoveCanvasRef={(key) => setSelectedNodeIds((prev) => prev.filter((k) => k !== key))}
-                onAttachSelectedToChat={
-                  onAddRefsToChat && singleRefs.length > 0
-                    ? () => onAddRefsToChat(singleRefs, false)
-                    : undefined
-                }
-              />
-            </div>
-          );
-        })()}
+            return (
+              <div className="cc-bottom-dock" onPointerDown={(e) => e.stopPropagation()}>
+                <CanvasOmnibar
+                  aiBusy={aiBusy}
+                  value={activeVal}
+                  onChange={(val) => {
+                    setOmnibarDraft(val);
+                    onFloatingPromptChange(val);
+                  }}
+                  onSubmit={handleOmnibarSubmit}
+                  onSlashAction={handleSlashAction}
+                  inputRef={omnibarInputRef}
+                  chatRefs={chatRefs}
+                  singleRefs={singleRefs}
+                  onRemoveChatRef={onRemoveChatRef}
+                  onRemoveCanvasRef={(key) => setSelectedNodeIds((prev) => prev.filter((k) => k !== key))}
+                  onAttachSelectedToChat={
+                    onAddRefsToChat && singleRefs.length > 0
+                      ? () => onAddRefsToChat(singleRefs, false)
+                      : undefined
+                  }
+                />
+              </div>
+            );
+          })()
+        ) : (
+          <div className="cc-bottom-spacer" aria-hidden="true" />
+        )}
+
+        {/* Bottom-Right TapNow 3-in-1 Utility Capsule + Popover Minimap */}
+        <CanvasUtilityControls
+          showMinimap={showMinimap}
+          onToggleMinimap={() => setShowMinimap((v) => !v)}
+          minimapDots={minimapDots}
+          rightAgentOpen={rightAgentOpen}
+          onToggleRightAgent={onToggleRightAgent}
+          zoom={zoom}
+          onZoomOut={() => setZoom((z) => Math.max(0.45, Math.round((z - 0.1) * 100) / 100))}
+          onZoomIn={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 100) / 100))}
+          onTidy={() => void tidyCanvasNodes()}
+          onFit={fitCanvasToNodes}
+        />
+      </div>
 
       {/* Space / Double-Click Quick Look Lightbox */}
       {quickLookKey && (

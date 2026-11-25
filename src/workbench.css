@@ -3851,20 +3851,39 @@ input[type='checkbox']:not(.switch) {
   background: var(--panel);
 }
 
-/* Bottom-Right TapNow 3-in-1 Utility Capsule + Popover Minimap */
-.cc-bottom-right-controls {
+/* Unified Bottom Responsive Bar: Center Omnibar + Bottom-Right Utility Controls (Zero Collision) */
+.cc-bottom-bar {
   position: absolute;
+  left: 16px;
   right: 16px;
   bottom: 16px;
+  z-index: var(--z-floating-dock);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 580px) minmax(max-content, 1fr);
+  align-items: end;
+  gap: 12px;
+  pointer-events: none;
+}
+.cc-bottom-spacer {
+  pointer-events: none;
+}
+
+/* Bottom-Right TapNow 3-in-1 Utility Capsule + Popover Minimap */
+.cc-bottom-right-controls {
+  position: relative;
+  justify-self: end;
   z-index: var(--z-floating-controls);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
+  pointer-events: auto;
   cursor: default;
 }
 .cc-minimap {
-  position: relative;
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
   width: 152px;
   height: 92px;
   border-radius: 10px;
@@ -3938,23 +3957,22 @@ input[type='checkbox']:not(.switch) {
   color: var(--text);
 }
 
-/* TapNow Bottom-Centered Dock: Floating AI Omnibar + Independent (+) FAB */
+/* TapNow Bottom-Centered Dock: Floating AI Omnibar */
 .cc-bottom-dock {
-  position: absolute;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  z-index: var(--z-floating-dock);
+  position: relative;
+  width: 100%;
+  min-width: 0;
   display: flex;
   align-items: flex-end;
+  justify-content: center;
   gap: 10px;
-  max-width: calc(100% - 240px);
+  pointer-events: auto;
   cursor: default;
 }
 .cc-ai-omnibar {
   position: relative;
-  width: min(560px, 62vw);
-  min-width: 320px;
+  width: 100%;
+  min-width: 0;
   padding: 8px 10px 8px 14px;
   border-radius: 18px;
   background: color-mix(in srgb, var(--raised) 92%, transparent);
@@ -8487,13 +8505,15 @@ input[type='checkbox']:not(.switch) {
 /* Unified Director Omnibar + Slash Command Popover */
 .cc-omnibar-shell {
   position: relative;
+  width: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
 }
 .cc-ai-omnibar.unified {
-  width: min(580px, 64vw);
-  min-width: 340px;
+  width: 100%;
+  min-width: 0;
   padding: 8px 10px 8px 14px;
   border-radius: 20px;
   gap: 5px;

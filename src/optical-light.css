@@ -1,30 +1,24 @@
 /* ============================================================================
- * CoCraft Optical Lighting System v3 — C + A Architecture
+ * CoCraft Optical Lighting System v3.1 — Calm Architectural Optics
  * ----------------------------------------------------------------------------
- * C (Strict Static/Active Hierarchy — Zero Light Pollution):
- *   - Idle / Focused inputs / Selected cards: crisp physical elevation shadows,
- *     monochrome liquid-glass top bevels, 100% pure clean interiors (0 smudge!).
- *   - ONLY actively generating/thinking elements light up: Ghost rendering cards
- *     gain a slow velvety internal fluid light field (.cc-ghost-fluid), while
- *     active cards/bars display the asymmetric tracing comet.
- * A (True White-Hot Asymmetric Tracing Comet — 70% Quiet + 30% Beam):
- *   - 70% of the perimeter stays completely quiet/transparent!
- *   - Only a focused leading white-hot core + tapered theme-color tail glides
- *     cleanly around the outer bevel, casting a tiny localized reflection ONLY
- *     at the comet tip (never a uniform 4-sided neon sticker outline).
+ * - Idle / Focused inputs / Selected cards: 100% STATIC crisp physical elevation,
+ *   refined theme hairline border & monochrome liquid-glass top bevels — ZERO
+ *   distracting continuous spinning while typing or reviewing!
+ * - Active AI / Rendering (.ai-active / .generating): calm, symmetric slow
+ *   top-edge optical breath (3.4s ease-in-out) + soft Ghost internal light field.
+ * - Pointer-driven Option D proximity flashlight on canvas cards/capsules moves
+ *   ONLY in response to user cursor movement.
  * Themeable via :root[data-glow-color="emerald"|"silver"|"cobalt"|"amber"|"aurora"]
  * Guardrail: Edit Mode video playback stage stays 100% neutral (zero tint).
  * ============================================================================ */
 
-@property --cc-prism-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-
-@keyframes cc-prism-spin {
-  to {
-    --cc-prism-angle: 360deg;
+@keyframes cc-calm-breathe {
+  0%,
+  100% {
+    opacity: 0.44;
+  }
+  50% {
+    opacity: 0.88;
   }
 }
 
@@ -303,12 +297,10 @@
   --kf-glow: rgba(14, 165, 233, 0.62);
 }
 
-/* ── Asymmetric Tracing Comet Gradients Note ───────────────────────────────
- * IMPORTANT: Never store `conic-gradient(from var(--cc-prism-angle), ...)` in a
- * `:root` custom property! Per CSS Variables spec, `:root` resolves `--cc-prism-angle`
- * statically to `0deg` before inheritance, freezing the comet at 12 o'clock.
- * Keep `conic-gradient(from var(--cc-prism-angle), ...)` directly on each animated
- * pseudo-element so `@property --cc-prism-angle` animates smoothly at 60fps!
+/* ── Calm Optical Light Philosophy ─────────────────────────────────────────
+ * Idle & focused states stay completely static (zero peripheral distraction).
+ * Only actively working AI elements (.ai-active / .generating) show a slow,
+ * symmetric top-bevel optical breath (3.4s ease-in-out).
  * ─────────────────────────────────────────────────────────────────────────── */
 
 /* ── Settings Controls (Intensity Segmented + Color Swatch Pills) ────────── */
@@ -455,48 +447,49 @@
   background: #ffffff;
 }
 
-/* Asymmetric Tracing Comet Rim (70% quiet, 30% white-hot comet arc) */
+/* Calm Symmetric Top-Rim Optical Filament (ZERO dizzy spinning!)
+ * - Idle: invisible (pure quiet machined glass)
+ * - Focused (:focus-within): static refined border & subtle top bevel — zero animation while typing!
+ * - AI Active (.ai-active): slow, velvety top-bevel optical breath (3.4s ease-in-out) */
 :root:not([data-glow='off']) .cc-ai-omnibar::before,
 :root:not([data-glow='off']) .composer::before {
   content: '';
   position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: var(--comet-width);
-  background: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 246deg,
-    var(--beam-tail) 292deg,
-    var(--beam-mid) 334deg,
-    var(--beam-core) 354deg,
-    transparent 360deg
+  left: 14%;
+  right: 14%;
+  top: -1px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--beam-tail) 20%,
+    var(--beam-mid) 44%,
+    var(--beam-core) 50%,
+    var(--beam-mid) 56%,
+    var(--beam-tail) 80%,
+    transparent 100%
   );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.24s ease;
   z-index: 2;
 }
 
-/* Localized Comet-Head Reflection ONLY (80% transparent — active state only!) */
+/* Soft localized top-edge bloom — ONLY visible when AI is actively running (.ai-active) */
 :root:not([data-glow='off']) .cc-ai-omnibar::after,
 :root:not([data-glow='off']) .composer::after {
   content: '';
   position: absolute;
-  inset: -3px -4px -5px;
-  border-radius: 24px;
-  background: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 286deg,
-    var(--beam-spill) 332deg,
-    var(--beam-mid) 352deg,
-    transparent 360deg
+  left: 22%;
+  right: 22%;
+  top: -4px;
+  height: 10px;
+  border-radius: 999px;
+  background: radial-gradient(
+    ellipse at 50% 50%,
+    var(--beam-spill) 0%,
+    transparent 74%
   );
   filter: blur(var(--comet-spill-blur));
   pointer-events: none;
@@ -504,40 +497,40 @@
   transition: opacity 0.28s ease;
   z-index: -1;
 }
-:root:not([data-glow='off']) .composer::after {
-  inset: -3px -4px -4px;
-  border-radius: 11px;
-}
 
-/* Focused Input: razor-clean calm border + delicate travelling comet, ZERO smudge halo! */
+/* Focused Input: 100% STATIC calm highlight (NO distracting continuous motion while typing!) */
 :root:not([data-glow='off']) .cc-ai-omnibar:focus-within,
 :root:not([data-glow='off']) .composer:focus-within {
+  border-color: color-mix(in srgb, var(--beam-focus-border) 62%, var(--line));
+  box-shadow:
+    inset 0 1px 0 var(--rim-top),
+    0 0 0 1px color-mix(in srgb, var(--beam-focus-border) 18%, transparent),
+    var(--glass-depth-shadow);
+}
+/* Note: ::before and ::after stay quiet on :focus-within -> completely calm focus! */
+
+/* AI Active (Agent Thinking / Cloud Rendering): gentle calm breathing top filament (no racing ring) */
+:root:not([data-glow='off']) .cc-ai-omnibar.ai-active,
+:root:not([data-glow='off']) .composer.ai-active {
   border-color: color-mix(in srgb, var(--beam-focus-border) 55%, var(--line));
 }
-:root:not([data-glow='off']) .cc-ai-omnibar:focus-within::before,
-:root:not([data-glow='off']) .composer:focus-within::before {
-  opacity: var(--comet-focus-alpha);
-  animation: cc-prism-spin 5.8s linear infinite;
-}
-/* Note: ::after stays opacity: 0 on :focus-within -> zero muddy halo while typing! */
-
-/* AI Active (Agent Thinking / Cloud Rendering): crisp comet + localized head bounce */
 :root:not([data-glow='off']) .cc-ai-omnibar.ai-active::before,
 :root:not([data-glow='off']) .composer.ai-active::before {
   opacity: var(--comet-active-alpha);
-  animation: cc-prism-spin 2.8s linear infinite;
+  animation: cc-calm-breathe 4.2s ease-in-out infinite;
 }
 :root:not([data-glow='off']) .cc-ai-omnibar.ai-active::after,
 :root:not([data-glow='off']) .composer.ai-active::after {
-  opacity: var(--comet-spill-alpha);
-  animation: cc-prism-spin 2.8s linear infinite;
+  opacity: calc(var(--comet-spill-alpha) * 0.72);
+  animation: cc-calm-breathe 4.2s ease-in-out infinite;
 }
 
-/* Active Jobs Spinner in Titlebar: crisp tracing comet, zero neon blob */
+/* Active Jobs Indicator in Titlebar: calm breathing rim, zero frantic spinner */
 :root:not([data-glow='off']) .icon-button.jobs-active-glow {
   position: relative;
   background: var(--raised);
   color: var(--text);
+  border-color: color-mix(in srgb, var(--beam-focus-border) 65%, var(--line));
   box-shadow: inset 0 1px 0 var(--rim-top);
 }
 :root:not([data-glow='off']) .icon-button.jobs-active-glow::before {
@@ -545,42 +538,21 @@
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  padding: var(--comet-width);
-  background: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 246deg,
-    var(--beam-tail) 292deg,
-    var(--beam-mid) 334deg,
-    var(--beam-core) 354deg,
-    transparent 360deg
-  );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
+  border: 1px solid var(--beam-mid);
   pointer-events: none;
-  opacity: var(--comet-active-alpha);
-  animation: cc-prism-spin 2.4s linear infinite;
+  opacity: 0.72;
+  animation: cc-calm-breathe 3s ease-in-out infinite;
 }
 :root:not([data-glow='off']) .icon-button.jobs-active-glow::after {
   content: '';
   position: absolute;
   inset: -2px;
   border-radius: 8px;
-  background: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 286deg,
-    var(--beam-spill) 332deg,
-    var(--beam-mid) 352deg,
-    transparent 360deg
-  );
+  background: radial-gradient(circle, var(--beam-spill), transparent 72%);
   filter: blur(5px);
   pointer-events: none;
   opacity: var(--comet-spill-alpha);
-  animation: cc-prism-spin 2.4s linear infinite;
+  animation: cc-calm-breathe 3s ease-in-out infinite;
   z-index: -1;
 }
 
@@ -716,27 +688,22 @@
   animation: cc-wire-photon 1.85s linear infinite;
 }
 
-/* ── C + A Hero Moment: Actively Generating Ghost Card, Shot Card & Workshop Card ── */
-/* Localized comet-head reflection ONLY (80% quiet exterior!) */
+/* ── Actively Generating Ghost Card, Shot Card & Workshop Card: Calm Breathing Rim ── */
 :root:not([data-glow='off']) .cc-ghost-node::after,
 :root:not([data-glow='off']) .cc-node.shot.generating::after,
 :root:not([data-glow='off']) .cc-node.generator.generating::after {
   content: '';
   position: absolute;
-  inset: 22px -4px -5px -4px;
-  border-radius: 15px;
-  background: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 286deg,
-    var(--beam-spill) 332deg,
-    var(--beam-mid) 352deg,
-    transparent 360deg
-  );
+  left: 16%;
+  right: 16%;
+  top: 20px;
+  height: 12px;
+  border-radius: 999px;
+  background: radial-gradient(ellipse at 50% 50%, var(--beam-spill), transparent 74%);
   filter: blur(var(--comet-spill-blur));
   pointer-events: none;
   opacity: var(--comet-spill-alpha);
-  animation: cc-prism-spin 2.8s linear infinite;
+  animation: cc-calm-breathe 3.4s ease-in-out infinite;
   z-index: -1;
 }
 
@@ -745,7 +712,7 @@
 :root:not([data-glow='off']) .cc-node.generator.generating .cc-node-card {
   position: relative;
   background: var(--panel);
-  border-color: color-mix(in srgb, var(--beam-focus-border) 50%, var(--line));
+  border-color: color-mix(in srgb, var(--beam-focus-border) 56%, var(--line));
   box-shadow:
     inset 0 1px 0 var(--rim-top),
     var(--card-select-shadow);
@@ -756,32 +723,30 @@
   background: #ffffff;
 }
 
-/* Razor-crisp White-Core Asymmetric Tracing Comet Rim (70% quiet, 30% comet!) */
+/* Calm Top-Edge Filament on Actively Rendering Card (zero frantic spinning) */
 :root:not([data-glow='off']) .cc-ghost-card::after,
 :root:not([data-glow='off']) .cc-node.shot.generating .cc-node-card::after,
 :root:not([data-glow='off']) .cc-node.generator.generating .cc-node-card::after {
   content: '';
   position: absolute;
-  inset: 0;
-  border-radius: 11px;
-  padding: var(--comet-width);
-  background: conic-gradient(
-    from var(--cc-prism-angle),
-    transparent 0deg,
-    transparent 246deg,
-    var(--beam-tail) 292deg,
-    var(--beam-mid) 334deg,
-    var(--beam-core) 354deg,
-    transparent 360deg
+  left: 14%;
+  right: 14%;
+  top: -1px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--beam-tail) 20%,
+    var(--beam-mid) 44%,
+    var(--beam-core) 50%,
+    var(--beam-mid) 56%,
+    var(--beam-tail) 80%,
+    transparent 100%
   );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
   pointer-events: none;
   opacity: var(--comet-active-alpha);
-  animation: cc-prism-spin 2.8s linear infinite;
+  animation: cc-calm-breathe 3.4s ease-in-out infinite;
   z-index: 6;
 }
 
