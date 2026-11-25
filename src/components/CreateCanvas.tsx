@@ -71,6 +71,7 @@ import {
 } from '../core/spatialStage';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
 import { CanvasQuickLook } from './CanvasQuickLook';
+import { CodeComponentThumb } from './CodeComponentThumb';
 import { CanvasUtilityControls } from './CanvasUtilityControls';
 import {
   CanvasWirePillsSvg,
@@ -2473,7 +2474,7 @@ export function CreateCanvas({
             semantic: 'shot-clip',
             fromKey: `comp:${comp.id}`,
             toKey: `shot:${sh.id}`,
-            label: comp.name.slice(0, 14),
+            label: '驱动画面',
             shotId: sh.id,
             clipId: sh.anchorClip.id,
             entityId: '',
@@ -2734,9 +2735,9 @@ export function CreateCanvas({
         !collapsed && pts.length > 0
           ? {
               x: Math.min(...pts.map((p) => p.pos!.x)) - 22,
-              y: Math.min(...pts.map((p) => p.pos!.y)) - 42,
+              y: Math.min(...pts.map((p) => p.pos!.y)) - 58,
               w: Math.max(...pts.map((p) => p.pos!.x + p.sz.w)) - Math.min(...pts.map((p) => p.pos!.x)) + 44,
-              h: Math.max(...pts.map((p) => p.pos!.y + p.sz.h)) - Math.min(...pts.map((p) => p.pos!.y)) + 64,
+              h: Math.max(...pts.map((p) => p.pos!.y + p.sz.h)) - Math.min(...pts.map((p) => p.pos!.y)) + 80,
             }
           : null;
       const savedAnchor = d.allKeys.map((k) => nodePositions[k]).find(Boolean) || d.fallbackPos;
@@ -5250,9 +5251,8 @@ export function CreateCanvas({
                 <span>组件 · {comp.name}</span>
               </div>
               <div className="cc-node-card asset-card">
-                <div className="cc-node-placeholder">
-                  <Layers size={20} />
-                  <small>TSX 动态组件</small>
+                <div className="cc-node-preview">
+                  <CodeComponentThumb component={comp} />
                 </div>
               </div>
               <button

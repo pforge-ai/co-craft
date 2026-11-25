@@ -3734,14 +3734,17 @@ input[type='checkbox']:not(.switch) {
 .cc-port.out {
   right: -6px;
   top: 86px;
+  margin-top: -5.5px;
 }
 .cc-port.in {
   left: -6px;
   top: 86px;
+  margin-top: -5.5px;
 }
 .cc-node.asset.audio .cc-port.in,
 .cc-node.asset.audio .cc-port.out {
   top: 48px;
+  margin-top: -5.5px;
 }
 .cc-port:hover {
   transform: scale(1.25);
@@ -5379,7 +5382,7 @@ input[type='checkbox']:not(.switch) {
 }
 .cc-node-placeholder {
   width: 100%;
-  height: 92px;
+  height: 124px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -5388,6 +5391,56 @@ input[type='checkbox']:not(.switch) {
   background: var(--well);
   color: var(--muted);
   font-size: 10.5px;
+}
+.cc-code-thumb {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #0d0e11;
+  overflow: hidden;
+}
+.cc-code-thumb > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+.cc-code-thumb.fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 10px 14px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 11px;
+  background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.05), rgba(10, 11, 14, 0.96) 72%);
+}
+.cc-code-thumb.fallback > small {
+  font-size: 9.5px;
+  color: var(--muted);
+}
+.cc-code-pill {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: rgba(11, 13, 17, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(6px);
+  color: #e2e8f0;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  pointer-events: none;
 }
 /* ── Interactive Seekable Audio Waveform Player ── */
 .cc-audio-player {
@@ -8951,7 +9004,7 @@ input[type='checkbox']:not(.switch) {
 /* Subtle Clickable Port Counter Trace Badges & Trace Spotlight Dimming */
 .cc-port-badge {
   position: absolute;
-  top: 104px;
+  top: 98px;
   z-index: 14;
   height: 15px;
   padding: 0 4px;

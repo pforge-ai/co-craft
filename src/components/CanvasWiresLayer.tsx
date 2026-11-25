@@ -90,8 +90,9 @@ export function computeSmartWire(
     s2 = dy >= 0 ? 'top' : 'bottom';
   }
   const anchor = (pos: CanvasPt, sz: { w: number; h: number }, side: PortSide): CanvasPt => {
-    if (side === 'right') return { x: pos.x + sz.w + 2, y: pos.y + Math.min(86, sz.h * 0.5) };
-    if (side === 'left') return { x: pos.x - 2, y: pos.y + Math.min(86, sz.h * 0.5) };
+    const portY = sz.h <= 100 ? 48 : 86;
+    if (side === 'right') return { x: pos.x + sz.w, y: pos.y + portY };
+    if (side === 'left') return { x: pos.x, y: pos.y + portY };
     if (side === 'bottom') return { x: pos.x + sz.w * 0.5, y: pos.y + sz.h + 2 };
     return { x: pos.x + sz.w * 0.5, y: pos.y - 2 };
   };

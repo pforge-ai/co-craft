@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Code2, Film } from 'lucide-react';
 import { mediaFrameUrl, mediaUrl } from '../composition/Film';
 import { getPreset } from '../core/presets';
+import { CodeComponentThumb } from './CodeComponentThumb';
 import { PresetPreview } from './PresetControls';
 import type { CompositeShot } from '../core/storyboard';
 import type { Clip, Project, Sequence } from '../core/types';
@@ -129,6 +130,19 @@ export function ShotCompositeThumb({
 
         if (clip.kind === 'code') {
           const comp = project.components.find((c) => c.id === clip.componentId);
+          if (comp && (!hasMultipleLayers || clip.track === 'visual')) {
+            const localSample = Math.max(0, Math.min(clip.duration - 1, sampleFrame - clip.start));
+            return (
+              <div key={clip.id} className="scs-layer" style={{ opacity }}>
+                <CodeComponentThumb
+                  component={comp}
+                  clipProps={clip.props}
+                  frame={localSample}
+                  label={String(clip.props.text || comp.name || clip.name)}
+                />
+              </div>
+            );
+          }
           return (
             <div
               key={clip.id}

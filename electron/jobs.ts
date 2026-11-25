@@ -1,6 +1,7 @@
 import { utilityProcess } from 'electron';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { mkdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, rename, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { atomicJSON, readJSON } from './store';
@@ -11,6 +12,7 @@ import type { MediaServer } from './server';
 export class JobService {
   jobs: Job[] = [];
   private internalJobs = new Map<string, Job>();
+  private posterPending = new Map<string, Promise<string | null>>();
   private processes = new Map<string, Electron.UtilityProcess>();
   private controllers = new Map<string, AbortController>();
   private settling = new Map<string, Promise<void>>();
@@ -27,6 +29,9 @@ export class JobService {
 
   async init() {
     await mkdir(join(this.root, 'render-cache'), { recursive: true });
+    const posterDir = join(this.root, 'posters');
+    await mkdir(posterDir, { recursive: true });
+    this.media.setPosterDir(posterDir);
     const saved = await readJSON<Job[]>(join(this.root, 'jobs.json'), []);
     // Strip any historical internal validation check jobs left by 0.2 / 0.3 preview_frame
     this.jobs = saved.filter(
@@ -151,15 +156,23 @@ export class JobService {
         componentId: op.component.id,
         props: { ...op.component.props },
       };
+      const thumbW = Math.max(320, Math.round((sequence.width * 0.35) / 2) * 2);
+      const thumbH = Math.max(180, Math.round((sequence.height * 0.35) / 2) * 2);
       candidate.sequences = [
-        { ...sequence, name: `检查画面 · ${op.component.name}`, clips: [{ ...clip, start: 0 }] },
+        {
+          ...sequence,
+          width: thumbW,
+          height: thumbH,
+          name: `检查画面 · ${op.component.name}`,
+          clips: [{ ...clip, start: 0 }],
+        },
       ];
       const output = join(this.root, 'render-cache', `${uid('check')}.png`);
       // Silent internal validation: never pollutes user-facing background jobs list!
       const job = await this.render(candidate, sequence.id, output, {
         still: true,
         frame: Math.min(clip.duration - 1, Math.round(sequence.fps * 0.5)),
-        scale: 0.25,
+        scale: 1,
         silent: true,
       });
       const cancel = () => {
@@ -168,6 +181,12 @@ export class JobService {
       signal?.addEventListener('abort', cancel, { once: true });
       try {
         await this.wait(job.id, signal);
+        // Keep the already-rendered validation frame as an instant poster thumbnail!
+        const safeHash = op.component.hash.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+        if (safeHash && existsSync(output)) {
+          const posterPath = join(this.root, 'posters', `${safeHash}.png`);
+          await rename(output, posterPath).catch(() => copyFile(output, posterPath).catch(() => {}));
+        }
       } catch (error) {
         cancel();
         throw new Error(
@@ -179,6 +198,98 @@ export class JobService {
         await rm(output, { force: true }).catch(() => {});
       }
     }
+  }
+
+  /**
+   * Renders and caches a real sandboxed PNG poster thumbnail for a compiled CodeComponent.
+   * Deduplicates concurrent requests for the same (hash + props) so Component & Shot cards share one render.
+   */
+  async ensureComponentPoster(
+    project: Project,
+    componentId: string,
+    clipProps?: Record<string, unknown>,
+    sampleFrame?: number,
+  ): Promise<string | null> {
+    const comp = project.components.find((c) => c.id === componentId);
+    if (!comp) return null;
+    const baseHash = comp.hash.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) || 'comp';
+    const hasCustomProps =
+      clipProps &&
+      Object.keys(clipProps).some((k) => {
+        const v = clipProps[k];
+        return v !== undefined && v !== (comp.props as Record<string, unknown>)?.[k];
+      });
+    const key = hasCustomProps
+      ? `${baseHash.slice(0, 24)}_${createHash('sha1')
+          .update(
+            JSON.stringify(
+              Object.keys(clipProps!)
+                .sort()
+                .map((k) => [k, clipProps![k]]),
+            ),
+          )
+          .digest('hex')
+          .slice(0, 16)}`
+      : baseHash;
+    const fileName = `${key}.png`;
+    const posterDir = join(this.root, 'posters');
+    const posterPath = join(posterDir, fileName);
+    if (existsSync(posterPath)) return fileName;
+
+    const inflight = this.posterPending.get(key);
+    if (inflight) return inflight;
+
+    const task = (async (): Promise<string | null> => {
+      await mkdir(posterDir, { recursive: true });
+      const candidate = clone(project);
+      const seq = candidate.sequences[0];
+      if (!seq) return null;
+      const thumbW = Math.max(320, Math.round((seq.width * 0.35) / 2) * 2);
+      const thumbH = Math.max(180, Math.round((seq.height * 0.35) / 2) * 2);
+      const fps = seq.fps || 30;
+      const dur = Math.max(fps * 2, 60);
+      const tempSeqId = uid('seq_poster');
+      candidate.sequences.push({
+        ...seq,
+        id: tempSeqId,
+        width: thumbW,
+        height: thumbH,
+        name: `组件缩略图 · ${comp.name}`,
+        clips: [
+          {
+            ...newClip('code', 0),
+            name: comp.name,
+            duration: dur,
+            componentId: comp.id,
+            props: { ...comp.props, ...(clipProps || {}) },
+          },
+        ],
+      });
+      const tmpOut = join(this.root, 'render-cache', `${uid('poster')}.png`);
+      const job = await this.render(candidate, tempSeqId, tmpOut, {
+        still: true,
+        frame: Math.max(0, Math.min(dur - 1, Math.round(sampleFrame ?? fps * 0.5))),
+        scale: 1,
+        silent: true,
+      });
+      try {
+        await this.wait(job.id);
+        if (existsSync(tmpOut)) {
+          await rename(tmpOut, posterPath).catch(() => copyFile(tmpOut, posterPath));
+          return existsSync(posterPath) ? fileName : null;
+        }
+        return null;
+      } catch {
+        return null;
+      } finally {
+        this.internalJobs.delete(job.id);
+        await rm(tmpOut, { force: true }).catch(() => {});
+        this.posterPending.delete(key);
+      }
+    })();
+
+    this.posterPending.set(key, task);
+    return task;
   }
 
   async render(

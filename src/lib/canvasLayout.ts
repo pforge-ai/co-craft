@@ -62,7 +62,7 @@ export function estimateCanvasNodeSize(
     generators?: readonly CanvasGeneratorNode[];
   },
 ): CanvasSize {
-  if (key.startsWith('shot:')) return { w: 288, h: 204 };
+  if (key.startsWith('shot:')) return { w: 288, h: 276 };
   if (key.startsWith('gen:')) {
     const g = ctx.generators?.find((x) => `gen:${x.id}` === key);
     if (g?.collapsed) return { w: 248, h: 66 };
@@ -97,8 +97,8 @@ function rectsOverlap(
   );
 }
 
-/** Starting Y for row 0 cards so group frames (`minY - 34`) AND group header pills (`-24px` above frame) sit cleanly below the lane header (`top: 10..34`). */
-export const CANVAS_LANE_TOP = 104;
+/** Starting Y for row 0 cards so zone frames (`minY - 58`), zone headers & floating toolbars sit cleanly below the Top HUD. */
+export const CANVAS_LANE_TOP = 116;
 
 /**
  * Collision-free layout resolver:

@@ -680,7 +680,6 @@
   opacity: 0;
   pointer-events: none;
 }
-:root:not([data-glow='off']) .cc-wire-group.highlighted .cc-wire-pulse,
 :root:not([data-glow='off']) .cc-wire-pulse.dragging,
 :root:not([data-glow='off']) .cc-wire-pulse.ghost {
   opacity: var(--wire-pulse-opacity);

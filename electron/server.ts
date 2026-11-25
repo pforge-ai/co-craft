@@ -42,6 +42,7 @@ export class MediaServer {
   private studioAssets = new Map<string, Asset>();
   private projectAssets = new Map<string, Asset>();
   private projectPath = '';
+  private posterDir = '';
   private renderAssets = new Map<string, { asset: Asset; refs: number }>();
   private server: ReturnType<typeof createServer> | null = null;
   private selfHost = '';
@@ -63,6 +64,11 @@ export class MediaServer {
     this.projectAssets.clear();
     for (const a of assets) this.projectAssets.set(a.id, a);
     if (projectPath) this.projectPath = projectPath;
+  }
+
+  /** Sets directory for immutable rendered component poster thumbnails. */
+  setPosterDir(dir: string) {
+    this.posterDir = dir;
   }
 
   /** Ref-counted registration for in-flight background render jobs or silent component checks. */
@@ -149,6 +155,12 @@ export class MediaServer {
         }
       } else {
         file = url.searchParams.has('thumbnail') ? asset?.thumbnail : asset?.path;
+      }
+    } else if (route.startsWith('poster/') && this.posterDir) {
+      const name = route.slice(7);
+      if (/^[a-zA-Z0-9_-]{6,80}\.png$/.test(name)) {
+        const candidate = resolve(this.posterDir, name);
+        if (candidate.startsWith(resolve(this.posterDir) + '/')) file = candidate;
       }
     } else if (route.startsWith('render/')) {
       const candidate = resolve(this.renderDir, route.slice(7));

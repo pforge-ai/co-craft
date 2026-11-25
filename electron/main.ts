@@ -1253,6 +1253,18 @@ async function handle(method: string, arg: any = {}) {
       await changed(target, envelope);
       return { envelope, startAsset: pairAssets[0], endAsset: pairAssets[1] };
     }
+    case 'stage.componentPoster': {
+      const p = await store.project();
+      const componentId = String(arg?.componentId || '');
+      if (!componentId) return { url: null };
+      const fileName = await jobs.ensureComponentPoster(
+        p,
+        componentId,
+        arg?.clipProps && typeof arg.clipProps === 'object' ? arg.clipProps : undefined,
+        typeof arg?.frame === 'number' ? arg.frame : undefined,
+      );
+      return { url: fileName ? `${media.origin}/poster/${fileName}` : null };
+    }
     case 'asset.extractFrame': {
       const target = store;
       const p = await target.project();
