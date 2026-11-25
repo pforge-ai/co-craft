@@ -308,16 +308,17 @@ export class System1Service {
 
       const parsed = await this.callFastModelJson(
         cfg,
-        `Locate the main subject/face center in this image for 9:16 vertical crop. Return JSON {"focalX": 0..1, "focalY": 0..1}. Hint: ${targetHint}`,
+        `Locate the main subject/face center in this image for 9:16 vertical crop. Return JSON {"focalX": 0..100, "focalY": 0..100} (percentages). Hint: ${targetHint}`,
         encoded.dataUri,
       );
       await this.recordUsage('fastModel', 'reframeBox');
       const fx = Number(parsed?.focalX);
       const fy = Number(parsed?.focalY);
       if (Number.isFinite(fx) && Number.isFinite(fy)) {
+        const toPct = (v: number) => (v > 0 && v <= 1 ? v * 100 : v);
         return {
-          focalX: Math.round(Math.max(0.12, Math.min(0.88, fx)) * 1000) / 1000,
-          focalY: Math.round(Math.max(0.12, Math.min(0.88, fy)) * 1000) / 1000,
+          focalX: Math.round(Math.max(10, Math.min(90, toPct(fx)))),
+          focalY: Math.round(Math.max(10, Math.min(90, toPct(fy)))),
           provider: 'fast-model',
         };
       }

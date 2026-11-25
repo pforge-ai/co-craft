@@ -1671,21 +1671,21 @@ assert.ok(
   assert.equal(routeOmnibarLocally('第一镜：开场\n第二镜：转折\n第三镜：高潮').intent, 'breakdown');
   assert.equal(routeOmnibarLocally('帮我分析这段节奏为什么不够抓人？').intent, 'agent');
 
-  // 16b. TypeSafe Jev Box (0..1000 grid, 0..1 fraction, and >1000 pixel coords) -> normalized focal point
+  // 16b. TypeSafe Jev Box (0..1000 grid, 0..1 fraction, and >1000 pixel coords) -> 0..100% CoCraft focal point
   assert.deepEqual(
     boxToNormalizedFocal({ top: 180, bottom: 520, left: 620, right: 860 }),
-    { focalX: 0.74, focalY: 0.35 },
-    'Jev 0..1000 normalized box converts accurately to focalX/Y',
+    { focalX: 74, focalY: 35 },
+    'Jev 0..1000 normalized box converts accurately to 0..100% focalX/Y',
   );
   assert.deepEqual(
     boxToNormalizedFocal({ top: 0.2, bottom: 0.6, left: 0.1, right: 0.3 }),
-    { focalX: 0.2, focalY: 0.4 },
-    '0..1 fractional box converts cleanly',
+    { focalX: 20, focalY: 40 },
+    '0..1 fractional box converts cleanly to 0..100%',
   );
   assert.deepEqual(
     boxToNormalizedFocal({ top: 200, bottom: 600, left: 1200, right: 1600 }, 1920, 1080),
-    { focalX: 0.729, focalY: 0.37 },
-    'Pixel coordinates (>1000) normalize using image dimensions',
+    { focalX: 73, focalY: 37 },
+    'Pixel coordinates (>1000) normalize using image dimensions to 0..100%',
   );
 
   // 16c. True Auto-Reframe 16:9 -> 9:16 via forkSequenceBranch + Asset qualityScore persistence
@@ -1710,7 +1710,7 @@ assert.ok(
       width: 1080,
       height: 1920,
       autoReframe: true,
-      focalOverrides: { a_wide: { focalX: 0.74, focalY: 0.35 } },
+      focalOverrides: { a_wide: { focalX: 74, focalY: 35 } },
     },
   ]);
   const scoredAsset = pM3.assets.find((a) => a.id === 'a_wide')!;
@@ -1722,12 +1722,12 @@ assert.ok(
   const vertVis = vertSeq.clips.find((c) => c.kind === 'image')!;
   const vertCap = vertSeq.clips.find((c) => c.kind === 'caption')!;
   assert.equal(vertVis.props.fit, 'cover', 'Portrait reframe enforces cover fit with zero letterbox bars');
-  assert.equal(vertVis.props.focalX, 0.74, 'System 1 Box focalX override applied cleanly');
-  assert.equal(vertVis.props.focalY, 0.35, 'System 1 Box focalY override applied cleanly');
+  assert.equal(vertVis.props.focalX, 74, 'System 1 Box focalX override (74%) applied cleanly');
+  assert.equal(vertVis.props.focalY, 35, 'System 1 Box focalY override (35%) applied cleanly');
   assert.ok(Number(vertCap.props.y) <= -200, 'Portrait caption lifted above bottom platform safe-zone');
   assert.ok(Number(vertCap.props.fontSize) <= 54 && Number(vertCap.props.fontSize) >= 34);
 
-  // Fallback Tier-0 portrait reframe without focalOverride uses smart upper-third (0.5, 0.42)
+  // Fallback Tier-0 portrait reframe without focalOverride uses smart upper-third (50%, 42%)
   const localReframed = reframeClipForTargetAspect(
     { ...newClip('image', 0, 'a_wide'), id: 'c_loc', duration: 60, props: { fit: 'contain' } },
     1920,
@@ -1735,8 +1735,8 @@ assert.ok(
     1080,
     1920,
   );
-  assert.equal(localReframed.props.focalX, 0.5);
-  assert.equal(localReframed.props.focalY, 0.42);
+  assert.equal(localReframed.props.focalX, 50);
+  assert.equal(localReframed.props.focalY, 42);
 
   // 16d. Wide tidy layout guarantees zero horizontal overlap for 316px expanded generator cards
   const wideGens = [

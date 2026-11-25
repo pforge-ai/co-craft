@@ -51,8 +51,9 @@ export function routeOmnibarLocally(text: string): { intent: OmnibarLocalIntent;
 }
 
 /**
- * Converts TypeSafe Jev `box` (`{ top, bottom, left, right }`) into normalized focal point `{ focalX, focalY }` in [0.12, 0.88].
- * Supports both Jev 0..1000 normalized grid, 0..1 fractions, and pixel coordinates when `imgW/imgH` are supplied.
+ * Converts TypeSafe Jev `box` (`{ top, bottom, left, right }`) into CoCraft `0..100` percentage focal point
+ * (`focalX`, `focalY` clamped to `[10, 90]`, matching `Film.tsx` `objectPosition` and `Inspector.tsx` sliders).
+ * Supports Jev 0..1000 normalized grid, 0..1 fractions, and pixel coordinates when `imgW/imgH` are supplied.
  */
 export function boxToNormalizedFocal(
   box: { top: number; bottom: number; left: number; right: number },
@@ -65,24 +66,24 @@ export function boxToNormalizedFocal(
   let cx: number;
   let cy: number;
   if (maxVal <= 1.05) {
-    cx = (left + right) / 2;
-    cy = (top + bottom) / 2;
+    cx = ((left + right) / 2) * 100;
+    cy = ((top + bottom) / 2) * 100;
   } else if (maxVal <= 1000) {
-    cx = (left + right) / 2 / 1000;
-    cy = (top + bottom) / 2 / 1000;
+    cx = ((left + right) / 2 / 1000) * 100;
+    cy = ((top + bottom) / 2 / 1000) * 100;
   } else if (imgW && imgH) {
-    cx = (left + right) / 2 / imgW;
-    cy = (top + bottom) / 2 / imgH;
+    cx = ((left + right) / 2 / imgW) * 100;
+    cy = ((top + bottom) / 2 / imgH) * 100;
   } else {
     return null;
   }
-  const clamp = (v: number) => Math.round(Math.max(0.12, Math.min(0.88, v)) * 1000) / 1000;
-  return { focalX: clamp(cx), focalY: clamp(cy) };
+  const clampPct = (v: number) => Math.round(Math.max(10, Math.min(90, v)));
+  return { focalX: clampPct(cx), focalY: clampPct(cy) };
 }
 
 /**
  * Pure deterministic Auto-Reframe transformer for aspect-ratio branching (e.g. 16:9 -> 9:16 portrait or 1:1 square):
- * - Media clips switch to `cover` with subject-locked `focalX/Y` (from System 1 Box when enabled, else smart upper-third).
+ * - Media clips switch to `cover` with subject-locked `focalX/Y` (0..100% scale, from System 1 Box or smart upper-third 50/42).
  * - Portrait captions auto-scale font size and lift bottom safe-zone to clear short-video platform UI overlays.
  */
 export function reframeClipForTargetAspect(
@@ -100,11 +101,12 @@ export function reframeClipForTargetAspect(
   if (next.kind === 'image' || next.kind === 'video') {
     next.props.fit = 'cover';
     if (focalOverride) {
-      next.props.focalX = Math.round(Math.max(0.1, Math.min(0.9, focalOverride.focalX)) * 1000) / 1000;
-      next.props.focalY = Math.round(Math.max(0.1, Math.min(0.9, focalOverride.focalY)) * 1000) / 1000;
+      const toPct = (v: number) => (v > 0 && v <= 1 ? v * 100 : v);
+      next.props.focalX = Math.round(Math.max(10, Math.min(90, toPct(focalOverride.focalX))));
+      next.props.focalY = Math.round(Math.max(10, Math.min(90, toPct(focalOverride.focalY))));
     } else if (becomingPortrait) {
-      if (next.props.focalX === undefined) next.props.focalX = 0.5;
-      if (next.props.focalY === undefined) next.props.focalY = 0.42;
+      if (next.props.focalX === undefined) next.props.focalX = 50;
+      if (next.props.focalY === undefined) next.props.focalY = 42;
     }
     if (typeof next.props.x === 'number' && Number.isFinite(next.props.x)) {
       next.props.x = Math.round(next.props.x * widthRatio);
