@@ -1647,4 +1647,114 @@ assert.ok(
   assert.equal(savedRecipe?.recipe?.workshop?.params?.animateMode, 'wan-pro');
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 Cinema/Audio + M2 Performance Workshop regression tests');
+// 16. M3 Optional System 1 Rules, Jev Box Normalization, True 9:16 Auto-Reframe, QualityScore & Wide Tidy Layout
+{
+  const {
+    classifyAssetRoleLocally,
+    routeOmnibarLocally,
+    boxToNormalizedFocal,
+    reframeClipForTargetAspect,
+  } = await import('../src/core/system1Rules');
+  const { computeTidyCanvasLayout, estimateCanvasNodeSize } = await import('../src/lib/canvasLayout');
+
+  // 16a. Tier-0 local free heuristics (0 API spend)
+  assert.equal(classifyAssetRoleLocally({ name: 'actor-lin-portrait.png', kind: 'image', duration: 0, width: 1080, height: 1440 }), 'character');
+  assert.equal(classifyAssetRoleLocally({ name: 'neon-street-bg.jpg', kind: 'image', duration: 0, width: 1920, height: 1080 }), 'environment');
+  assert.equal(classifyAssetRoleLocally({ name: 'cyber-bgm-theme.wav', kind: 'audio', duration: 45 }), 'bgm');
+  assert.equal(classifyAssetRoleLocally({ name: 'whoosh-sfx.wav', kind: 'audio', duration: 0.9 }), 'sfx');
+  assert.equal(classifyAssetRoleLocally({ name: 'line01.wav', kind: 'audio', duration: 4.2 }), 'voiceover');
+  assert.equal(classifyAssetRoleLocally({ name: 'app-screen-demo.mp4', kind: 'video', duration: 12 }), 'screen-recording');
+
+  assert.equal(routeOmnibarLocally('整理画布').intent, 'tidy');
+  assert.equal(routeOmnibarLocally('派生 9:16 竖屏').intent, 'reframe-vertical');
+  assert.equal(routeOmnibarLocally('新建文本：开场白').intent, 'new-text');
+  assert.equal(routeOmnibarLocally('第一镜：开场\n第二镜：转折\n第三镜：高潮').intent, 'breakdown');
+  assert.equal(routeOmnibarLocally('帮我分析这段节奏为什么不够抓人？').intent, 'agent');
+
+  // 16b. TypeSafe Jev Box (0..1000 grid, 0..1 fraction, and >1000 pixel coords) -> normalized focal point
+  assert.deepEqual(
+    boxToNormalizedFocal({ top: 180, bottom: 520, left: 620, right: 860 }),
+    { focalX: 0.74, focalY: 0.35 },
+    'Jev 0..1000 normalized box converts accurately to focalX/Y',
+  );
+  assert.deepEqual(
+    boxToNormalizedFocal({ top: 0.2, bottom: 0.6, left: 0.1, right: 0.3 }),
+    { focalX: 0.2, focalY: 0.4 },
+    '0..1 fractional box converts cleanly',
+  );
+  assert.deepEqual(
+    boxToNormalizedFocal({ top: 200, bottom: 600, left: 1200, right: 1600 }, 1920, 1080),
+    { focalX: 0.729, focalY: 0.37 },
+    'Pixel coordinates (>1000) normalize using image dimensions',
+  );
+
+  // 16c. True Auto-Reframe 16:9 -> 9:16 via forkSequenceBranch + Asset qualityScore persistence
+  let pM3 = newProject('M3ReframeTest');
+  const mainSeqId = pM3.sequences[0].id;
+  pM3 = applyOperations(pM3, [
+    { type: 'addAsset', asset: { id: 'a_wide', name: 'wide.png', kind: 'image', path: '/tmp/wide.png', duration: 0, width: 1920, height: 1080, createdAt: '' } },
+    { type: 'addClip', sequenceId: mainSeqId, clip: { ...newClip('image', 0, 'a_wide'), id: 'c_vis', duration: 90, props: { fit: 'contain' } } },
+    { type: 'addClip', sequenceId: mainSeqId, clip: { ...newClip('caption', 0), id: 'c_cap', duration: 90, props: { text: '雨夜钟楼', fontSize: 56, position: 'bottom', y: 0 } } },
+    {
+      type: 'updateAssetMeta',
+      assetId: 'a_wide',
+      changes: {
+        qualityScore: { score: 94, recommended: true, provider: 'typesafe-jev', evaluatedAt: '2026-11-25T08:00:00Z' },
+      },
+    },
+    {
+      type: 'forkSequenceBranch',
+      sourceSequenceId: mainSeqId,
+      newSequenceId: 'seq_vert',
+      branchName: '竖屏 9:16',
+      width: 1080,
+      height: 1920,
+      autoReframe: true,
+      focalOverrides: { a_wide: { focalX: 0.74, focalY: 0.35 } },
+    },
+  ]);
+  const scoredAsset = pM3.assets.find((a) => a.id === 'a_wide')!;
+  assert.equal(scoredAsset.qualityScore?.score, 94);
+  assert.equal(scoredAsset.qualityScore?.recommended, true);
+  const vertSeq = pM3.sequences.find((s) => s.id === 'seq_vert')!;
+  assert.equal(vertSeq.width, 1080);
+  assert.equal(vertSeq.height, 1920);
+  const vertVis = vertSeq.clips.find((c) => c.kind === 'image')!;
+  const vertCap = vertSeq.clips.find((c) => c.kind === 'caption')!;
+  assert.equal(vertVis.props.fit, 'cover', 'Portrait reframe enforces cover fit with zero letterbox bars');
+  assert.equal(vertVis.props.focalX, 0.74, 'System 1 Box focalX override applied cleanly');
+  assert.equal(vertVis.props.focalY, 0.35, 'System 1 Box focalY override applied cleanly');
+  assert.ok(Number(vertCap.props.y) <= -200, 'Portrait caption lifted above bottom platform safe-zone');
+  assert.ok(Number(vertCap.props.fontSize) <= 54 && Number(vertCap.props.fontSize) >= 34);
+
+  // Fallback Tier-0 portrait reframe without focalOverride uses smart upper-third (0.5, 0.42)
+  const localReframed = reframeClipForTargetAspect(
+    { ...newClip('image', 0, 'a_wide'), id: 'c_loc', duration: 60, props: { fit: 'contain' } },
+    1920,
+    1080,
+    1080,
+    1920,
+  );
+  assert.equal(localReframed.props.focalX, 0.5);
+  assert.equal(localReframed.props.focalY, 0.42);
+
+  // 16d. Wide tidy layout guarantees zero horizontal overlap for 316px expanded generator cards
+  const wideGens = [
+    { id: 'g1', use: 'video' as const, action: 'motion-transfer' as const, prompt: '', inputs: [], updatedAt: '' },
+    { id: 'g2', use: 'video' as const, action: 'lip-sync' as const, prompt: '', inputs: [], updatedAt: '' },
+    { id: 'g3', use: 'image' as const, action: 'image-edit' as const, prompt: '', inputs: [], updatedAt: '' },
+    { id: 'g4', use: 'image' as const, action: 'multi-ref-image' as const, prompt: '', inputs: [], updatedAt: '' },
+  ];
+  const tidyRes = computeTidyCanvasLayout({
+    assetNodeKeys: wideGens.map((g) => `gen:${g.id}`),
+    shotNodeKeys: [],
+    groups: [],
+    getSize: (k) => estimateCanvasNodeSize(k, { assets: [], entities: [], generators: wideGens }),
+  });
+  assert.ok(
+    tidyRes.positions['gen:g2'].x - tidyRes.positions['gen:g1'].x >= 316 + 24,
+    'Expanded 316px generator cards keep clean horizontal gutter after Tidy',
+  );
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 System 1 & Auto-Reframe regression tests');

@@ -17,6 +17,7 @@ import { compileComponent } from './code';
 import { GlobalVault } from './vault';
 import { McpBridgeServer } from './mcp-bridge';
 import { CoCraftToolService } from './tool-service';
+import { System1Service } from './system1';
 import {
   newClip,
   uid,
@@ -63,7 +64,8 @@ let win: BrowserWindow,
   agents: AgentHost,
   globalVault: GlobalVault,
   toolService: CoCraftToolService,
-  mcpBridge: McpBridgeServer;
+  mcpBridge: McpBridgeServer,
+  system1: System1Service;
 
 const sanitizeFileName = (raw: string, fallback = 'export') =>
   String(raw || fallback)
@@ -1260,6 +1262,113 @@ async function handle(method: string, arg: any = {}) {
       await changed(target, envelope);
       return { envelope, vaultItem: textItem };
     }
+    case 'system1.status':
+      return system1.status();
+    case 'system1.test':
+      return system1.testConnection();
+    case 'system1.resetUsage':
+      return system1.resetUsage();
+    case 'system1.routeOmnibar':
+      return system1.routeOmnibar(String(arg.text || ''));
+    case 'system1.autoReframeBranch': {
+      const target = store;
+      const p = await target.project();
+      const src = p.sequences.find((s) => s.id === arg.sequenceId) || p.sequences[0];
+      if (!src) throw new Error('源成片分支不存在');
+      const newSequenceId = String(arg.newSequenceId || uid('seq'));
+      const branchName = String(arg.branchName || `${src.name}-竖屏9:16`).trim();
+      const width = Number(arg.width) || 1080;
+      const height = Number(arg.height) || 1920;
+
+      // Optional System 1 Box localization per visual clip (strictly zero paid calls when OFF or feature toggle OFF)
+      const focalOverrides: Record<string, { focalX: number; focalY: number }> = {};
+      const boxProviders = new Set<string>();
+      const s1Status = await system1.status();
+      if (s1Status.mode !== 'off' && s1Status.features.autoReframeBox && !s1Status.capReached) {
+        const seenAssets = new Set<string>();
+        for (const clip of src.clips) {
+          if ((clip.kind !== 'image' && clip.kind !== 'video') || !clip.assetId) continue;
+          if (seenAssets.has(clip.assetId)) continue;
+          seenAssets.add(clip.assetId);
+          const asset = p.assets.find((a) => a.id === clip.assetId);
+          const samplePath = asset?.kind === 'image' ? asset.path : asset?.thumbnail;
+          if (!samplePath || !existsSync(samplePath)) continue;
+          const res = await system1.locateSubjectFocal(samplePath, clip.shotNotes || clip.name);
+          if (res) {
+            focalOverrides[clip.assetId] = { focalX: res.focalX, focalY: res.focalY };
+            boxProviders.add(res.provider);
+          }
+        }
+      }
+
+      const latest = await target.project();
+      const envelope = await target.edit({
+        baseRevision: latest.revision,
+        name: `智能画幅派生「${branchName}」(${width}×${height})`,
+        operations: [
+          {
+            type: 'forkSequenceBranch',
+            sourceSequenceId: src.id,
+            newSequenceId,
+            branchName,
+            width,
+            height,
+            autoReframe: true,
+            ...(Object.keys(focalOverrides).length ? { focalOverrides } : {}),
+          },
+        ],
+      });
+      await changed(target, envelope);
+      return {
+        envelope,
+        sequenceId: newSequenceId,
+        focalCount: Object.keys(focalOverrides).length,
+        provider: boxProviders.size > 0 ? Array.from(boxProviders)[0] : 'local',
+      };
+    }
+    case 'system1.triageAssets': {
+      const target = store;
+      const p = await target.project();
+      const ids = Array.isArray(arg.assetIds) ? arg.assetIds.filter((x: unknown): x is string => typeof x === 'string') : [];
+      const targets = p.assets.filter((a) => ids.includes(a.id) && a.kind === 'image');
+      if (targets.length < 2) throw new Error('请至少选中 2 张图片候选进行质检挑优');
+      const promptHint = String(arg.prompt || '').trim();
+      const { scores, provider, fallbackNotice } = await system1.triageCandidates(targets, promptHint);
+      const ops: EditOperation[] = Object.entries(scores).map(([assetId, qualityScore]) => ({
+        type: 'updateAssetMeta',
+        assetId,
+        changes: { qualityScore },
+      }));
+      const latest = await target.project();
+      const envelope = await target.edit({
+        baseRevision: latest.revision,
+        name: `候选质检挑优（${targets.length} 张 · ${provider === 'local' ? '本地免费' : provider}）`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, scores, provider, fallbackNotice };
+    }
+    case 'system1.autoTagAssets': {
+      const target = store;
+      const p = await target.project();
+      const ids = Array.isArray(arg.assetIds) ? arg.assetIds.filter((x: unknown): x is string => typeof x === 'string') : [];
+      const targets = p.assets.filter((a) => ids.includes(a.id));
+      if (!targets.length) throw new Error('请先选中需要归类的素材');
+      const { roles, provider } = await system1.classifyAssetRoles(targets);
+      const ops: EditOperation[] = Object.entries(roles).map(([assetId, role]) => ({
+        type: 'updateAssetMeta',
+        assetId,
+        changes: { role },
+      }));
+      const latest = await target.project();
+      const envelope = await target.edit({
+        baseRevision: latest.revision,
+        name: `智能标角色（${targets.length} 项 · ${provider === 'local' ? '本地免费' : provider}）`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, roles, provider };
+    }
     default:
       throw new Error('未知操作：' + method);
   }
@@ -1509,6 +1618,7 @@ app
       app.isPackaged ? undefined : join(here, '..'),
     );
     await jobs.init();
+    system1 = new System1Service(settings, root);
     generation = new GenerationService(settings, jobs, changed, (path) => library.resolveStore(path));
     toolService = new CoCraftToolService({
       appVersion: app.getVersion(),

@@ -16,6 +16,7 @@ import {
   RefreshCw,
   FolderOpen,
   Search,
+  Zap,
 } from 'lucide-react';
 import { Modal, Spinner } from './ui';
 import {
@@ -32,7 +33,15 @@ import {
 } from '../core/models';
 import { uid } from '../core/project';
 import { friendlySkillTitle } from '../core/taxonomy';
-import type { Settings, ProviderConnection, ModelDefinition, ModelUse, SkillInfo } from '../core/types';
+import type {
+  Settings,
+  ProviderConnection,
+  ModelDefinition,
+  ModelUse,
+  SkillInfo,
+  System1Settings,
+  System1UsageStats,
+} from '../core/types';
 
 type Props = {
   settings: Settings;
@@ -53,6 +62,7 @@ const sections = [
   ['providers', '提供商', KeyRound],
   ['models', '模型', Boxes],
   ['defaults', '用途默认值', Workflow],
+  ['system1', '智能辅助', Zap],
   ['assets', '素材服务', Plug],
   ['skills', 'Skills 与工具', Code2],
 ] as const;
@@ -111,6 +121,36 @@ export function SettingsDialog({
   const [skillBusy, setSkillBusy] = useState(false);
   const [mcpInfo, setMcpInfo] = useState<{ running: boolean; port: number | null; scriptPath?: string; discoveryFile?: string } | null>(null);
   const [mcpCopied, setMcpCopied] = useState(false);
+  const [s1Usage, setS1Usage] = useState<System1UsageStats | null>(null);
+  const [s1Testing, setS1Testing] = useState(false);
+
+  const s1: System1Settings = draft.system1 || {
+    mode: 'off',
+    jevBaseUrl: 'https://api.typesafe.ai/v1',
+    jevModelId: 'jev-latest',
+    hasJevApiKey: false,
+    features: {
+      autoReframeBox: false,
+      batchQualityGate: false,
+      omnibarRouter: false,
+      autoTagAssets: false,
+    },
+    monthlyCallCap: 500,
+  };
+  const updateSystem1 = (patch: Partial<System1Settings>) =>
+    field('system1', {
+      ...s1,
+      ...patch,
+      features: { ...s1.features, ...(patch.features || {}) },
+    });
+
+  useEffect(() => {
+    if (tab !== 'system1') return;
+    void window.cocraft
+      .call<{ usage: System1UsageStats }>('system1.status', {})
+      .then((res) => setS1Usage(res.usage))
+      .catch(() => {});
+  }, [tab]);
 
   useEffect(() => {
     void window.cocraft
@@ -1293,6 +1333,226 @@ export function SettingsDialog({
               <p className="help-copy">
                 本次任务选择优先于项目默认，项目默认优先于全局默认。进行中的作业继续使用启动时的模型。
               </p>
+            </>
+          )}
+          {tab === 'system1' && (
+            <>
+              <div className="s1-banner">
+                <b>可选 System 1 智能直觉层（默认完全关闭 · 零强制开销）</b>
+                <p>
+                  不配置任何模型时，所有核心创作、9:16 画幅重排与素材归类均由本地免费规则内核驱动（￥0）。仅在希望提升多图挑优、视觉锁主体或极速指令分流精度时按需开启。
+                </p>
+              </div>
+              <div className="settings-section">
+                <div className="setting-row">
+                  <div>
+                    <b>运行档位</b>
+                    <p>按需选择 0 费用本地模式、复用已配快模型，或接入 TypeSafe Jev 原生毫秒级判定。</p>
+                  </div>
+                  <div className="segmented-inline" role="group" aria-label="System 1 运行档位">
+                    {(
+                      [
+                        ['off', '关闭 · 本地免费'],
+                        ['fast-model', '复用快模型'],
+                        ['typesafe-jev', 'TypeSafe Jev'],
+                      ] as const
+                    ).map(([modeVal, text]) => (
+                      <button
+                        key={modeVal}
+                        type="button"
+                        aria-pressed={s1.mode === modeVal}
+                        className={s1.mode === modeVal ? 'active' : ''}
+                        onClick={() => updateSystem1({ mode: modeVal })}
+                      >
+                        {text}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {s1.mode === 'fast-model' && (
+                  <div className="setting-row model-use-row">
+                    <div>
+                      <b>复用的轻量模型 (Tier 1)</b>
+                      <p>优先选择便宜快速的视觉/对话模型（如 qwen-vl-flash / gemini-flash / 本地 Ollama）。</p>
+                    </div>
+                    <select
+                      aria-label="System 1 轻量模型"
+                      value={s1.fastModelId || ''}
+                      onChange={(e) => updateSystem1({ fastModelId: e.target.value || undefined })}
+                    >
+                      <option value="">自动沿用默认视觉/主模型</option>
+                      {draft.models
+                        .filter((m) => m.adapter === 'chat')
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
+
+                {s1.mode === 'typesafe-jev' && (
+                  <div className="settings-fields" style={{ marginTop: 8 }}>
+                    <label className="field">
+                      <span>TypeSafe Jev 接口地址</span>
+                      <input
+                        aria-label="TypeSafe Jev 地址"
+                        placeholder="https://api.typesafe.ai/v1"
+                        value={s1.jevBaseUrl || ''}
+                        onChange={(e) => updateSystem1({ jevBaseUrl: e.target.value })}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Jev 模型版本</span>
+                      <input
+                        aria-label="TypeSafe Jev 模型"
+                        placeholder="jev-latest"
+                        value={s1.jevModelId || 'jev-latest'}
+                        onChange={(e) => updateSystem1({ jevModelId: e.target.value })}
+                      />
+                    </label>
+                    <label className="field full">
+                      <span>
+                        TypeSafe API Key <em>{s1.hasJevApiKey ? '已加密保存 · 留空保留' : '仅加密保存在本机'}</em>
+                      </span>
+                      <input
+                        aria-label="TypeSafe Jev API Key"
+                        type="password"
+                        autoComplete="off"
+                        value={s1.jevApiKey || ''}
+                        placeholder={s1.hasJevApiKey ? '已安全保存' : '输入 TypeSafe Jev API Key'}
+                        onChange={(e) => updateSystem1({ jevApiKey: e.target.value })}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {s1.mode !== 'off' && (
+                  <div className="editor-actions" style={{ marginTop: 8, marginBottom: 4 }}>
+                    <button
+                      type="button"
+                      className="button subtle"
+                      disabled={s1Testing}
+                      onClick={async () => {
+                        setS1Testing(true);
+                        setError('');
+                        setInfo('');
+                        try {
+                          await onSave({ system1: s1 });
+                          const res = await window.cocraft.call<{ message: string }>('system1.test', {});
+                          setInfo(res.message);
+                        } catch (err) {
+                          setError(String(err).replace(/^Error:\s*/, ''));
+                        } finally {
+                          setS1Testing(false);
+                        }
+                      }}
+                    >
+                      {s1Testing ? <Spinner /> : <Zap size={13} />} 保存并测试连接
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="settings-section">
+                <div className="setting-row">
+                  <div>
+                    <b>智能横转竖锁主体（Box）</b>
+                    <p>仅在点击「派生 9:16 竖屏」时按镜头定位人物焦点；关闭时零花费使用上三分构图。</p>
+                  </div>
+                  <input
+                    className="switch"
+                    aria-label="智能横转竖锁主体"
+                    type="checkbox"
+                    disabled={s1.mode === 'off'}
+                    checked={s1.mode !== 'off' && s1.features.autoReframeBox}
+                    onChange={(e) => updateSystem1({ features: { ...s1.features, autoReframeBox: e.target.checked } })}
+                  />
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>批量抽卡质检挑优（Noul + Score）</b>
+                    <p>仅在多选候选图并点击「质检挑优」时识别畸变并标星推荐；关闭时用本地免费清晰度评分。</p>
+                  </div>
+                  <input
+                    className="switch"
+                    aria-label="批量抽卡质检挑优"
+                    type="checkbox"
+                    disabled={s1.mode === 'off'}
+                    checked={s1.mode !== 'off' && s1.features.batchQualityGate}
+                    onChange={(e) =>
+                      updateSystem1({ features: { ...s1.features, batchQualityGate: e.target.checked } })
+                    }
+                  />
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>指令舱极速本地分流（Choice）</b>
+                    <p>简单画布操作直接本地执行、跳过主 Agent，反而减少主模型 Token 消耗。</p>
+                  </div>
+                  <input
+                    className="switch"
+                    aria-label="指令舱极速本地分流"
+                    type="checkbox"
+                    disabled={s1.mode === 'off'}
+                    checked={s1.mode !== 'off' && s1.features.omnibarRouter}
+                    onChange={(e) => updateSystem1({ features: { ...s1.features, omnibarRouter: e.target.checked } })}
+                  />
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>所选素材一键智能标角色（Choice）</b>
+                    <p>仅在点击多选栏「智能标角色」按钮时触发，绝不在拖入素材时静默刷 API。</p>
+                  </div>
+                  <input
+                    className="switch"
+                    aria-label="所选素材智能标角色"
+                    type="checkbox"
+                    disabled={s1.mode === 'off'}
+                    checked={s1.mode !== 'off' && s1.features.autoTagAssets}
+                    onChange={(e) => updateSystem1({ features: { ...s1.features, autoTagAssets: e.target.checked } })}
+                  />
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>每月付费调用软上限</b>
+                    <p>达到上限后自动静默降级回本地免费内核，杜绝意外扣费（0 表示不限）。</p>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={50000}
+                    style={{ width: 96 }}
+                    aria-label="System 1 每月调用上限"
+                    value={s1.monthlyCallCap ?? 500}
+                    onChange={(e) => updateSystem1({ monthlyCallCap: Math.max(0, Number(e.target.value) || 0) })}
+                  />
+                </div>
+                {s1Usage && (
+                  <div className="setting-row">
+                    <div>
+                      <b>本月调用统计（{s1Usage.month}）</b>
+                      <p>
+                        总计 {s1Usage.totalCalls} 次 · 本地免费 {s1Usage.byTier.local} / 快模型{' '}
+                        {s1Usage.byTier.fastModel} / Jev {s1Usage.byTier.jev}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="button subtle tiny"
+                      onClick={async () => {
+                        const fresh = await window.cocraft.call<System1UsageStats>('system1.resetUsage', {});
+                        setS1Usage(fresh);
+                        setInfo('已重置本月调用统计。');
+                      }}
+                    >
+                      清零计数
+                    </button>
+                  </div>
+                )}
+              </div>
             </>
           )}
           {tab === 'assets' && (

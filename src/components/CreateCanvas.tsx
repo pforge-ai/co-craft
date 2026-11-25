@@ -113,6 +113,7 @@ import {
   type CompositeShot,
 } from '../core/storyboard';
 import { ROLE_LABELS, inferAssetRole } from '../core/taxonomy';
+import { routeOmnibarLocally, type OmnibarLocalIntent } from '../core/system1Rules';
 import type {
   AssetLineageRef,
   AssetRole,
@@ -201,6 +202,9 @@ interface CreateCanvasProps {
   onNormalizeAudio?: (assetId: string, placement?: Pt) => Promise<void>;
   onTrimAudioSilence?: (assetId: string, placement?: Pt) => Promise<void>;
   onVisionDescribeAsset?: (assetId: string, placement?: Pt) => Promise<void>;
+  onTriageAssets?: (assetIds: string[]) => Promise<void>;
+  onAutoTagAssets?: (assetIds: string[]) => Promise<void>;
+  onAutoReframeVertical?: () => Promise<void>;
 }
 
 export function CreateCanvas({
@@ -240,6 +244,9 @@ export function CreateCanvas({
   onNormalizeAudio,
   onTrimAudioSilence,
   onVisionDescribeAsset,
+  onTriageAssets,
+  onAutoTagAssets,
+  onAutoReframeVertical,
 }: CreateCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const omnibarInputRef = useRef<HTMLTextAreaElement>(null);
@@ -2933,6 +2940,8 @@ export function CreateCanvas({
             void onEdit(`声画直合分镜「${vis.name}」`, operations);
           }
         }}
+        onTriageAssets={onTriageAssets ? (ids) => void onTriageAssets(ids) : undefined}
+        onAutoTagAssets={onAutoTagAssets ? (ids) => void onAutoTagAssets(ids) : undefined}
         onCreateGroup={(keys) => void createGroupFromNodeKeys(keys)}
         onPackNodes={(keys) => void packNodeKeys(keys, false)}
         onLinkNodes={(keys) => void linkSelectedNodes(keys)}
@@ -4711,6 +4720,18 @@ export function CreateCanvas({
                 ) : a.thumbnail ? (
                   <div className="cc-node-preview">
                     <img src={mediaUrl(previewOrigin, a.id, true)} alt={a.name} draggable={false} />
+                    {a.qualityScore && (
+                      <span
+                        className={`cc-quality-badge ${a.qualityScore.recommended ? 'recommended' : a.qualityScore.issues?.length ? 'has-issue' : ''}`}
+                        title={
+                          a.qualityScore.issues?.length
+                            ? `${a.qualityScore.provider} 评分 ${a.qualityScore.score} · ${a.qualityScore.issues.join('、')}`
+                            : `${a.qualityScore.provider} 评分 ${a.qualityScore.score}${a.qualityScore.recommended ? '（推荐最佳候选）' : ''}`
+                        }
+                      >
+                        {a.qualityScore.recommended ? `★ 推荐 ${a.qualityScore.score}` : `${a.qualityScore.score}`}
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <div className="cc-node-placeholder">
@@ -5084,7 +5105,56 @@ export function CreateCanvas({
           const handleOmnibarSubmit = async () => {
             const text = activeVal.trim();
             if (!text) return;
-            // Smart multi-line script paste shortcut: if user pasted 3+ lines cleanly without question marks, offer/run breakdown or send to Agent
+            // Fast 0-cost local intent check (and optional System 1 router when explicitly enabled)
+            let intent: OmnibarLocalIntent = 'agent';
+            const localHit = routeOmnibarLocally(text);
+            if (localHit.intent !== 'agent' && localHit.confidence >= 0.85) {
+              intent = localHit.intent;
+            } else if (
+              settings?.system1 &&
+              settings.system1.mode !== 'off' &&
+              settings.system1.features?.omnibarRouter
+            ) {
+              try {
+                const res = await window.cocraft.call<{ intent: OmnibarLocalIntent; confidence: number }>(
+                  'system1.routeOmnibar',
+                  { text },
+                );
+                if (res?.intent && res.intent !== 'agent' && res.confidence >= 0.75) {
+                  intent = res.intent;
+                }
+              } catch {
+                intent = 'agent';
+              }
+            }
+            if (intent === 'tidy') {
+              void tidyCanvasNodes();
+              setOmnibarDraft('');
+              onFloatingPromptChange('');
+              return;
+            }
+            if (intent === 'new-text') {
+              const cleaned = text.replace(/^(新建|加一个?|创建)(文本|便签|剧本|脚本)(卡|节点)?[:：]?\s*/i, '').trim();
+              void createTextNode(cleaned);
+              setOmnibarDraft('');
+              onFloatingPromptChange('');
+              return;
+            }
+            if (intent === 'breakdown' && text.includes('\n')) {
+              const ops = scriptOutlineToShotOperations(sequence, text, undefined, upstreamEntities);
+              if (ops.length) {
+                void onEdit('从指令舱脚本拆解分镜', ops);
+                setOmnibarDraft('');
+                onFloatingPromptChange('');
+                return;
+              }
+            }
+            if (intent === 'reframe-vertical' && onAutoReframeVertical) {
+              void onAutoReframeVertical();
+              setOmnibarDraft('');
+              onFloatingPromptChange('');
+              return;
+            }
             const ctxPrefix =
               singleRefs.length > 0 || chatRefs.length > 0
                 ? `参考上下文（${[...chatRefs, ...singleRefs].map((r) => `@${r.label}`).join('、')}）：`

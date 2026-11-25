@@ -14,6 +14,9 @@ import type {
 } from './types';
 import { applyStyleTokensToClip, resolveProjectStyle } from './presets';
 import { scaleKeyframesForFps, splitKeyframesForSplit } from './keyframes';
+import { reframeClipForTargetAspect } from './system1Rules';
+
+export { reframeClipForTargetAspect };
 
 export const uid = (prefix = 'id') => `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
 export const clone = <T>(v: T): T => structuredClone(v);
@@ -326,6 +329,8 @@ export function applyOperations(
       if (op.changes.tags !== undefined) a.tags = [...new Set(op.changes.tags.map((t) => t.trim()).filter(Boolean))];
       if (op.changes.collection !== undefined) a.collection = op.changes.collection || undefined;
       if (op.changes.derivedFrom !== undefined) a.derivedFrom = clone(op.changes.derivedFrom);
+      if (op.changes.qualityScore === null) delete a.qualityScore;
+      else if (op.changes.qualityScore !== undefined) a.qualityScore = clone(op.changes.qualityScore);
       continue;
     }
     if (op.type === 'removeAsset') {
@@ -478,6 +483,10 @@ export function applyOperations(
       const src = p.sequences.find((s) => s.id === op.sourceSequenceId) || p.sequences[0];
       if (!src) throw new Error('源成片分支不存在');
       const cleanBranch = op.branchName.trim() || `branch-${p.sequences.length}`;
+      const dstW = op.width || src.width;
+      const dstH = op.height || src.height;
+      const aspectChanged = Math.abs(dstW / dstH - src.width / src.height) > 0.08;
+      const shouldReframe = Boolean(op.autoReframe || aspectChanged);
       const forked: Sequence = {
         ...clone(src),
         id: op.newSequenceId || uid('seq'),
@@ -486,9 +495,14 @@ export function applyOperations(
         parentSequenceId: src.id,
         forkedAtRevision: p.revision,
         isMainBranch: false,
-        width: op.width || src.width,
-        height: op.height || src.height,
-        clips: src.clips.map((c) => ({ ...clone(c), id: uid('clip'), locked: false })),
+        width: dstW,
+        height: dstH,
+        clips: src.clips.map((c) => {
+          const nextClip: Clip = { ...clone(c), id: uid('clip'), locked: false };
+          if (!shouldReframe) return nextClip;
+          const override = op.focalOverrides?.[c.id] || (c.assetId ? op.focalOverrides?.[c.assetId] : undefined);
+          return reframeClipForTargetAspect(nextClip, src.width, src.height, dstW, dstH, override);
+        }),
       };
       p.sequences.push(forked);
       continue;

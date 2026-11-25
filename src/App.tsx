@@ -176,6 +176,7 @@ export function App() {
     [mentionIndex, setMentionIndex] = useState(0),
     [showStageFork, setShowStageFork] = useState(false),
     [stageForkName, setStageForkName] = useState(''),
+    [stageForkAspect, setStageForkAspect] = useState<'original' | 'portrait' | 'square'>('original'),
     [projectMenuOpen, setProjectMenuOpen] = useState(false),
     [layoutMenuOpen, setLayoutMenuOpen] = useState(false),
     [view, setView] = useState('timeline'),
@@ -2007,16 +2008,48 @@ export function App() {
                   onSubmit={async (e) => {
                     e.preventDefault();
                     const newId = uid('seq');
-                    const bName = stageForkName.trim() || `${sequence.name}-试剪${project.sequences.length}`;
-                    await edit(`派生平行分支「${bName}」`, [
-                      {
-                        type: 'forkSequenceBranch',
-                        sourceSequenceId: sequence.id,
-                        newSequenceId: newId,
-                        branchName: bName,
-                      },
-                    ]);
+                    const bName =
+                      stageForkName.trim() ||
+                      (stageForkAspect === 'portrait'
+                        ? '竖屏 9:16'
+                        : stageForkAspect === 'square'
+                          ? '方形 1:1'
+                          : `${sequence.name}-试剪${project.sequences.length}`);
+                    const wantPortrait = stageForkAspect === 'portrait' || /9\s*[:：]\s*16|竖屏/.test(bName);
+                    const wantSquare = stageForkAspect === 'square' || /1\s*[:：]\s*1|方形/.test(bName);
+                    if (wantPortrait || wantSquare) {
+                      const targetW = 1080;
+                      const targetH = wantPortrait ? 1920 : 1080;
+                      await work(`智能重排画幅「${bName}」`, async () => {
+                        const res = await api<{
+                          envelope: ProjectEnvelope;
+                          sequenceId: string;
+                          focalCount: number;
+                          provider: string;
+                        }>('system1.autoReframeBranch', {
+                          sequenceId: sequence.id,
+                          newSequenceId: newId,
+                          branchName: bName,
+                          width: targetW,
+                          height: targetH,
+                        });
+                        accept(res.envelope);
+                        notify(
+                          `已派生 ${targetW}×${targetH} 智能重排分支「${bName}」${res.focalCount > 0 ? `（${res.provider} 已锁 ${res.focalCount} 镜主体焦点）` : '（本地免费构图 + 字幕安全区已适配）'}`,
+                        );
+                      });
+                    } else {
+                      await edit(`派生平行分支「${bName}」`, [
+                        {
+                          type: 'forkSequenceBranch',
+                          sourceSequenceId: sequence.id,
+                          newSequenceId: newId,
+                          branchName: bName,
+                        },
+                      ]);
+                    }
                     setStageForkName('');
+                    setStageForkAspect('original');
                     setShowStageFork(false);
                     changeSequence(newId);
                   }}
@@ -2042,12 +2075,22 @@ export function App() {
                     onChange={(e) => setStageForkName(e.target.value)}
                   />
                   <div className="branch-fork-chips">
-                    {['30s 紧凑版', '竖屏 9:16', '风格试剪'].map((presetName) => (
+                    {(
+                      [
+                        ['30s 紧凑版', 'original'],
+                        ['竖屏 9:16', 'portrait'],
+                        ['方形 1:1', 'square'],
+                        ['风格试剪', 'original'],
+                      ] as const
+                    ).map(([presetName, aspect]) => (
                       <button
                         key={presetName}
                         type="button"
-                        className="branch-fork-chip"
-                        onClick={() => setStageForkName(presetName)}
+                        className={`branch-fork-chip ${stageForkName === presetName ? 'active' : ''}`}
+                        onClick={() => {
+                          setStageForkName(presetName);
+                          setStageForkAspect(aspect);
+                        }}
                       >
                         {presetName}
                       </button>
@@ -2068,7 +2111,13 @@ export function App() {
                         设为主干
                       </button>
                     ) : (
-                      <span className="branch-fork-tip">零破坏克隆当前时间线</span>
+                      <span className="branch-fork-tip">
+                        {stageForkAspect === 'portrait'
+                          ? '1080×1920 智能构图 + 字幕安全区重排'
+                          : stageForkAspect === 'square'
+                            ? '1080×1080 智能裁切居中'
+                            : '零破坏克隆当前时间线'}
+                      </span>
                     )}
                     <button type="submit" className="button tiny primary">
                       创建并切换
@@ -2402,6 +2451,54 @@ export function App() {
                     );
                     accept(res.envelope);
                     notify(`已生成可编辑提示词卡「${res.vaultItem.name}」`);
+                  });
+                }}
+                onTriageAssets={async (assetIds) => {
+                  await work('候选图质检挑优', async () => {
+                    const res = await api<{
+                      envelope: ProjectEnvelope;
+                      provider: string;
+                      fallbackNotice?: string;
+                    }>('system1.triageAssets', { assetIds });
+                    accept(res.envelope);
+                    notify(
+                      res.fallbackNotice ||
+                        `已完成 ${assetIds.length} 张候选图质检挑优并标星推荐（${res.provider === 'local' ? '本地免费' : res.provider}）`,
+                    );
+                  });
+                }}
+                onAutoTagAssets={async (assetIds) => {
+                  await work('素材智能标角色', async () => {
+                    const res = await api<{ envelope: ProjectEnvelope; provider: string }>(
+                      'system1.autoTagAssets',
+                      { assetIds },
+                    );
+                    accept(res.envelope);
+                    notify(
+                      `已为 ${assetIds.length} 项素材完成角色归类（${res.provider === 'local' ? '本地免费' : res.provider}）`,
+                    );
+                  });
+                }}
+                onAutoReframeVertical={async () => {
+                  const newId = uid('seq');
+                  await work('派生 9:16 竖屏重排分支', async () => {
+                    const res = await api<{
+                      envelope: ProjectEnvelope;
+                      sequenceId: string;
+                      focalCount: number;
+                      provider: string;
+                    }>('system1.autoReframeBranch', {
+                      sequenceId: sequence.id,
+                      newSequenceId: newId,
+                      branchName: '竖屏 9:16',
+                      width: 1080,
+                      height: 1920,
+                    });
+                    accept(res.envelope);
+                    changeSequence(res.sequenceId);
+                    notify(
+                      `已派生 9:16 竖屏分支${res.focalCount > 0 ? `（${res.provider} 已锁 ${res.focalCount} 镜主体）` : '（本地免费智能重排）'}`,
+                    );
                   });
                 }}
                 onAskAgentForShot={(shotClip, draftPrompt) => {

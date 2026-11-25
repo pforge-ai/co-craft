@@ -191,6 +191,18 @@ export interface TranscriptData {
   updatedAt: string;
 }
 
+export interface AssetQualityScore {
+  /** Normalized 0..100 overall candidate quality score */
+  score: number;
+  /** True for the top-ranked non-defective candidate in a batch */
+  recommended?: boolean;
+  /** Concise detected issues (e.g. '构图偏移', '局部畸变') */
+  issues?: string[];
+  /** Which tier/provider scored this asset ('local' | 'fast-model' | 'typesafe-jev') */
+  provider: string;
+  evaluatedAt: string;
+}
+
 export interface Asset {
   id: string;
   name: string;
@@ -213,6 +225,7 @@ export interface Asset {
   collection?: string;
   derivedFrom?: AssetLineageRef[];
   transcript?: TranscriptData;
+  qualityScore?: AssetQualityScore;
   source?: { provider: string; url?: string; author?: string; license?: string; [key: string]: unknown };
   createdAt: string;
 }
@@ -679,6 +692,37 @@ export interface ModelDefinition {
   parameters: Record<string, string | number | boolean>;
 }
 
+export type System1Mode = 'off' | 'fast-model' | 'typesafe-jev';
+
+export interface System1Features {
+  /** 智能横转竖锁主体（Box）— 仅在派生竖屏 9:16 分支时按镜触发 */
+  autoReframeBox: boolean;
+  /** 批量抽卡质检挑优（Noul + Score）— 仅在手动点击「质检挑优」时触发 */
+  batchQualityGate: boolean;
+  /** 指令舱极速本地分流（Choice）— 省主 Agent Token 费 */
+  omnibarRouter: boolean;
+  /** 所选素材一键智能归类（Choice）— 仅点击多选栏按钮时手动触发 */
+  autoTagAssets: boolean;
+}
+
+export interface System1Settings {
+  mode: System1Mode;
+  fastModelId?: string;
+  jevBaseUrl?: string;
+  jevModelId?: string;
+  jevApiKey?: string;
+  hasJevApiKey?: boolean;
+  features: System1Features;
+  monthlyCallCap?: number;
+}
+
+export interface System1UsageStats {
+  month: string;
+  totalCalls: number;
+  byTier: { local: number; fastModel: number; jev: number };
+  byFeature: { reframeBox: number; qualityGate: number; omnibarRouter: number; autoTag: number };
+}
+
 export interface Settings {
   schemaVersion?: 2;
   providers: ProviderConnection[];
@@ -701,6 +745,8 @@ export interface Settings {
   allowShell: boolean;
   allowNetwork: boolean;
   mcpBridgeEnabled?: boolean;
+  /** Strictly optional, default-OFF 3-Tier System 1 decision engine settings */
+  system1?: System1Settings;
 }
 
 export type EditOperation =
@@ -735,6 +781,7 @@ export type EditOperation =
         tags?: string[];
         collection?: string;
         derivedFrom?: AssetLineageRef[];
+        qualityScore?: AssetQualityScore | null;
       };
     }
   | { type: 'removeAsset'; assetId: string }
@@ -766,6 +813,8 @@ export type EditOperation =
       branchName: string;
       width?: number;
       height?: number;
+      autoReframe?: boolean;
+      focalOverrides?: Record<string, { focalX: number; focalY: number }>;
     }
   | { type: 'promoteSequenceBranch'; sequenceId: string }
   | { type: 'addClipTake'; sequenceId: string; clipId: string; take: ClipTake; activate?: boolean }

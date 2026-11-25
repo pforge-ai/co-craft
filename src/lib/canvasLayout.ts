@@ -225,7 +225,7 @@ export function computeTidyCanvasLayout(params: {
   }
 
   const cols = orderedAssets.length > 8 ? 3 : orderedAssets.length > 3 ? 2 : 1;
-  const colStep = 304;
+  const colStep = orderedAssets.some((k) => getSize(k).w > 290) ? 356 : 304;
   const colY = Array.from({ length: cols }, () => CANVAS_LANE_TOP);
 
   orderedAssets.forEach((key, idx) => {

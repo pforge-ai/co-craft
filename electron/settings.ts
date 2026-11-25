@@ -34,6 +34,19 @@ export const defaults: Settings = {
   allowShell: false,
   allowNetwork: false,
   mcpBridgeEnabled: false,
+  system1: {
+    mode: 'off',
+    jevBaseUrl: 'https://api.typesafe.ai/v1',
+    jevModelId: 'jev-latest',
+    hasJevApiKey: false,
+    features: {
+      autoReframeBox: false,
+      batchQualityGate: false,
+      omnibarRouter: false,
+      autoTagAssets: false,
+    },
+    monthlyCallCap: 500,
+  },
 };
 export class SettingsStore {
   private queue: Promise<unknown> = Promise.resolve();
@@ -121,6 +134,24 @@ export class SettingsStore {
       delete value[key];
       value[key === 'pexelsKey' ? 'hasPexelsKey' : 'hasTranscriptionKey'] = !!encrypted;
     }
+    const rawS1 = raw.system1 || {};
+    value.system1 = {
+      mode: rawS1.mode === 'fast-model' || rawS1.mode === 'typesafe-jev' ? rawS1.mode : 'off',
+      fastModelId: typeof rawS1.fastModelId === 'string' ? rawS1.fastModelId : undefined,
+      jevBaseUrl: typeof rawS1.jevBaseUrl === 'string' && rawS1.jevBaseUrl.trim() ? rawS1.jevBaseUrl.trim() : 'https://api.typesafe.ai/v1',
+      jevModelId: typeof rawS1.jevModelId === 'string' && rawS1.jevModelId.trim() ? rawS1.jevModelId.trim() : 'jev-latest',
+      hasJevApiKey: Boolean(rawS1.jevApiKeyEncrypted),
+      features: {
+        autoReframeBox: Boolean(rawS1.features?.autoReframeBox),
+        batchQualityGate: Boolean(rawS1.features?.batchQualityGate),
+        omnibarRouter: Boolean(rawS1.features?.omnibarRouter),
+        autoTagAssets: Boolean(rawS1.features?.autoTagAssets),
+      },
+      monthlyCallCap:
+        typeof rawS1.monthlyCallCap === 'number' && Number.isFinite(rawS1.monthlyCallCap) && rawS1.monthlyCallCap >= 0
+          ? Math.round(rawS1.monthlyCallCap)
+          : 500,
+    };
     const model = selectedModel(value, 'agent');
     const provider = value.providers.find((p) => p.id === model?.providerId);
     value.provider =
@@ -143,6 +174,10 @@ export class SettingsStore {
   async stockKey() {
     const raw = await this.raw();
     return raw.pexelsKeyEncrypted ? this.decrypt(raw.pexelsKeyEncrypted) : undefined;
+  }
+  async system1Secret(): Promise<string | undefined> {
+    const raw = await this.raw();
+    return raw.system1?.jevApiKeyEncrypted ? this.decrypt(raw.system1.jevApiKeyEncrypted) : undefined;
   }
   private async providerFrom(raw: any, id: string): Promise<ProviderConnection | undefined> {
     const stored = raw.providers.find((p: ProviderConnection) => p.id === id);
@@ -278,6 +313,39 @@ export class SettingsStore {
       for (const key of ['pexelsKey', 'transcriptionKey'] as const)
         if (input[key] !== undefined)
           raw[key + 'Encrypted'] = input[key] ? await encrypt(input[key]!) : undefined;
+      if (input.system1 !== undefined) {
+        const prevS1 = raw.system1 || {};
+        const nextS1 = input.system1;
+        const cleanUrl = nextS1.jevBaseUrl?.trim()
+          ? normalizeProviderUrl(nextS1.jevBaseUrl.trim())
+          : prevS1.jevBaseUrl || 'https://api.typesafe.ai/v1';
+        const sameJevEndpoint =
+          prevS1.jevBaseUrl && normalizeProviderUrl(prevS1.jevBaseUrl) === cleanUrl;
+        raw.system1 = {
+          mode: nextS1.mode === 'fast-model' || nextS1.mode === 'typesafe-jev' ? nextS1.mode : 'off',
+          fastModelId: nextS1.fastModelId || undefined,
+          jevBaseUrl: cleanUrl,
+          jevModelId: nextS1.jevModelId?.trim() || 'jev-latest',
+          jevApiKeyEncrypted:
+            nextS1.jevApiKey === undefined
+              ? sameJevEndpoint
+                ? prevS1.jevApiKeyEncrypted
+                : undefined
+              : nextS1.jevApiKey
+                ? await encrypt(nextS1.jevApiKey)
+                : undefined,
+          features: {
+            autoReframeBox: Boolean(nextS1.features?.autoReframeBox),
+            batchQualityGate: Boolean(nextS1.features?.batchQualityGate),
+            omnibarRouter: Boolean(nextS1.features?.omnibarRouter),
+            autoTagAssets: Boolean(nextS1.features?.autoTagAssets),
+          },
+          monthlyCallCap:
+            typeof nextS1.monthlyCallCap === 'number' && Number.isFinite(nextS1.monthlyCallCap)
+              ? Math.max(0, Math.round(nextS1.monthlyCallCap))
+              : 500,
+        };
+      }
       for (const list of [raw.providers, raw.models]) {
         const ids = list.map((entry: { id: string }) => entry.id);
         if (ids.some((id: string) => !id) || ids.length !== new Set(ids).size)

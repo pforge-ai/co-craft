@@ -10,6 +10,8 @@ import {
   Link2,
   Package,
   Sparkles,
+  Star,
+  Tag,
   X,
 } from 'lucide-react';
 import type {
@@ -39,6 +41,8 @@ interface CanvasMultiBarProps {
   }) => void;
   onBridgeTwoVideos?: (videoAId: string, videoBId: string, placement: CanvasPt) => void;
   onCombineVisualAudio?: (visualAssetId: string, audioAssetId: string) => void;
+  onTriageAssets?: (assetIds: string[]) => void;
+  onAutoTagAssets?: (assetIds: string[]) => void;
   onCreateGroup: (keys: string[]) => void;
   onPackNodes: (keys: string[]) => void;
   onLinkNodes: (keys: string[]) => void;
@@ -59,6 +63,8 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
   onSpawnGeneratorNode,
   onBridgeTwoVideos,
   onCombineVisualAudio,
+  onTriageAssets,
+  onAutoTagAssets,
   onCreateGroup,
   onPackNodes,
   onLinkNodes,
@@ -95,6 +101,9 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
   const canBridgeTwoVideos = videoAssetIds.length === 2 && Boolean(onBridgeTwoVideos);
   const canCombineVisualAudio =
     visualAssetIds.length === 1 && audioAssetIds.length === 1 && Boolean(onCombineVisualAudio);
+  const allSelectedAssetIds = Array.from(new Set([...imageAssetIds, ...videoAssetIds, ...audioAssetIds]));
+  const canTriageImages = imgCount >= 2 && Boolean(onTriageAssets);
+  const canAutoTag = allSelectedAssetIds.length >= 1 && Boolean(onAutoTagAssets);
   const hasAnyAiOrCombo =
     canImgTextCombo ||
     canFirstLastVideo ||
@@ -102,7 +111,9 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
     canMotionAnimate ||
     canLipSync ||
     canBridgeTwoVideos ||
-    canCombineVisualAudio;
+    canCombineVisualAudio ||
+    canTriageImages ||
+    canAutoTag;
   const promptSummary = labels.slice(0, 4).join(' + ');
 
   return (
@@ -316,6 +327,26 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
           onClick={() => onCombineVisualAudio?.(visualAssetIds[0], audioAssetIds[0])}
         >
           <AudioLines size={11} /> 合为带声分镜
+        </button>
+      )}
+
+      {canTriageImages && (
+        <button
+          type="button"
+          title="对比所选候选图并标星推荐最佳帧（默认本地免费评分，开启 System 1 后启用 Noul+Score 畸变质检）"
+          onClick={() => onTriageAssets?.(imageAssetIds)}
+        >
+          <Star size={11} /> 质检挑优
+        </button>
+      )}
+
+      {canAutoTag && (
+        <button
+          type="button"
+          title="按需为所选素材标记创作角色（角色/场景/道具/配音/配乐；默认本地免费，绝不静默刷 API）"
+          onClick={() => onAutoTagAssets?.(allSelectedAssetIds)}
+        >
+          <Tag size={11} /> 智能标角色
         </button>
       )}
 
