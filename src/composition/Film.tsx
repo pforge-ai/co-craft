@@ -521,6 +521,7 @@ class ClipErrorBoundary extends React.Component<
       }
       return (
         <AbsoluteFill
+          data-clip-error={this.state.error}
           style={{
             justifyContent: 'center',
             alignItems: 'center',

@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { Library, ProjectStore } from './store';
 import { SettingsStore } from './settings';
 import { MediaServer } from './server';
+import { OffscreenCaptureService } from './offscreen-capture';
 import { JobService } from './jobs';
 import { AgentHost } from './agents';
 import { studioCatalog, addStudioAsset } from './studio-media';
@@ -979,7 +980,7 @@ async function handle(method: string, arg: any = {}) {
       };
 
       const operations: EditOperation[] = [];
-      const captured: { pass: string; asset: Asset; vaultItem: VaultItem }[] = [];
+      const captured: { pass: string; asset: Asset }[] = [];
       const nextLayout: Record<string, { x: number; y: number }> = { ...(p.canvasLayout || {}) };
 
       for (let i = 0; i < requestedPasses.length; i++) {
@@ -1025,30 +1026,14 @@ async function handle(method: string, arg: any = {}) {
             note: `捕获自「${sourceLabel}」第 ${frame} 帧（${pass} 通道）`,
           },
         ];
-        const vaultItem: VaultItem = {
-          id: uid('pvault'),
-          name: asset.name,
-          entityKind: 'image',
-          role: 'environment',
-          tags: meta.tags,
-          category: 'subject',
-          subkind: 'environment',
-          description: `捕获自「${sourceLabel}」第 ${frame} 帧（${meta.label}），可直接连线喂给 AI 生图/生视频工坊做精确空间构图控制。`,
-          promptAnchor: arg.promptAnchor || meta.anchor,
-          assetId: asset.id,
-          assetKind: 'image',
-          derivedFrom: asset.derivedFrom,
-          version: 1,
-          updatedAt: new Date().toISOString(),
-        };
-        operations.push({ type: 'addAsset', asset }, { type: 'putVaultItem', item: vaultItem });
+        operations.push({ type: 'addAsset', asset });
         if (arg.placement) {
           nextLayout[`asset:${asset.id}`] = {
             x: Math.round(Number(arg.placement.x)),
             y: Math.round(Number(arg.placement.y) + i * 195),
           };
         }
-        captured.push({ pass, asset, vaultItem });
+        captured.push({ pass, asset });
       }
       if (arg.placement) {
         operations.push({ type: 'updateProject', changes: { canvasLayout: nextLayout } });
@@ -1066,7 +1051,6 @@ async function handle(method: string, arg: any = {}) {
       return {
         envelope,
         asset: captured[0]?.asset,
-        vaultItem: captured[0]?.vaultItem,
         captured,
       };
     }
@@ -1150,6 +1134,7 @@ async function handle(method: string, arg: any = {}) {
       const outPath = join(assetsDir, `spatial-previs-${pass}-${uid('vid')}.mp4`);
       const job = await jobs.render(cloned, tempSeqId, outPath, {
         scale: 1,
+        preferOffscreenVideo: true,
         projectPath: target.path,
       });
       await jobs.wait(job.id);
@@ -2020,6 +2005,7 @@ app
     studioMedia = await studioCatalog(resources);
     media.registerStudio(studioMedia);
     media.setProjectAssets((await store.project()).assets, store.path);
+    const offscreenCapture = new OffscreenCaptureService(media, process.env.COCRAFT_DEV_URL);
     jobs = new JobService(
       root,
       join(here, 'render-worker.mjs'),
@@ -2027,6 +2013,7 @@ app
       media,
       (j) => emit('jobs', j),
       app.isPackaged ? undefined : join(here, '..'),
+      offscreenCapture,
     );
     await jobs.init();
     system1 = new System1Service(settings, root);

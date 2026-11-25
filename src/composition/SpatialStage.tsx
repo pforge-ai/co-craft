@@ -115,17 +115,29 @@ interface WebGL2SplatHandle {
   lastCamDir: THREE.Vector3;
 }
 
+let pendingSpatialLoads = 0;
+function bumpSpatialLoading(delta: number) {
+  pendingSpatialLoads = Math.max(0, pendingSpatialLoads + delta);
+  if (typeof document !== 'undefined' && document.documentElement) {
+    if (pendingSpatialLoads > 0) document.documentElement.dataset.spatialLoading = '1';
+    else delete document.documentElement.dataset.spatialLoading;
+  }
+}
+
 function safeDelayRender(label: string, isStandalone: boolean): number | null {
   if (isStandalone) return null;
+  bumpSpatialLoading(1);
   try {
     return delayRender(label);
   } catch {
-    return null;
+    return -1;
   }
 }
 
 function safeContinueRender(handle: number | null) {
   if (handle === null) return;
+  bumpSpatialLoading(-1);
+  if (handle < 0) return;
   try {
     continueRender(handle);
   } catch {}

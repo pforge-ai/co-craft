@@ -473,6 +473,14 @@ export function modelInputCapabilities(
         hint: '百炼托管可灵 v3 图像生成（异步任务，完成后自动入库）',
       };
     }
+    if (/^qwen-image(?:-(?:plus|max))?$/i.test(id)) {
+      return {
+        ...base,
+        maxReferences: 0,
+        referenceMode: 'none',
+        hint: 'Qwen-Image Plus/Max 为文生图模型；如需参考图重绘/修图，请添加 Qwen-Image 3.0 / Edit 或 Wan 2.7 Image',
+      };
+    }
     return {
       ...base,
       maxReferences: /wan2\.6-image|i2i/i.test(id) ? 4 : 1,
@@ -910,11 +918,11 @@ export function recommendModelForInputs(
     const p = settings.providers.find((x) => x.id === m.providerId);
     return Boolean(p && (p.hasApiKey || !p.requiresKey));
   };
-  const defCaps = modelInputCapabilities(defaultModel);
+  const defCaps = defaultModel ? modelInputCapabilities(defaultModel) : null;
   const refCount = opts.refCount ?? 0;
 
   if (use === 'video' && opts.hasDriverAudio) {
-    if (defCaps.supportsDriverAudio) return defaultModel;
+    if (defaultModel && defCaps?.supportsDriverAudio) return defaultModel;
     const hit =
       models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsDriverAudio) ||
       models.find((m) => modelInputCapabilities(m).supportsDriverAudio);
@@ -933,29 +941,29 @@ export function recommendModelForInputs(
       models.find((m) => modelInputCapabilities(m).supportsMotionVideo);
     if (hit) return hit;
   }
-  if (use === 'image' && opts.transparentBg && !defCaps.supportsTransparentBg) {
+  if (use === 'image' && opts.transparentBg && (!defCaps || !defCaps.supportsTransparentBg)) {
     const hit =
       models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsTransparentBg) ||
       models.find((m) => modelInputCapabilities(m).supportsTransparentBg);
     if (hit) return hit;
   }
-  if (use === 'video' && opts.hasLastFrame && !defCaps.supportsLastFrame) {
+  if (use === 'video' && opts.hasLastFrame && (!defCaps || !defCaps.supportsLastFrame)) {
     const hit =
       models.find((m) => isConnected(m) && modelInputCapabilities(m).supportsLastFrame) ||
       models.find((m) => modelInputCapabilities(m).supportsLastFrame);
     if (hit) return hit;
   }
-  if ((use === 'image' || use === 'video') && refCount >= 2 && defCaps.maxReferences < 2) {
+  if ((use === 'image' || use === 'video') && refCount >= 2 && (!defCaps || defCaps.maxReferences < 2)) {
     const hit =
       models.find((m) => isConnected(m) && modelInputCapabilities(m).maxReferences >= 2) ||
       models.find((m) => modelInputCapabilities(m).maxReferences >= 2);
     if (hit) return hit;
   }
-  if ((use === 'image' || use === 'video') && refCount >= 1 && defCaps.maxReferences < 1) {
+  if ((use === 'image' || use === 'video') && refCount >= 1 && (!defCaps || defCaps.maxReferences < 1)) {
     const hit =
       models.find((m) => isConnected(m) && modelInputCapabilities(m).maxReferences >= 1) ||
       models.find((m) => modelInputCapabilities(m).maxReferences >= 1);
     if (hit) return hit;
   }
-  return defaultModel;
+  return defaultModel || models.find(isConnected) || models[0];
 }

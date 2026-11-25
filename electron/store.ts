@@ -91,9 +91,30 @@ export class ProjectStore {
     return this.envelope();
   }
 
+  private sanitizeProject(p: Project): Project {
+    if (!p || !Array.isArray(p.sequences)) return p;
+    for (let si = 0; si < p.sequences.length; si++) {
+      const seq = p.sequences[si];
+      if (!seq || !Array.isArray(seq.clips)) continue;
+      const seen = new Set<string>();
+      for (let ci = 0; ci < seq.clips.length; ci++) {
+        const c = seq.clips[ci];
+        if (!c) continue;
+        if (!c.id || typeof c.id !== 'string' || !c.id.trim() || seen.has(c.id)) {
+          c.id = `clip_repaired_${si}_${ci}`;
+        }
+        seen.add(c.id);
+        if (!c.props || typeof c.props !== 'object') {
+          c.props = {};
+        }
+      }
+    }
+    return p;
+  }
+
   async project(): Promise<Project> {
     const h = await readJSON<Head>(this.headPath);
-    return (await readJSON<{ project: Project }>(this.snapshotPath(h.current))).project;
+    return this.sanitizeProject((await readJSON<{ project: Project }>(this.snapshotPath(h.current))).project);
   }
 
   private async loadRevisionsIndex(maxExclusive: number, mustIncludeRevision?: number): Promise<Revision[]> {
@@ -120,7 +141,7 @@ export class ProjectStore {
 
   private async readEnvelope(): Promise<ProjectEnvelope> {
     const head = await readJSON<Head>(this.headPath);
-    const p = (await readJSON<{ project: Project }>(this.snapshotPath(head.current))).project;
+    const p = this.sanitizeProject((await readJSON<{ project: Project }>(this.snapshotPath(head.current))).project);
     const revisions = await this.loadRevisionsIndex(head.next, head.current);
     const offlineAssetIds = p.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
     await Promise.all(
@@ -192,7 +213,7 @@ export class ProjectStore {
   }
 
   async snapshot(revision: number) {
-    return (await readJSON<{ project: Project }>(this.snapshotPath(revision))).project;
+    return this.sanitizeProject((await readJSON<{ project: Project }>(this.snapshotPath(revision))).project);
   }
 
   async edit(req: EditRequest, isActive: () => boolean = () => true) {

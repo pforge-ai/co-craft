@@ -3321,7 +3321,7 @@ export function App() {
           <p>视频、音频、图片 · 原文件保持不变</p>
         </div>
       )}
-      {toast && (
+      {toast ? (
         <div className={`toast ${toast.error ? 'error' : ''}`} role="status">
           {toast.error ? <AlertCircle size={15} /> : <Check size={15} />}
           <span>{toast.text}</span>
@@ -3329,7 +3329,12 @@ export function App() {
             <X size={12} />
           </button>
         </div>
-      )}
+      ) : busy ? (
+        <div className="toast busy-toast" role="status">
+          <Spinner />
+          <span>{busy.startsWith('正在') ? busy : `正在${busy}`}…</span>
+        </div>
+      ) : null}
       {jobsOpen && (
         <JobsPopover
           jobs={jobs}

@@ -16,6 +16,8 @@ export interface ThreeCanvasProps {
   camera?: { position?: [number, number, number]; fov?: number };
   style?: React.CSSProperties;
   children?: React.ReactNode;
+  /** Optional key that triggers rebuilding scene geometry on the existing live WebGL context when changed. */
+  setupKey?: string | number;
   onFrame?: (ctx: {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
@@ -84,16 +86,28 @@ function StandaloneThreeCanvas({
   lightingPreset = 'studio',
   camera: camCfg,
   style,
+  setupKey,
   setup,
   onFrame,
 }: Required<Pick<ThreeCanvasProps, 'width' | 'height' | 'frame' | 'fps'>> & ThreeCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [staticThumbUrl, setStaticThumbUrl] = useState<string | null>(null);
   const isSmallStaticThumb = width <= 420 && height <= 300;
+  const setupRef = useRef(setup);
+  const onFrameRef = useRef(onFrame);
+  const camCfgRef = useRef(camCfg);
+  const lightingRef = useRef(lightingPreset);
+  setupRef.current = setup;
+  onFrameRef.current = onFrame;
+  camCfgRef.current = camCfg;
+  lightingRef.current = lightingPreset;
+
   const ctxRef = useRef<{
     renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
+    lightingPreset: LightingPreset;
+    hasSetup: boolean;
     cleanup?: () => void;
     disposeEnv?: () => void;
   } | null>(null);
@@ -127,13 +141,13 @@ function StandaloneThreeCanvas({
 
     const scene = new THREE.Scene();
     const disposeEnv = attachPbrEnvironment(renderer, scene, lightingPreset);
-    const camera = new THREE.PerspectiveCamera(camCfg?.fov || 40, width / height, 0.1, 100);
-    const pos = camCfg?.position || [4.2, 3.0, 5.2];
+    const camera = new THREE.PerspectiveCamera(camCfgRef.current?.fov || 40, width / height, 0.1, 2000);
+    const pos = camCfgRef.current?.position || [4.2, 3.0, 5.2];
     camera.position.set(pos[0], pos[1], pos[2]);
     camera.lookAt(0, 0, 0);
 
-    const cleanup = setup ? setup(scene, camera) || undefined : undefined;
-    onFrame?.({ scene, camera, renderer, frame, fps, time: frame / fps });
+    const cleanup = setupRef.current ? setupRef.current(scene, camera) || undefined : undefined;
+    onFrameRef.current?.({ scene, camera, renderer, frame, fps, time: frame / fps });
     renderer.render(scene, camera);
     try {
       setStaticThumbUrl(offscreen.toDataURL('image/png'));
@@ -143,8 +157,10 @@ function StandaloneThreeCanvas({
     disposeEnv();
     renderer.dispose();
     renderer.forceContextLoss();
-  }, [isSmallStaticThumb, width, height, frame, fps, lightingPreset, setup, onFrame]);
+  }, [isSmallStaticThumb, width, height, frame, fps, lightingPreset, setupKey]);
 
+  // Mount WebGLRenderer ONCE per component lifetime so inline `setup` / `onFrame` closures on custom TSX
+  // components NEVER trigger forceContextLoss() on Frame 1 during playback!
   useLayoutEffect(() => {
     if (isSmallStaticThumb) return;
     const canvas = canvasRef.current;
@@ -167,32 +183,76 @@ function StandaloneThreeCanvas({
     renderer.toneMappingExposure = 1.18;
 
     const scene = new THREE.Scene();
-    const disposeEnv = attachPbrEnvironment(renderer, scene, lightingPreset);
-    const camera = new THREE.PerspectiveCamera(camCfg?.fov || 40, width / height, 0.1, 100);
-    const pos = camCfg?.position || [4.2, 3.0, 5.2];
+    const initialLighting = lightingRef.current || 'studio';
+    const disposeEnv = attachPbrEnvironment(renderer, scene, initialLighting);
+    const camera = new THREE.PerspectiveCamera(camCfgRef.current?.fov || 40, width / height, 0.1, 2000);
+    const pos = camCfgRef.current?.position || [4.2, 3.0, 5.2];
     camera.position.set(pos[0], pos[1], pos[2]);
     camera.lookAt(0, 0, 0);
 
-    const cleanup = setup ? setup(scene, camera) || undefined : undefined;
-    ctxRef.current = { renderer, scene, camera, cleanup, disposeEnv };
+    ctxRef.current = {
+      renderer,
+      scene,
+      camera,
+      lightingPreset: initialLighting,
+      hasSetup: false,
+      disposeEnv,
+    };
 
     return () => {
-      cleanup?.();
-      disposeObject3D(scene);
-      disposeEnv();
-      renderer.dispose();
-      renderer.forceContextLoss();
+      const ctx = ctxRef.current;
       ctxRef.current = null;
+      if (!ctx) return;
+      ctx.cleanup?.();
+      disposeObject3D(ctx.scene);
+      ctx.disposeEnv?.();
+      ctx.renderer.dispose();
+      ctx.renderer.forceContextLoss();
     };
-  }, [isSmallStaticThumb, width, height, lightingPreset, setup]);
+  }, [isSmallStaticThumb]);
 
+  // Update PBR environment lighting without recreating or losing the WebGL context.
+  useLayoutEffect(() => {
+    if (isSmallStaticThumb) return;
+    const ctx = ctxRef.current;
+    if (!ctx || ctx.lightingPreset === lightingPreset) return;
+    ctx.disposeEnv?.();
+    ctx.disposeEnv = attachPbrEnvironment(ctx.renderer, ctx.scene, lightingPreset);
+    ctx.lightingPreset = lightingPreset;
+  }, [isSmallStaticThumb, lightingPreset]);
+
+  // Run scene setup on initial mount and whenever explicit `setupKey` changes, reusing the live WebGL context.
   useLayoutEffect(() => {
     if (isSmallStaticThumb) return;
     const ctx = ctxRef.current;
     if (!ctx) return;
+    if (ctx.hasSetup) {
+      ctx.cleanup?.();
+      ctx.cleanup = undefined;
+      disposeObject3D(ctx.scene);
+      ctx.scene.clear();
+      ctx.camera.fov = camCfgRef.current?.fov || 40;
+      const pos = camCfgRef.current?.position || [4.2, 3.0, 5.2];
+      ctx.camera.position.set(pos[0], pos[1], pos[2]);
+      ctx.camera.lookAt(0, 0, 0);
+      ctx.camera.updateProjectionMatrix();
+    }
+    ctx.cleanup = setupRef.current ? setupRef.current(ctx.scene, ctx.camera) || undefined : undefined;
+    ctx.hasSetup = true;
+  }, [isSmallStaticThumb, setupKey]);
+
+  // Deterministic per-frame render pass.
+  useLayoutEffect(() => {
+    if (isSmallStaticThumb) return;
+    const ctx = ctxRef.current;
+    const canvas = canvasRef.current;
+    if (!ctx || !canvas) return;
+    if (canvas.width !== width || canvas.height !== height) {
+      ctx.renderer.setSize(width, height, false);
+    }
     ctx.camera.aspect = width / height;
     ctx.camera.updateProjectionMatrix();
-    onFrame?.({
+    onFrameRef.current?.({
       scene: ctx.scene,
       camera: ctx.camera,
       renderer: ctx.renderer,
@@ -201,7 +261,7 @@ function StandaloneThreeCanvas({
       time: frame / fps,
     });
     ctx.renderer.render(ctx.scene, ctx.camera);
-  }, [isSmallStaticThumb, frame, fps, width, height, onFrame, setup]);
+  }, [isSmallStaticThumb, frame, fps, width, height, lightingPreset, setupKey]);
 
   if (isSmallStaticThumb) {
     return staticThumbUrl ? (
@@ -731,6 +791,7 @@ function TeardownStageBody({
         width={width}
         height={height}
         lightingPreset={resolvedLighting}
+        setupKey={`${sceneType}:${accent}:${secondary}`}
         setup={setup}
         onFrame={onFrame}
       />

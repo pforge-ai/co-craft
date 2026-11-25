@@ -8,6 +8,7 @@ import { atomicJSON, readJSON } from './store';
 import type { Project, Job, EditOperation } from '../src/core/types';
 import { uid, clone, newClip } from '../src/core/project';
 import type { MediaServer } from './server';
+import type { OffscreenCaptureService } from './offscreen-capture';
 
 export class JobService {
   jobs: Job[] = [];
@@ -25,6 +26,7 @@ export class JobService {
     private media: MediaServer,
     private onChange: (jobs: Job[]) => void,
     private devRoot?: string,
+    private capture?: OffscreenCaptureService,
   ) {}
 
   async init() {
@@ -296,19 +298,19 @@ export class JobService {
     project: Project,
     sequenceId: string,
     output: string,
-    options: { scale?: number; still?: boolean; frame?: number; silent?: boolean; projectPath?: string } = {},
+    options: {
+      scale?: number;
+      still?: boolean;
+      frame?: number;
+      silent?: boolean;
+      preferOffscreenVideo?: boolean;
+      projectPath?: string;
+    } = {},
   ): Promise<Job> {
     await mkdir(join(output, '..'), { recursive: true });
     if (existsSync(output)) throw new Error('导出文件已存在，请使用新文件名');
     const seq = project.sequences.find((s) => s.id === sequenceId);
     if (!seq) throw new Error('成片不存在');
-    const registeredAssetIds = this.media.register(project.assets);
-    let assetsReleased = false;
-    const releaseAssets = () => {
-      if (assetsReleased) return;
-      assetsReleased = true;
-      this.media.unregisterRenderAssets(registeredAssetIds);
-    };
     const silent = !!options.silent;
     const job: Job = {
       id: uid('job'),
@@ -316,7 +318,7 @@ export class JobService {
       type: 'export',
       status: 'running',
       progress: 0,
-      stage: options.still ? '生成预览帧' : '准备导出',
+      stage: options.still ? '生成预览帧' : options.preferOffscreenVideo ? '准备 GPU 录制' : '准备导出',
       output,
       createdAt: new Date().toISOString(),
       revision: project.revision,
@@ -331,6 +333,62 @@ export class JobService {
       this.jobs.unshift(job);
       await this.persist();
     }
+
+    // Fast Metal GPU offscreen capture path inside Electron — zero Google Chrome launches, zero Dock bounces!
+    if (this.capture && (options.still || options.preferOffscreenVideo)) {
+      const controller = new AbortController();
+      this.controllers.set(job.id, controller);
+      let lastPush = 0;
+      const runCapture = async () => {
+        try {
+          if (options.still) {
+            await this.capture!.captureStill(project, sequenceId, output, {
+              frame: options.frame,
+              scale: options.scale,
+              signal: controller.signal,
+            });
+          } else {
+            await this.capture!.renderSilentVideo(project, sequenceId, output, {
+              scale: options.scale,
+              signal: controller.signal,
+              onProgress: (progress, stage) => {
+                if (job.status !== 'running') return;
+                job.progress = progress;
+                job.stage = stage;
+                if (!silent && Date.now() - lastPush > 200) {
+                  lastPush = Date.now();
+                  this.onChange(this.jobs);
+                }
+              },
+            });
+          }
+          if (job.status === 'running') {
+            job.status = 'completed';
+            job.progress = 1;
+            job.stage = options.still ? '已完成' : '录制完成';
+            if (!silent) await this.persist();
+          }
+        } catch (err) {
+          if (controller.signal.aborted || job.status === 'cancelled') return;
+          job.status = 'failed';
+          job.error = err instanceof Error ? err.message : String(err);
+          job.stage = options.still ? '生成失败' : '录制失败';
+          if (!silent) await this.persist();
+        } finally {
+          this.controllers.delete(job.id);
+        }
+      };
+      void runCapture();
+      return job;
+    }
+
+    const registeredAssetIds = this.media.register(project.assets);
+    let assetsReleased = false;
+    const releaseAssets = () => {
+      if (assetsReleased) return;
+      assetsReleased = true;
+      this.media.unregisterRenderAssets(registeredAssetIds);
+    };
     const worker = utilityProcess.fork(this.workerPath, [], {
       stdio: 'pipe',
       serviceName: 'CoCraft Renderer',
@@ -388,6 +446,7 @@ export class JobService {
   }
 
   async shutdownWorkers() {
+    this.capture?.dispose();
     for (const [id, worker] of this.processes.entries()) {
       const job = this.lookup(id);
       try {

@@ -8,7 +8,11 @@ import { durationOf } from './core/project';
 // Untrusted TSX code inside Film.tsx cannot access this variable or spoof workbench hotkeys.
 let privatePort: MessagePort | null = null;
 
+const isCaptureMode =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('capture') === '1';
+
 const notify = (event: string, data: Record<string, unknown> = {}) => {
+  if (isCaptureMode) return;
   const payload = { source: 'cocraft-preview', event, ...data };
   if (privatePort) {
     privatePort.postMessage(payload);
@@ -18,7 +22,7 @@ const notify = (event: string, data: Record<string, unknown> = {}) => {
 };
 
 class ErrorBoundary extends React.Component<
-  { revision: number; sequenceId: string; onRecover?: () => void; children: React.ReactNode },
+  { revision: number; sequenceId: string; onRecover?: () => void; onError?: (msg: string) => void; children: React.ReactNode },
   { error: string }
 > {
   state = { error: '' };
@@ -34,11 +38,15 @@ class ErrorBoundary extends React.Component<
     }
   }
   componentDidCatch(e: Error) {
+    this.props.onError?.(e.message);
     notify('error', { message: e.message });
   }
   render() {
     return this.state.error ? (
-      <div style={{ color: '#e5a99e', font: '13px -apple-system, BlinkMacSystemFont, sans-serif', padding: 30 }}>
+      <div
+        data-preview-error={this.state.error}
+        style={{ color: '#e5a99e', font: '13px -apple-system, BlinkMacSystemFont, sans-serif', padding: 30 }}
+      >
         画面暂时无法加载：{this.state.error}
       </div>
     ) : (
@@ -128,7 +136,90 @@ function Preview() {
   const mutedRef = useRef(false);
   const scrubbingRef = useRef(false);
   const measureRafRef = useRef<number>(0);
+  const captureErrorRef = useRef('');
+  const [captureEpoch, setCaptureEpoch] = useState(0);
   pausedRef.current = paused;
+
+  useEffect(() => {
+    if (!isCaptureMode) return;
+    const nextRaf = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+    const waitMediaReady = async (timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      if (document.fonts?.ready) {
+        await Promise.race([document.fonts.ready, new Promise<void>((r) => setTimeout(r, 1200))]).catch(() => {});
+      }
+      while (Date.now() < deadline) {
+        const host = hostRef.current;
+        if (!host) break;
+        const pendingImgs = Array.from(host.querySelectorAll('img')).filter((img) => !img.complete);
+        const pendingVideos = Array.from(host.querySelectorAll('video')).filter(
+          (v) => v.readyState < 2 || v.seeking,
+        );
+        const pendingSpatial =
+          document.documentElement.dataset.spatialLoading === '1' ||
+          Boolean(host.querySelector('[data-spatial-loading="1"]'));
+        if (!pendingImgs.length && !pendingVideos.length && !pendingSpatial) break;
+        await nextRaf();
+      }
+    };
+    const readError = (): string => {
+      if (captureErrorRef.current) return captureErrorRef.current;
+      const errEl = hostRef.current?.querySelector<HTMLElement>('[data-preview-error], [data-clip-error]');
+      return errEl?.dataset.previewError || errEl?.dataset.clipError || '';
+    };
+    const api = {
+      async load(nextProps: FilmProps, targetFrame: number): Promise<{ ok: boolean; error?: string }> {
+        captureErrorRef.current = '';
+        pending.current = targetFrame;
+        setLiveOverride(null);
+        setSelectedClipId(null);
+        setPaused(true);
+        setProps(nextProps);
+        setCaptureEpoch((n) => n + 1);
+        for (let i = 0; i < 120; i++) {
+          await nextRaf();
+          if (readError()) return { ok: false, error: readError() };
+          if (ref.current) break;
+        }
+        if (ref.current) {
+          ref.current.pause();
+          ref.current.mute();
+          ref.current.seekTo(targetFrame);
+        }
+        await nextRaf();
+        await waitMediaReady(4500);
+        await nextRaf();
+        await nextRaf();
+        const err = readError();
+        return err ? { ok: false, error: err } : { ok: true };
+      },
+      async seek(targetFrame: number): Promise<{ ok: boolean; error?: string }> {
+        captureErrorRef.current = '';
+        if (ref.current) ref.current.seekTo(targetFrame);
+        await nextRaf();
+        const host = hostRef.current;
+        if (host && host.querySelector('video')) {
+          const deadline = Date.now() + 2000;
+          while (Date.now() < deadline) {
+            const seeking = Array.from(host.querySelectorAll('video')).some((v) => v.seeking || v.readyState < 2);
+            if (!seeking) break;
+            await nextRaf();
+          }
+        }
+        await nextRaf();
+        const err = readError();
+        return err ? { ok: false, error: err } : { ok: true };
+      },
+      clear() {
+        captureErrorRef.current = '';
+        setProps(null);
+      },
+    };
+    (window as unknown as { __cocraftCapture?: typeof api }).__cocraftCapture = api;
+    return () => {
+      delete (window as unknown as { __cocraftCapture?: typeof api }).__cocraftCapture;
+    };
+  }, []);
 
   const scheduleMeasure = useCallback(() => {
     if (!pausedRef.current || scrubbingRef.current) return;
@@ -146,6 +237,7 @@ function Preview() {
   }, []);
 
   useEffect(() => {
+    if (isCaptureMode) return;
     const handleCommand = (msg: any) => {
       if (!msg || msg.source !== 'cocraft-workbench') return;
       if (msg.type === 'load') {
@@ -335,10 +427,13 @@ function Preview() {
   return (
     <div ref={hostRef} style={{ width: '100%', height: '100vh' }}>
       <ErrorBoundary
-        key={s.id}
+        key={isCaptureMode ? `${s.id}:${captureEpoch}` : s.id}
         revision={props.project.revision}
         sequenceId={s.id}
         onRecover={() => setRecoveryEpoch((n) => n + 1)}
+        onError={(msg) => {
+          captureErrorRef.current = msg;
+        }}
       >
         <Player
           ref={ref}

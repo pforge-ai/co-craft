@@ -1,7 +1,29 @@
 import { renderMedia, renderStill, selectComposition, makeCancelSignal } from '@remotion/renderer';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { link, rename, unlink } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+
+function findHeadlessBrowser(): string | undefined {
+  // Prefer headless shell (zero macOS Dock bounce!) before falling back to full desktop Chrome.
+  const shellRoots = [
+    join(process.cwd(), 'node_modules', '.remotion', 'chrome-headless-shell'),
+    join(homedir(), 'Library', 'Caches', 'remotion', 'chrome-headless-shell'),
+  ];
+  for (const root of shellRoots) {
+    if (!existsSync(root)) continue;
+    try {
+      for (const dir of readdirSync(root)) {
+        const candidate = join(root, dir, 'chrome-headless-shell');
+        if (existsSync(candidate)) return candidate;
+      }
+    } catch {}
+  }
+  return [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  ].find(existsSync);
+}
 
 const port = (process as any).parentPort;
 const send = (data: unknown) => port.postMessage(data);
@@ -17,10 +39,7 @@ port.on('message', async ({ data }: any) => {
   if (data.type !== 'render') return;
   const temporary = data.output + '.rendering' + (data.still ? '.png' : '.mp4');
   try {
-    const browserExecutable = [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    ].find(existsSync);
+    const browserExecutable = findHeadlessBrowser();
     let serveUrl: string | undefined = data.serveUrl;
     if (!serveUrl && data.entryPoint) {
       send({ type: 'progress', progress: 0.02, stage: '准备开发合成包' });

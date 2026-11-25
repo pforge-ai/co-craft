@@ -733,6 +733,12 @@ export function applyOperations(
     }
     if (op.type === 'addClip') {
       const added = clone(op.clip);
+      if (!added.id || typeof added.id !== 'string' || !added.id.trim() || s.clips.some((x) => x.id === added.id)) {
+        added.id = uid('clip');
+      }
+      if (!added.props || typeof added.props !== 'object') {
+        added.props = {};
+      }
       if (added.layer === undefined)
         added.layer =
           s.clips.reduce(

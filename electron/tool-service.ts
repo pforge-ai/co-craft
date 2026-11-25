@@ -952,6 +952,7 @@ export class CoCraftToolService {
       const outPath = join(assetsDir, `spatial-previs-${pass}-${uid('vid')}.mp4`);
       const job = await this.deps.jobs.render(cloned, tempSeqId, outPath, {
         scale: 1,
+        preferOffscreenVideo: true,
         projectPath: ctx.store.path,
       });
       ctx.trackJob?.(job.id);

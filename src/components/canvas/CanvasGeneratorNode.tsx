@@ -17,6 +17,7 @@ import {
 import { mediaUrl } from '../../composition/Film';
 import { modelInputCapabilities, recommendModelForInputs } from '../../core/models';
 import type {
+  Asset,
   CanvasGeneratorAction,
   CanvasGeneratorInput,
   CanvasGeneratorInputSlot,
@@ -96,6 +97,11 @@ interface CanvasGeneratorNodeProps {
   onDeleteNode: (nodeId: string) => void;
   onSaveRecipe?: (node: GeneratorNodeModel) => void;
   onJobsStarted?: (jobs: Job[]) => void;
+  onExtractVideoFrame?: (
+    assetId: string,
+    mode: 'first' | 'last',
+    placement?: { x: number; y: number },
+  ) => Promise<Asset | undefined>;
   onOpenGeneration: (opts: CanvasGenerationOptions) => void;
 }
 
@@ -124,10 +130,12 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
   onDeleteNode,
   onSaveRecipe,
   onJobsStarted,
+  onExtractVideoFrame,
   onOpenGeneration,
 }: CanvasGeneratorNodeProps) {
   const [promptLocal, setPromptLocal] = useState(node.prompt);
   const [submitting, setSubmitting] = useState(false);
+  const [converting, setConverting] = useState(false);
   const [error, setError] = useState('');
 
   React.useEffect(() => {
@@ -351,6 +359,12 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
       return;
     }
     if (isAnimateAction) {
+      if (model && !caps.supportsMotionVideo) {
+        setError(
+          `当前模型「${model.name}」不支持动作迁移；请点击上方「抽首帧转图生视频」或在设置中添加 Wan 2.2 Animate Move`,
+        );
+        return;
+      }
       if (!orderedRefIds.length) {
         setError('请先连入 1 张角色主体图片');
         return;
@@ -435,6 +449,67 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
       setSubmitting(false);
     }
   };
+
+  const handleConvertMotionToI2V = async () => {
+    if (!motionVideoAssetId || !onExtractVideoFrame || converting) return;
+    setConverting(true);
+    setError('');
+    try {
+      const frameAsset = await onExtractVideoFrame(motionVideoAssetId, 'first', {
+        x: Math.round(pos.x - 280),
+        y: Math.round(pos.y),
+      });
+      if (!frameAsset) return;
+      const kept = node.inputs.filter((x) => x.slot !== 'motion-video');
+      const nextPrompt =
+        promptLocal.trim() || '严格遵循 3D 预演构图与运镜，渲染电影级真实光影与动态';
+      setPromptLocal(nextPrompt);
+      onUpdateNode(node.id, {
+        action: 'image-to-video',
+        use: 'video',
+        modelId: undefined,
+        prompt: nextPrompt,
+        inputs: [{ nodeKey: `asset:${frameAsset.id}`, slot: 'first-frame' }, ...kept],
+      });
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  const compatNotice = useMemo(() => {
+    if (!model) return null;
+    if (isAnimateAction && !caps.supportsMotionVideo) {
+      return {
+        text: `「${model.name}」不支持视频动作迁移（需 Wan 2.2 Animate Move）。`,
+        canConvertToI2V: Boolean(motionVideoAssetId && onExtractVideoFrame),
+      };
+    }
+    if (node.action === 'first-last-video' && lastFrameAssetId && !caps.supportsLastFrame) {
+      return {
+        text: `「${model.name}」仅使用首帧（添加 Wan 2.7 I2V / Wan 2.2 KF2V 可启首尾双帧过渡）`,
+        canConvertToI2V: false,
+      };
+    }
+    if (node.use === 'image' && orderedRefIds.length > 0 && caps.maxReferences === 0) {
+      return {
+        text: `「${model.name}」为纯文生图模型，不会读取参考图；添加 Qwen-Image 3.0 / Edit 或 Wan 2.7 Image 可参考重绘`,
+        canConvertToI2V: false,
+      };
+    }
+    return null;
+  }, [
+    model,
+    isAnimateAction,
+    caps.supportsMotionVideo,
+    caps.supportsLastFrame,
+    caps.maxReferences,
+    motionVideoAssetId,
+    onExtractVideoFrame,
+    node.action,
+    node.use,
+    lastFrameAssetId,
+    orderedRefIds.length,
+  ]);
 
   const Icon = node.use === 'video' ? Clapperboard : node.use === 'speech' ? AudioLines : ImageIcon;
 
@@ -778,6 +853,22 @@ export const CanvasGeneratorNodeCard = React.memo(function CanvasGeneratorNodeCa
               </div>
             )}
           </div>
+
+          {compatNotice && (
+            <div className="cc-gen-compat-hint">
+              <span>{compatNotice.text}</span>
+              {compatNotice.canConvertToI2V && (
+                <button
+                  type="button"
+                  className="cc-gen-compat-btn"
+                  disabled={converting}
+                  onClick={() => void handleConvertMotionToI2V()}
+                >
+                  {converting ? '抽帧中…' : '抽首帧转图生视频'}
+                </button>
+              )}
+            </div>
+          )}
 
           {error && <div className="cc-gen-err">{error}</div>}
 

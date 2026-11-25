@@ -1909,4 +1909,64 @@ assert.ok(
   assert.throws(() => buildDeleteComponentOperations(lockedProj, 'comp_del_1'));
 }
 
+// 48. addClip guarantees valid unique clip.id & ProjectStore heals corrupted legacy clips without id
+{
+  const p = newProject('ClipIdHealTest');
+  const seqId = p.sequences[0].id;
+  const badClip = { ...newClip('title', 0), id: undefined as unknown as string, props: undefined as unknown as Record<string, unknown> };
+  const afterAdd = applyOperations(p, [{ type: 'addClip', sequenceId: seqId, clip: badClip }]);
+  assert.equal(afterAdd.sequences[0].clips.length, 1);
+  assert.ok(typeof afterAdd.sequences[0].clips[0].id === 'string' && afterAdd.sequences[0].clips[0].id.startsWith('clip_'));
+  assert.deepEqual(afterAdd.sequences[0].clips[0].props, {});
+
+  // Duplicate clip ID also gets disambiguated automatically
+  const dupClip = { ...newClip('title', 30), id: afterAdd.sequences[0].clips[0].id };
+  const afterDup = applyOperations(afterAdd, [{ type: 'addClip', sequenceId: seqId, clip: dupClip }]);
+  assert.notEqual(afterDup.sequences[0].clips[0].id, afterDup.sequences[0].clips[1].id);
+
+  // Legacy corrupted snapshot on disk heals cleanly on load
+  const dir = await mkdtemp(join(tmpdir(), 'cocraft-heal-'));
+  try {
+    const store = new ProjectStore(dir);
+    await store.init(newProject('CorruptSnapshotTest'));
+    const head = await store.project();
+    const corrupt = clone(head);
+    corrupt.sequences[0].clips.push({ ...newClip('title', 0), id: undefined as unknown as string });
+    await writeFile(
+      join(dir, '.cocraft', 'revisions', `${head.revision}.json`),
+      JSON.stringify({ project: corrupt, revision: { revision: head.revision, name: 'init', author: 'system', createdAt: '', changes: [] } }),
+      'utf8',
+    );
+    const healed = await store.project();
+    assert.equal(healed.sequences[0].clips.length, 1);
+    assert.equal(healed.sequences[0].clips[0].id, 'clip_repaired_0_0');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// 49. recommendModelForInputs picks connected models even when settings.defaults is unset; qwen-image-plus is T2I-only
+{
+  const { modelInputCapabilities, recommendModelForInputs } = await import('../src/core/models');
+  const qwenPlusCaps = modelInputCapabilities({ adapter: 'dashscope-image', modelId: 'qwen-image-plus' });
+  assert.equal(qwenPlusCaps.maxReferences, 0);
+  const qwen3Caps = modelInputCapabilities({ adapter: 'dashscope-image', modelId: 'qwen-image-3.0-pro' });
+  assert.equal(qwen3Caps.maxReferences, 3);
+
+  const mockSettings = {
+    providers: [
+      { id: 'p_ds', name: '阿里百炼', protocol: 'dashscope' as const, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', requiresKey: true, hasApiKey: true },
+    ],
+    models: [
+      { id: 'm_t2v', providerId: 'p_ds', name: 'Wan 2.6 T2V', modelId: 'wan2.6-t2v', capabilities: ['video' as const], adapter: 'dashscope-video' as const, parameters: {} },
+      { id: 'm_i2v', providerId: 'p_ds', name: 'Wan 2.6 I2V', modelId: 'wan2.6-i2v', capabilities: ['video' as const], adapter: 'dashscope-video' as const, parameters: {} },
+    ],
+    defaults: {},
+  };
+  const pickedWithRef = recommendModelForInputs(mockSettings, 'video', { refCount: 1 });
+  assert.equal(pickedWithRef?.id, 'm_i2v');
+  const pickedNoRef = recommendModelForInputs(mockSettings, 'video', { refCount: 0 });
+  assert.equal(pickedNoRef?.id, 'm_t2v');
+}
+
 console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage regression tests');

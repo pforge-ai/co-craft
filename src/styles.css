@@ -2032,6 +2032,10 @@ a {
 .toast.error > svg {
   color: #d49a86;
 }
+.toast.busy-toast {
+  border-color: rgba(52, 211, 153, 0.3);
+  color: var(--text);
+}
 .toast button {
   margin-left: 8px;
   padding: 2px;

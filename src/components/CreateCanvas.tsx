@@ -60,6 +60,7 @@ import {
   resolveNonOverlappingCanvasLayout,
 } from '../lib/canvasLayout';
 import { mediaUrl } from '../composition/Film';
+import { modelInputCapabilities } from '../core/models';
 import {
   buildSpatialStageProps,
   DEFAULT_SPATIAL_BOOKMARKS,
@@ -1664,13 +1665,37 @@ export function CreateCanvas({
       placement,
     });
     if (vid) {
-      await spawnGeneratorNode({
-        use: 'video',
-        action: 'motion-transfer',
-        inputs: [{ nodeKey: `asset:${vid.id}`, slot: 'motion-video' }],
-        prompt: '严格遵循 3D 预演视频中的摄像机运镜轨迹、建筑/主体透视与运动节奏，渲染电影级真实光影与质感',
-        placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
-      });
+      const hasMotionModel = Boolean(
+        settings?.models?.some(
+          (m) => m.capabilities.includes('video') && modelInputCapabilities(m).supportsMotionVideo,
+        ),
+      );
+      if (hasMotionModel || !onExtractVideoFrame) {
+        await spawnGeneratorNode({
+          use: 'video',
+          action: 'motion-transfer',
+          inputs: [{ nodeKey: `asset:${vid.id}`, slot: 'motion-video' }],
+          prompt: '严格遵循 3D 预演视频中的摄像机运镜轨迹、建筑/主体透视与运动节奏，渲染电影级真实光影与质感',
+          placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
+        });
+      } else {
+        const firstFrame = await onExtractVideoFrame(vid.id, 'first', {
+          x: Math.round(placement.x + 286),
+          y: Math.round(placement.y),
+        });
+        await spawnGeneratorNode({
+          use: 'video',
+          action: 'image-to-video',
+          inputs: firstFrame
+            ? [{ nodeKey: `asset:${firstFrame.id}`, slot: 'first-frame' }]
+            : [{ nodeKey: `asset:${vid.id}`, slot: 'source' }],
+          prompt: '严格遵循 3D 预演运镜轨迹、建筑空间透视与光影层次，生成电影级写实动态镜头',
+          placement: {
+            x: Math.round(placement.x + (firstFrame ? 572 : 306)),
+            y: Math.round(placement.y),
+          },
+        });
+      }
     }
   }
 
@@ -5566,6 +5591,7 @@ export function CreateCanvas({
               onDeleteNode={(id) => void deleteGeneratorNode(id)}
               onSaveRecipe={(g) => void saveGeneratorAsRecipe(g)}
               onJobsStarted={onJobsStarted}
+              onExtractVideoFrame={onExtractVideoFrame}
               onOpenGeneration={onOpenGeneration}
             />
           );
