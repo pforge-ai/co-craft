@@ -871,8 +871,14 @@ async function handle(method: string, arg: any = {}) {
       let sourceBaseProject = p;
       let sourceLabel = baseSeq.name;
 
-      // Support capturing directly from a Create Canvas Spatial Stage card or 3D asset without needing it on the timeline!
-      if (arg.vaultItemId || arg.assetId) {
+      // Support capturing directly from a Create Canvas Spatial Stage card, TSX CodeComponent, Shot Clip, or 3D asset!
+      const srcClipForCap = arg.clipId ? baseSeq.clips.find((c) => c.id === arg.clipId) : undefined;
+      const srcCompForCap = arg.componentId
+        ? p.components.find((c) => c.id === arg.componentId)
+        : srcClipForCap?.componentId
+          ? p.components.find((c) => c.id === srcClipForCap.componentId)
+          : undefined;
+      if (arg.vaultItemId || arg.assetId || arg.componentId || srcClipForCap) {
         const cloned = structuredClone(p);
         const vItem = arg.vaultItemId
           ? (cloned.vault || []).find((v) => v.id === arg.vaultItemId)
@@ -881,20 +887,27 @@ async function handle(method: string, arg: any = {}) {
           ? cloned.assets.find((a) => a.id === arg.assetId)
           : undefined;
         const tempSeqId = uid('seq_cap');
-        const clipProps: Record<string, unknown> = vItem?.rig?.presetId
-          ? { ...(vItem.rig.props || {}), presetId: vItem.rig.presetId, showHud: false }
-          : { cameraPreset: 'orbit', cameraLens: 35, showHud: false };
+        const isCodeTarget = Boolean(srcCompForCap || srcClipForCap?.kind === 'code');
+        const clipProps: Record<string, unknown> = isCodeTarget
+          ? { ...(srcCompForCap?.props || {}), ...(srcClipForCap?.props || {}) }
+          : srcClipForCap
+            ? { ...srcClipForCap.props, showHud: false }
+            : vItem?.rig?.presetId
+              ? { ...(vItem.rig.props || {}), presetId: vItem.rig.presetId, showHud: false }
+              : { cameraPreset: 'orbit', cameraLens: 35, showHud: false };
         const tempClip: Clip = {
           id: uid('clip_cap'),
-          name: vItem?.name || mAsset?.name || '空间摄影棚',
-          kind: 'shape',
+          name: srcClipForCap?.name || srcCompForCap?.name || vItem?.name || mAsset?.name || '空间摄影棚',
+          kind: isCodeTarget ? 'code' : srcClipForCap ? srcClipForCap.kind : 'shape',
           track: 'visual',
           layer: 0,
           start: 0,
-          duration: Math.max(30, baseSeq.fps * 3),
-          sourceIn: 0,
-          assetId: mAsset?.id || vItem?.assetId,
+          duration: srcClipForCap ? Math.max(30, srcClipForCap.duration) : Math.max(30, baseSeq.fps * 3),
+          sourceIn: srcClipForCap?.sourceIn || 0,
+          assetId: srcClipForCap?.assetId || mAsset?.id || vItem?.assetId,
+          componentId: isCodeTarget ? (srcCompForCap?.id || srcClipForCap?.componentId) : undefined,
           locked: false,
+          keyframes: srcClipForCap?.keyframes ? structuredClone(srcClipForCap.keyframes) : undefined,
           props: clipProps,
         };
         cloned.sequences.push({
@@ -906,15 +919,23 @@ async function handle(method: string, arg: any = {}) {
         sourceBaseProject = cloned;
         targetSeqId = tempSeqId;
         sourceLabel = tempClip.name;
-        frame = Math.max(0, Math.round(Number(arg.frame ?? Math.round(baseSeq.fps * 0.5))));
+        frame = Math.max(
+          0,
+          Math.min(
+            tempClip.duration - 1,
+            Math.round(Number(arg.frame ?? Math.round(baseSeq.fps * 0.5))),
+          ),
+        );
       }
 
       const assetsDir = join(target.path, 'assets');
       await mkdir(assetsDir, { recursive: true });
       const requestedPasses: ('beauty' | 'clay' | 'depth' | 'normal' | 'wireframe')[] =
-        Array.isArray(arg.passes) && arg.passes.length > 0
-          ? arg.passes
-          : [arg.pass || 'beauty'];
+        srcCompForCap || srcClipForCap?.kind === 'code'
+          ? ['beauty']
+          : Array.isArray(arg.passes) && arg.passes.length > 0
+            ? arg.passes
+            : [arg.pass || 'beauty'];
 
       const passMeta: Record<
         string,
@@ -1065,36 +1086,47 @@ async function handle(method: string, arg: any = {}) {
       const srcClip = arg.clipId ? baseSeq.clips.find((c) => c.id === arg.clipId) : undefined;
       const srcVault = arg.vaultItemId ? (p.vault || []).find((v) => v.id === arg.vaultItemId) : undefined;
       const srcAsset = arg.assetId ? p.assets.find((a) => a.id === arg.assetId) : undefined;
+      const srcComp = arg.componentId
+        ? p.components.find((c) => c.id === arg.componentId)
+        : srcClip?.componentId
+          ? p.components.find((c) => c.id === srcClip.componentId)
+          : undefined;
+      const isCodeBake = Boolean(srcComp || srcClip?.kind === 'code');
 
-      const baseProps: Record<string, unknown> = srcClip
-        ? { ...srcClip.props }
-        : srcVault?.rig?.presetId
-          ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
-          : srcAsset?.kind === 'model-3d'
-            ? { cameraPreset: 'orbit', cameraLens: 35 }
-            : { presetId: 'spatial-stage', sceneType: 'previs-blocking', ...(arg.props || {}) };
+      const baseProps: Record<string, unknown> = isCodeBake
+        ? { ...(srcComp?.props || {}), ...(srcClip?.props || {}) }
+        : srcClip
+          ? { ...srcClip.props }
+          : srcVault?.rig?.presetId
+            ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
+            : srcAsset?.kind === 'model-3d'
+              ? { cameraPreset: 'orbit', cameraLens: 35 }
+              : { presetId: 'spatial-stage', sceneType: 'previs-blocking', ...(arg.props || {}) };
 
-      const mergedProps: Record<string, unknown> = {
-        ...baseProps,
-        ...(arg.props || {}),
-        renderPass: pass,
-        showHud: false,
-      };
+      const mergedProps: Record<string, unknown> = isCodeBake
+        ? { ...baseProps, ...(arg.props || {}) }
+        : {
+            ...baseProps,
+            ...(arg.props || {}),
+            renderPass: pass,
+            showHud: false,
+          };
       const tempSeqId = uid('seq_bake');
       const bakeName =
         String(arg.name || '').trim() ||
-        `3D预演视频 · ${srcClip?.name || srcVault?.name || srcAsset?.name || '空间摄影棚'}${pass !== 'beauty' ? ` (${pass})` : ''}`;
+        `3D预演视频 · ${srcClip?.name || srcComp?.name || srcVault?.name || srcAsset?.name || '空间摄影棚'}${!isCodeBake && pass !== 'beauty' ? ` (${pass})` : ''}`;
 
       const tempClip: Clip = {
         id: uid('clip_bake'),
         name: bakeName,
-        kind: 'shape',
+        kind: isCodeBake ? 'code' : srcClip ? srcClip.kind : 'shape',
         track: 'visual',
         layer: 0,
         start: 0,
         duration: srcClip ? Math.min(durationFrames, Math.max(fps, srcClip.duration)) : durationFrames,
-        sourceIn: 0,
-        assetId: srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+        sourceIn: srcClip?.sourceIn || 0,
+        assetId: isCodeBake ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+        componentId: isCodeBake ? (srcComp?.id || srcClip?.componentId) : undefined,
         locked: false,
         keyframes: srcClip?.keyframes ? structuredClone(srcClip.keyframes) : undefined,
         props: mergedProps,
@@ -1166,62 +1198,85 @@ async function handle(method: string, arg: any = {}) {
       const srcClip = arg.clipId ? baseSeq.clips.find((c) => c.id === arg.clipId) : undefined;
       const srcVault = arg.vaultItemId ? (p.vault || []).find((v) => v.id === arg.vaultItemId) : undefined;
       const srcAsset = arg.assetId ? p.assets.find((a) => a.id === arg.assetId) : undefined;
+      const srcComp = arg.componentId
+        ? p.components.find((c) => c.id === arg.componentId)
+        : srcClip?.componentId
+          ? p.components.find((c) => c.id === srcClip.componentId)
+          : undefined;
+      const isCodePair = Boolean(srcComp || srcClip?.kind === 'code');
       const bmA =
         DEFAULT_SPATIAL_BOOKMARKS.find((b) => b.id === (arg.startBookmarkId || 'cam-a')) ||
         DEFAULT_SPATIAL_BOOKMARKS[0];
       const bmB =
         DEFAULT_SPATIAL_BOOKMARKS.find((b) => b.id === (arg.endBookmarkId || 'cam-b')) ||
         DEFAULT_SPATIAL_BOOKMARKS[1];
-      const baseProps: Record<string, unknown> = srcClip
-        ? { ...srcClip.props }
-        : srcVault?.rig?.presetId
-          ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
-          : { cameraPreset: 'orbit', cameraLens: 35 };
+      const baseProps: Record<string, unknown> = isCodePair
+        ? { ...(srcComp?.props || {}), ...(srcClip?.props || {}) }
+        : srcClip
+          ? { ...srcClip.props }
+          : srcVault?.rig?.presetId
+            ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
+            : { cameraPreset: 'orbit', cameraLens: 35 };
 
       const assetsDir = join(target.path, 'assets');
       await mkdir(assetsDir, { recursive: true });
       const pairAssets: Asset[] = [];
       const pairOps: EditOperation[] = [];
       const nextLayout: Record<string, { x: number; y: number }> = { ...(p.canvasLayout || {}) };
+      const codeDur = srcClip ? Math.max(baseSeq.fps * 2, srcClip.duration) : baseSeq.fps * 4;
 
       for (const [idx, bm] of [bmA, bmB].entries()) {
         const cloned = structuredClone(p);
         const tempSeqId = uid('seq_pair');
         const tempClip: Clip = {
           id: uid('clip_pair'),
-          name: `${bm.shortKey}机帧`,
-          kind: 'shape',
+          name: isCodePair ? (idx === 0 ? '开场首帧' : '收尾末帧') : `${bm.shortKey}机帧`,
+          kind: isCodePair ? 'code' : 'shape',
           track: 'visual',
           layer: 0,
           start: 0,
-          duration: baseSeq.fps * 2,
+          duration: isCodePair ? codeDur : baseSeq.fps * 2,
           sourceIn: 0,
-          assetId: srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+          assetId: isCodePair ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+          componentId: isCodePair ? (srcComp?.id || srcClip?.componentId) : undefined,
           locked: false,
-          props: {
-            ...baseProps,
-            cameraPreset: bm.cameraPreset,
-            cameraLens: bm.cameraLens,
-            cameraYaw: bm.cameraYaw,
-            cameraPitch: bm.cameraPitch,
-            cameraDistance: bm.cameraDistance,
-            cameraPanX: bm.cameraPanX ?? 0,
-            cameraPanY: bm.cameraPanY ?? 0,
-            renderPass: arg.pass || 'beauty',
-            showHud: false,
-          },
+          keyframes: isCodePair && srcClip?.keyframes ? structuredClone(srcClip.keyframes) : undefined,
+          props: isCodePair
+            ? { ...baseProps }
+            : {
+                ...baseProps,
+                cameraPreset: bm.cameraPreset,
+                cameraLens: bm.cameraLens,
+                cameraYaw: bm.cameraYaw,
+                cameraPitch: bm.cameraPitch,
+                cameraDistance: bm.cameraDistance,
+                cameraPanX: bm.cameraPanX ?? 0,
+                cameraPanY: bm.cameraPanY ?? 0,
+                renderPass: arg.pass || 'beauty',
+                showHud: false,
+              },
         };
         cloned.sequences.push({ ...baseSeq, id: tempSeqId, name: tempClip.name, clips: [tempClip] });
         const outPath = join(assetsDir, `spatial-pair-${bm.shortKey.toLowerCase()}-${uid('f')}.png`);
+        const targetFrame = isCodePair
+          ? idx === 0
+            ? Math.min(codeDur - 1, Math.round(baseSeq.fps * 0.25))
+            : Math.max(1, Math.min(codeDur - 1, Math.round(codeDur * 0.85)))
+          : idx === 0
+            ? 0
+            : Math.round(baseSeq.fps * 0.8);
         const job = await jobs.render(cloned, tempSeqId, outPath, {
           still: true,
-          frame: idx === 0 ? 0 : Math.round(baseSeq.fps * 0.8),
+          frame: targetFrame,
           scale: 1,
           silent: true,
         });
         await jobs.wait(job.id);
         const asset = await importMedia(outPath, target.path);
-        asset.name = `${idx === 0 ? '首帧' : '尾帧'} · ${srcVault?.name || srcClip?.name || '空间机位'} (${bm.shortKey}机 ${bm.cameraLens}mm)`;
+        const srcName = srcComp?.name || srcVault?.name || srcClip?.name || '空间机位';
+        asset.name = isCodePair
+          ? `${idx === 0 ? '首帧' : '尾帧'} · ${srcName} (${idx === 0 ? '开场' : '收尾'})`
+          : `${idx === 0 ? '首帧' : '尾帧'} · ${srcName} (${bm.shortKey}机 ${bm.cameraLens}mm)`;
         asset.role = 'environment';
         asset.tags = ['3D机位帧', idx === 0 ? '首帧' : '尾帧'];
         asset.derivedFrom = [
@@ -1859,7 +1914,9 @@ async function createWindow() {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (event) => event.preventDefault());
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    if (process.env.COCRAFT_HIDDEN_TEST !== '1') win.show();
+  });
   if (process.env.COCRAFT_DEV_URL) await win.loadURL(process.env.COCRAFT_DEV_URL);
   else await win.loadFile(join(here, 'renderer/index.html'));
 }

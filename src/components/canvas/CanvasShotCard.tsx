@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { timecode } from '../../core/project';
+import { isSpatialClip } from '../../core/spatialStage';
 import {
   collectShotClipsForCompound,
   moveCompositeShotOperations,
@@ -73,6 +74,9 @@ export interface CanvasShotCardProps {
     variant: 'clone' | 'seecode-architecture' | 'tinycharts-state' | 'teardown-3d' | 'screen-focus-rig',
   ) => void;
   onOpenGeneration: (opts: CanvasGenerationOptions) => void;
+  onBakeShotToAiVideo?: (shot: CompositeShot, pos: CanvasPt) => void;
+  onCaptureShotPairToAiVideo?: (shot: CompositeShot, pos: CanvasPt) => void;
+  onCaptureShotRefToAiImage?: (shot: CompositeShot, pos: CanvasPt) => void;
   onForkShotVariants: (shot: CompositeShot, pos: CanvasPt) => void;
   onTweakShotWithAgent: (shot: CompositeShot, prompt: string) => void;
   onJumpToEdit: (clipId: string, startFrame: number) => void;
@@ -116,6 +120,9 @@ export const CanvasShotCard = React.memo(function CanvasShotCard({
   onToggleTakeMenu,
   onAddCandidateTake,
   onOpenGeneration,
+  onBakeShotToAiVideo,
+  onCaptureShotPairToAiVideo,
+  onCaptureShotRefToAiImage,
   onForkShotVariants,
   onTweakShotWithAgent,
   onJumpToEdit,
@@ -136,6 +143,8 @@ export const CanvasShotCard = React.memo(function CanvasShotCard({
   const staleEntityIds = new Set(staleBindings.map((s) => s.entity.id));
 
   const genCtx = resolveShotGenContextFull(shot, upstreamEntities, project.assets, activeVarByEnt);
+  const anchorAsset = c.assetId ? project.assets.find((a) => a.id === c.assetId) : undefined;
+  const isDirectable3D = c.kind === 'code' || isSpatialClip(c, anchorAsset);
   const canImgToVideo = genCtx.refAssetIds.length > 0;
   const jobPct = activeJob ? Math.max(0, Math.min(100, Math.round((activeJob.progress || 0) * 100))) : 0;
 
@@ -271,15 +280,42 @@ export const CanvasShotCard = React.memo(function CanvasShotCard({
             <ArrowRight size={12} />
           </button>
           <span className="cc-tb-sep" />
+          {isDirectable3D && onBakeShotToAiVideo && (
+            <button
+              type="button"
+              className="cc-tb-primary"
+              aria-label={`镜头 ${shot.index} 录 3D 视频并 AI 生片`}
+              title="将本镜 3D / 动态运镜直接录成真 MP4 视频，并自动连入下游 AI 视频工坊（动作迁移 / 参考生视频）"
+              onClick={() => onBakeShotToAiVideo(shot, pos)}
+            >
+              <Clapperboard size={11} /> 录视频→AI
+            </button>
+          )}
+          {isDirectable3D && onCaptureShotPairToAiVideo && (
+            <button
+              type="button"
+              aria-label={`镜头 ${shot.index} 首尾帧生视频`}
+              title="自动双拍开场/收尾（或 A→B 机位）两帧并连入首尾帧生视频工坊"
+              onClick={() => onCaptureShotPairToAiVideo(shot, pos)}
+            >
+              <Film size={11} /> 首尾帧→AI
+            </button>
+          )}
           <button
             type="button"
             aria-label={`镜头 ${shot.index} AI 生成候选`}
             title={
-              genCtx.refAssetIds.length > 1
-                ? `自动带入全部 ${genCtx.refAssetIds.length} 张绑定参考图生成画面候选`
-                : '带入本镜台词与主体设定生成画面候选'
+              isDirectable3D && !genCtx.refAssetId && onCaptureShotRefToAiImage
+                ? '拍摄当前 3D 画面作为参考图并送入 AI 写实重绘工坊'
+                : genCtx.refAssetIds.length > 1
+                  ? `自动带入全部 ${genCtx.refAssetIds.length} 张绑定参考图生成画面候选`
+                  : '带入本镜台词与主体设定生成画面候选'
             }
-            onClick={() =>
+            onClick={() => {
+              if (isDirectable3D && !genCtx.refAssetId && onCaptureShotRefToAiImage) {
+                onCaptureShotRefToAiImage(shot, pos);
+                return;
+              }
               onOpenGeneration({
                 use: 'image',
                 prompt: genCtx.prompt,
@@ -295,12 +331,12 @@ export const CanvasShotCard = React.memo(function CanvasShotCard({
                   sourceNodeKeys: genCtx.sourceNodeKeys,
                   referenceAssetIds: genCtx.refAssetIds.length ? genCtx.refAssetIds : undefined,
                 },
-              })
-            }
+              });
+            }}
           >
-            <Sparkles size={12} /> 生图
+            <Sparkles size={12} /> {isDirectable3D && !genCtx.refAssetId ? '拍帧重绘' : '生图'}
           </button>
-          {canImgToVideo && (
+          {canImgToVideo && !isDirectable3D && (
             <button
               type="button"
               aria-label={`镜头 ${shot.index} 图生视频`}
@@ -337,9 +373,17 @@ export const CanvasShotCard = React.memo(function CanvasShotCard({
           </button>
           <button
             type="button"
-            onClick={() => onTweakShotWithAgent(shot, `优化镜头 #${shot.index}（${genCtx.prompt || c.name}）：`)}
+            title={isDirectable3D ? '让 Agent 调度此 3D 镜头的摄像机运镜、走线、动作或环境光影' : '让 Agent 微调本镜'}
+            onClick={() =>
+              onTweakShotWithAgent(
+                shot,
+                isDirectable3D
+                  ? `请调度镜头 #${shot.index}「${c.name}」的3D机位运镜、视角轨迹或场景光影：`
+                  : `优化镜头 #${shot.index}（${genCtx.prompt || c.name}）：`,
+              )
+            }
           >
-            <Wand2 size={11} /> 微调
+            <Wand2 size={11} /> {isDirectable3D ? '调度' : '微调'}
           </button>
           <button
             type="button"

@@ -885,29 +885,37 @@ export class CoCraftToolService {
       const srcAsset = args.assetId
         ? p.assets.find((a) => a.id === String(args.assetId))
         : undefined;
+      const srcComp = args.componentId
+        ? p.components.find((c) => c.id === String(args.componentId))
+        : srcClip?.componentId
+          ? p.components.find((c) => c.id === srcClip.componentId)
+          : undefined;
+      const isCodeBake = Boolean(srcComp || srcClip?.kind === 'code');
 
       const userProps =
         args.props && typeof args.props === 'object' ? (args.props as Record<string, unknown>) : {};
-      const baseProps: Record<string, unknown> = srcClip
-        ? { ...srcClip.props }
-        : srcVault?.rig?.presetId
-          ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
-          : srcAsset?.kind === 'model-3d'
-            ? { cameraPreset: 'orbit', cameraLens: 35 }
-            : {
-                presetId: 'spatial-stage',
-                sceneType: 'previs-blocking',
-                environmentPreset: 'rooftop-night',
-                actorAction: 'walk',
-                actorPath: 'approach',
-                cameraPreset: 'dolly-in',
-                cameraLens: 35,
-              };
+      const baseProps: Record<string, unknown> = isCodeBake
+        ? { ...(srcComp?.props || {}), ...(srcClip?.props || {}) }
+        : srcClip
+          ? { ...srcClip.props }
+          : srcVault?.rig?.presetId
+            ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
+            : srcAsset?.kind === 'model-3d'
+              ? { cameraPreset: 'orbit', cameraLens: 35 }
+              : {
+                  presetId: 'spatial-stage',
+                  sceneType: 'previs-blocking',
+                  environmentPreset: 'rooftop-night',
+                  actorAction: 'walk',
+                  actorPath: 'approach',
+                  cameraPreset: 'dolly-in',
+                  cameraLens: 35,
+                };
 
       const bakeName =
         typeof args.name === 'string' && args.name.trim()
           ? args.name.trim()
-          : `3D预演视频 · ${srcClip?.name || srcVault?.name || srcAsset?.name || '空间导演镜'}`;
+          : `3D预演视频 · ${srcClip?.name || srcComp?.name || srcVault?.name || srcAsset?.name || '空间导演镜'}`;
       const rawScale = Math.max(0.4, Math.min(1, Number(args.scale ?? 2 / 3)));
       const bakeWidth = Math.max(320, Math.round((baseSeq.width * rawScale) / 2) * 2);
       const bakeHeight = Math.max(320, Math.round((baseSeq.height * rawScale) / 2) * 2);
@@ -922,16 +930,19 @@ export class CoCraftToolService {
           {
             id: uid('clip_bake'),
             name: bakeName,
-            kind: 'shape',
+            kind: isCodeBake ? 'code' : srcClip ? srcClip.kind : 'shape',
             track: 'visual',
             layer: 0,
             start: 0,
             duration: srcClip ? Math.min(durationFrames, Math.max(fps, srcClip.duration)) : durationFrames,
-            sourceIn: 0,
-            assetId: srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+            sourceIn: srcClip?.sourceIn || 0,
+            assetId: isCodeBake ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+            componentId: isCodeBake ? (srcComp?.id || srcClip?.componentId) : undefined,
             locked: false,
             keyframes: srcClip?.keyframes ? structuredClone(srcClip.keyframes) : undefined,
-            props: { ...baseProps, ...userProps, renderPass: pass, showHud: false },
+            props: isCodeBake
+              ? { ...baseProps, ...userProps }
+              : { ...baseProps, ...userProps, renderPass: pass, showHud: false },
           },
         ],
       });

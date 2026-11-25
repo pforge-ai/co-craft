@@ -107,6 +107,8 @@ import {
 import { PresetPreview } from './PresetControls';
 import { createPresetClip, getPreset } from '../core/presets';
 import {
+  buildDeleteAssetOperations,
+  buildDeleteComponentOperations,
   clone,
   createCompoundVaultItemFromClips,
   inferDefaultAudioAttachMode,
@@ -218,6 +220,7 @@ interface CreateCanvasProps {
   onBakeSpatialVideo?: (opts: {
     vaultItemId?: string;
     assetId?: string;
+    componentId?: string;
     clipId?: string;
     durationSeconds?: number;
     pass?: string;
@@ -226,6 +229,7 @@ interface CreateCanvasProps {
   onCaptureSpatialPair?: (opts: {
     vaultItemId?: string;
     assetId?: string;
+    componentId?: string;
     clipId?: string;
     startBookmarkId?: string;
     endBookmarkId?: string;
@@ -234,6 +238,8 @@ interface CreateCanvasProps {
   onCaptureSpatialReference?: (opts: {
     vaultItemId?: string;
     assetId?: string;
+    componentId?: string;
+    clipId?: string;
     passes?: string[];
     placement?: Pt;
   }) => Promise<{ asset?: import('../core/types').Asset; captured?: { pass: string; asset: import('../core/types').Asset }[] } | undefined>;
@@ -359,6 +365,8 @@ export function CreateCanvas({
   const [subjDesc, setSubjDesc] = useState('');
   const [subjRef, setSubjRef] = useState('');
   const [rigPopoverFor, setRigPopoverFor] = useState<string | null>(null);
+  const [compPopoverFor, setCompPopoverFor] = useState<string | null>(null);
+  const [compPromptDraft, setCompPromptDraft] = useState('');
   const [voicePopoverFor, setVoicePopoverFor] = useState<string | null>(null);
   const [takeMenuFor, setTakeMenuFor] = useState<string | null>(null);
 
@@ -698,6 +706,7 @@ export function CreateCanvas({
     setDropMenu(null);
     setTakeMenuFor(null);
     setRigPopoverFor(null);
+    setCompPopoverFor(null);
     setForkSource(null);
     setRoleMenuFor(null);
     setDeriveMenuFor(null);
@@ -996,6 +1005,65 @@ export function CreateCanvas({
       );
     },
     [hiddenNodeIds, onEdit],
+  );
+
+  /** Atomically deletes selected assets, components, entities, generators, or unlocked shots from the project (undoable via Cmd+Z; respects clip locks). */
+  const deleteNodeKeysFromProject = useCallback(
+    async (keys: string[]) => {
+      const unique = Array.from(new Set(keys));
+      if (!unique.length) return;
+      const ops: EditOperation[] = [];
+      const deletedClipIds = new Set<string>();
+      const removedGenIds = new Set<string>();
+      const pushUniqueOp = (op: EditOperation) => {
+        if (op.type === 'deleteClip') {
+          const k = `${op.sequenceId}:${op.clipId}`;
+          if (deletedClipIds.has(k)) return;
+          deletedClipIds.add(k);
+        }
+        ops.push(op);
+      };
+
+      for (const key of unique) {
+        if (key.startsWith('asset:')) {
+          const assetId = key.slice(6);
+          try {
+            for (const op of buildDeleteAssetOperations(project, assetId)) pushUniqueOp(op);
+          } catch {
+            // Fall through to raw op so backend surfaces the exact lock error toast
+            pushUniqueOp({ type: 'removeAsset', assetId });
+          }
+        } else if (key.startsWith('comp:')) {
+          const componentId = key.slice(5);
+          try {
+            for (const op of buildDeleteComponentOperations(project, componentId)) pushUniqueOp(op);
+          } catch {
+            pushUniqueOp({ type: 'removeComponent', componentId });
+          }
+        } else if (key.startsWith('ent:')) {
+          pushUniqueOp({ type: 'removeVaultItem', itemId: key.slice(4) });
+        } else if (key.startsWith('gen:')) {
+          removedGenIds.add(key.slice(4));
+        } else if (key.startsWith('shot:')) {
+          const sh = shots.find((s) => `shot:${s.id}` === key);
+          if (sh && !sh.locked) {
+            pushUniqueOp({ type: 'deleteClip', sequenceId: sequence.id, clipId: sh.anchorClip.id });
+          }
+        }
+      }
+
+      if (removedGenIds.size > 0) {
+        const nextGens = (project.canvasGenerators || []).filter((g) => !removedGenIds.has(g.id));
+        ops.push({ type: 'updateProject', changes: { canvasGenerators: nextGens } });
+      }
+      if (!ops.length) return;
+
+      setSelectedNodeIds((prev) => prev.filter((k) => !unique.includes(k)));
+      setCompPopoverFor(null);
+      setRigPopoverFor(null);
+      await onEdit(unique.length === 1 ? '删除所选资产' : `删除 ${unique.length} 项资产`, ops);
+    },
+    [project, sequence.id, shots, onEdit],
   );
 
   const restoreNodeKeysToCanvas = useCallback(
@@ -1449,6 +1517,11 @@ export function CreateCanvas({
         void spawnGeneratorNode({ use: 'image', action: 'text-to-image' });
         return;
       }
+      if (!mod && (e.key === 'Backspace' || e.key === 'Delete') && selectedIdsRef.current.length > 0) {
+        e.preventDefault();
+        void deleteNodeKeysFromProject(selectedIdsRef.current);
+        return;
+      }
       if (!mod && e.key.toLowerCase() === 'v') setCanvasTool('select');
       if (!mod && e.key.toLowerCase() === 'h') setCanvasTool('pan');
     };
@@ -1495,6 +1568,7 @@ export function CreateCanvas({
     selectAllNodes,
     createGroupFromNodeKeys,
     createTextNode,
+    deleteNodeKeysFromProject,
     spawnGeneratorNode,
   ]);
 
@@ -1576,10 +1650,17 @@ export function CreateCanvas({
     if (!onBakeSpatialVideo) return;
     const isEnt = sourceKey.startsWith('ent:');
     const isAsset = sourceKey.startsWith('asset:');
+    const isComp = sourceKey.startsWith('comp:');
+    const isShot = sourceKey.startsWith('shot:');
+    const shotHit = isShot ? shots.find((s) => `shot:${s.id}` === sourceKey) : undefined;
     const vid = await onBakeSpatialVideo({
       vaultItemId: isEnt ? sourceKey.slice(4) : undefined,
       assetId: isAsset ? sourceKey.slice(6) : undefined,
-      durationSeconds: 3,
+      componentId: isComp ? sourceKey.slice(5) : undefined,
+      clipId: shotHit?.anchorClip.id,
+      durationSeconds: shotHit
+        ? Math.max(2, Math.min(5, shotHit.duration / Math.max(1, sequence.fps)))
+        : 3,
       placement,
     });
     if (vid) {
@@ -1587,7 +1668,7 @@ export function CreateCanvas({
         use: 'video',
         action: 'motion-transfer',
         inputs: [{ nodeKey: `asset:${vid.id}`, slot: 'motion-video' }],
-        prompt: '严格遵循 3D 预演视频中的摄像机运镜轨迹、人物动作走线与景深透视，渲染电影级真实光影与质感',
+        prompt: '严格遵循 3D 预演视频中的摄像机运镜轨迹、建筑/主体透视与运动节奏，渲染电影级真实光影与质感',
         placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
       });
     }
@@ -1597,9 +1678,14 @@ export function CreateCanvas({
     if (!onCaptureSpatialPair) return;
     const isEnt = sourceKey.startsWith('ent:');
     const isAsset = sourceKey.startsWith('asset:');
+    const isComp = sourceKey.startsWith('comp:');
+    const isShot = sourceKey.startsWith('shot:');
+    const shotHit = isShot ? shots.find((s) => `shot:${s.id}` === sourceKey) : undefined;
     const pair = await onCaptureSpatialPair({
       vaultItemId: isEnt ? sourceKey.slice(4) : undefined,
       assetId: isAsset ? sourceKey.slice(6) : undefined,
+      componentId: isComp ? sourceKey.slice(5) : undefined,
+      clipId: shotHit?.anchorClip.id,
       startBookmarkId: 'cam-a',
       endBookmarkId: 'cam-b',
       placement,
@@ -1612,7 +1698,10 @@ export function CreateCanvas({
           { nodeKey: `asset:${pair.startAsset.id}`, slot: 'first-frame' },
           { nodeKey: `asset:${pair.endAsset.id}`, slot: 'last-frame' },
         ],
-        prompt: '从 A 机位构图平滑过渡到 B 机位过肩反打构图，保持角色站位、服装与三维透视严格连贯',
+        prompt:
+          isComp || shotHit?.anchorClip.kind === 'code'
+            ? '从 3D 开场首帧平滑运镜过渡至收尾末帧，保持建筑结构、空间透视与电影级真实光影严格连贯'
+            : '从 A 机位构图平滑过渡到 B 机位过肩反打构图，保持角色站位、服装与三维透视严格连贯',
         placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
       });
     }
@@ -1622,10 +1711,16 @@ export function CreateCanvas({
     if (!onCaptureSpatialReference) return;
     const isEnt = sourceKey.startsWith('ent:');
     const isAsset = sourceKey.startsWith('asset:');
+    const isComp = sourceKey.startsWith('comp:');
+    const isShot = sourceKey.startsWith('shot:');
+    const shotHit = isShot ? shots.find((s) => `shot:${s.id}` === sourceKey) : undefined;
+    const isCodeTarget = isComp || shotHit?.anchorClip.kind === 'code';
     const res = await onCaptureSpatialReference({
       vaultItemId: isEnt ? sourceKey.slice(4) : undefined,
       assetId: isAsset ? sourceKey.slice(6) : undefined,
-      passes: ['beauty', 'depth'],
+      componentId: isComp ? sourceKey.slice(5) : undefined,
+      clipId: shotHit?.anchorClip.id,
+      passes: isCodeTarget ? ['beauty'] : ['beauty', 'depth'],
       placement,
     });
     const first = res?.captured?.[0]?.asset || res?.asset;
@@ -1637,7 +1732,7 @@ export function CreateCanvas({
         use: 'image',
         action: 'image-edit',
         inputs,
-        prompt: '严格遵循 3D 机位透视、人物站位与深度纵深，重绘为高精度电影级实拍/国漫光影画面',
+        prompt: '严格遵循 3D 机位透视、空间结构与景深层次，重绘为高精度电影级实拍/建筑写实光影画面',
         placement: { x: Math.round(placement.x + 306), y: Math.round(placement.y) },
       });
     }
@@ -3152,6 +3247,7 @@ export function CreateCanvas({
         onLinkNodes={(keys) => void linkSelectedNodes(keys)}
         onAppendToTimeline={(keys) => void appendSelectedNodesToTimeline(keys)}
         onHideNodes={(keys) => void hideNodeKeysFromCanvas(keys)}
+        onDeleteNodes={(keys) => void deleteNodeKeysFromProject(keys)}
         onSaveClipsAsAsset={onSaveClipsAsAsset ? (clips) => void onSaveClipsAsAsset(clips) : undefined}
         onClearSelection={clearSelection}
       />
@@ -3272,6 +3368,20 @@ export function CreateCanvas({
                 </button>
               )}
               <div className="cc-menu-divider" />
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  const targets = selectedNodeIds.length ? selectedNodeIds : contextMenu.nodeKey ? [contextMenu.nodeKey] : [];
+                  setContextMenu(null);
+                  void deleteNodeKeysFromProject(targets);
+                }}
+              >
+                <span className="cc-menu-item-label">
+                  <Trash2 size={13} /> 删除资产 / 节点
+                </span>
+                <kbd>⌫</kbd>
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -4897,10 +5007,9 @@ export function CreateCanvas({
                   </button>
                   <button
                     type="button"
-                    title="从工程移除素材"
-                    onClick={() =>
-                      void onEdit(`删除素材「${a.name}」`, [{ type: 'removeAsset', assetId: a.id }])
-                    }
+                    title="从工程删除素材（支持 ⌘Z 撤销；已锁定镜头受保护）"
+                    aria-label={`删除素材 ${a.name}`}
+                    onClick={() => void deleteNodeKeysFromProject([nodeKey])}
                   >
                     <Trash2 size={11} />
                   </button>
@@ -5207,8 +5316,40 @@ export function CreateCanvas({
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={(e) => e.stopPropagation()}
                 >
+                  {onBakeSpatialVideo && (
+                    <button
+                      type="button"
+                      className="cc-tb-primary"
+                      title="把当前 3D / 动态组件直接录成真 MP4 视频并自动接入 AI 生视频工坊"
+                      onClick={() =>
+                        void bakeSpatialSourceToAiVideo(nodeKey, { x: pos.x + 286, y: pos.y })
+                      }
+                    >
+                      <Clapperboard size={11} /> 录视频→AI生片
+                    </button>
+                  )}
+                  {onCaptureSpatialPair && (
+                    <button
+                      type="button"
+                      title="自动拍摄开场与收尾两帧，直连首尾帧 AI 生视频工坊"
+                      onClick={() =>
+                        void captureSpatialPairToAiVideo(nodeKey, { x: pos.x + 286, y: pos.y })
+                      }
+                    >
+                      <Film size={11} /> 首尾帧→AI
+                    </button>
+                  )}
                   <button
                     type="button"
+                    className={compPopoverFor === comp.id ? 'active' : ''}
+                    title="调整组件参数，或用自然语言让 Agent 调度摄像机轨迹、人物走线与光影"
+                    onClick={() => setCompPopoverFor(compPopoverFor === comp.id ? null : comp.id)}
+                  >
+                    <SlidersHorizontal size={11} /> 调度
+                  </button>
+                  <button
+                    type="button"
+                    title="作为分镜加入时间线"
                     onClick={() => {
                       const c: Clip = {
                         ...newClip('code', tail),
@@ -5237,6 +5378,129 @@ export function CreateCanvas({
                   >
                     <EyeOff size={11} />
                   </button>
+                  <button
+                    type="button"
+                    title="从工程删除组件（支持 ⌘Z 撤销；已锁定镜头受保护）"
+                    aria-label={`删除组件 ${comp.name}`}
+                    onClick={() => void deleteNodeKeysFromProject([nodeKey])}
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              )}
+              {compPopoverFor === comp.id && (
+                <div
+                  className="cc-popover cc-rig-inspector"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="cc-card-head">
+                    <b>{comp.name} · 导演调度</b>
+                    <button type="button" onClick={() => setCompPopoverFor(null)}>
+                      <X size={12} />
+                    </button>
+                  </div>
+                  {Object.keys(comp.props || {}).length > 0 &&
+                    Object.entries(comp.props || {}).map(([k, v]) => {
+                      const commitCompProp = (nextVal: string | number | boolean) => {
+                        const updatedComp = { ...comp, props: { ...comp.props, [k]: nextVal } };
+                        const syncOps: EditOperation[] = [
+                          { type: 'putComponent', component: updatedComp },
+                          ...sequence.clips
+                            .filter((c) => c.componentId === comp.id && !c.locked)
+                            .map((c) => ({
+                              type: 'updateClip' as const,
+                              sequenceId: sequence.id,
+                              clipId: c.id,
+                              changes: { props: { [k]: nextVal } },
+                            })),
+                        ];
+                        void onEdit(`调整组件参数 ${k}`, syncOps);
+                      };
+                      return (
+                        <label key={k} className="cc-mini-field">
+                          <span>{k}</span>
+                          {typeof v === 'boolean' ? (
+                            <input
+                              type="checkbox"
+                              checked={v}
+                              onChange={(e) => commitCompProp(e.target.checked)}
+                            />
+                          ) : typeof v === 'number' ? (
+                            <input
+                              type="number"
+                              step="any"
+                              defaultValue={v}
+                              onBlur={(e) => {
+                                const n = Number(e.currentTarget.value);
+                                if (Number.isFinite(n) && n !== v) commitCompProp(n);
+                              }}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              defaultValue={String(v)}
+                              onBlur={(e) => {
+                                if (e.currentTarget.value !== String(v)) {
+                                  commitCompProp(e.currentTarget.value);
+                                }
+                              }}
+                            />
+                          )}
+                        </label>
+                      );
+                    })}
+                  <div className="cc-mini-field">
+                    <span>一键 AI 导演运镜与布景调度</span>
+                    <div className="cc-comp-direct-chips">
+                      {[
+                        { label: '环绕航拍', prompt: '改为平滑 360° 电影级低空环绕航拍运镜，并暴露 cameraYaw/cameraPitch/cameraDistance 参数' },
+                        { label: '低空穿梭', prompt: '改为贴近楼宇街道的低空穿越推进运镜，增强纵深透视与速度感' },
+                        { label: '推近拉远', prompt: '改为电影感慢推近再拉远的大景别运镜，突出地标主体层次' },
+                        { label: '雨夜霓虹', prompt: '升级为雨夜氛围光影、体积雾气与湿润路面反射' },
+                        { label: '加人物走线', prompt: '在街道/天台加入可动画的白模人物走线调度，并保持运镜跟拍' },
+                      ].map((chip) => (
+                        <button
+                          key={chip.label}
+                          type="button"
+                          className="cc-comp-chip"
+                          onClick={() => {
+                            setCompPopoverFor(null);
+                            onSendCanvasInstruction(
+                              `请直接修改组件「${comp.name}」（componentId: ${comp.id}）：${chip.prompt}。`,
+                              sequence.clips.find((c) => c.componentId === comp.id),
+                            );
+                          }}
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <form
+                    className="cc-comp-direct-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const txt = compPromptDraft.trim();
+                      if (!txt) return;
+                      setCompPromptDraft('');
+                      setCompPopoverFor(null);
+                      onSendCanvasInstruction(
+                        `请直接修改组件「${comp.name}」（componentId: ${comp.id}）：${txt}`,
+                        sequence.clips.find((c) => c.componentId === comp.id),
+                      );
+                    }}
+                  >
+                    <input
+                      type="text"
+                      placeholder="输入自定义调度指令，如：从帝国大厦俯冲拉升…"
+                      value={compPromptDraft}
+                      onChange={(e) => setCompPromptDraft(e.target.value)}
+                    />
+                    <button type="submit" disabled={!compPromptDraft.trim()}>
+                      <Wand2 size={11} />
+                    </button>
+                  </form>
                 </div>
               )}
               <button
@@ -5354,6 +5618,21 @@ export function CreateCanvas({
               onToggleTakeMenu={(id) => setTakeMenuFor((prev) => (prev === id ? null : id))}
               onAddCandidateTake={(sh, v) => void addShotCandidateTake(sh, v)}
               onOpenGeneration={onOpenGeneration}
+              onBakeShotToAiVideo={
+                onBakeSpatialVideo
+                  ? (sh, p) => void bakeSpatialSourceToAiVideo(`shot:${sh.id}`, { x: p.x + 312, y: p.y })
+                  : undefined
+              }
+              onCaptureShotPairToAiVideo={
+                onCaptureSpatialPair
+                  ? (sh, p) => void captureSpatialPairToAiVideo(`shot:${sh.id}`, { x: p.x + 312, y: p.y })
+                  : undefined
+              }
+              onCaptureShotRefToAiImage={
+                onCaptureSpatialReference
+                  ? (sh, p) => void captureSpatialRefToAiImage(`shot:${sh.id}`, { x: p.x + 312, y: p.y })
+                  : undefined
+              }
               onForkShotVariants={(sh, p) => {
                 const ctx = resolveShotGenContext(sh);
                 setForkSource({

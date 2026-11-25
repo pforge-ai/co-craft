@@ -23,7 +23,11 @@ import {
   RotateCcw,
   AtSign,
   BookmarkPlus,
+  Camera,
+  Clapperboard,
+  Film,
   Scissors,
+  Wand2,
 } from 'lucide-react';
 import type { Clip, Sequence, Project, EditOperation, TransitionType, KeyframeProperty } from '../core/types';
 import { uid, clone, detachAudioFromClipOperations } from '../core/project';
@@ -404,6 +408,10 @@ export const Inspector = React.memo(function Inspector({
   onCode,
   onRelink,
   onClearSelect,
+  onBakeClipVideo,
+  onCaptureClipPair,
+  onCaptureClipFrame,
+  onDirectClipWithAgent,
 }: {
   clip: Clip | undefined;
   selectedClipIds?: string[];
@@ -419,6 +427,10 @@ export const Inspector = React.memo(function Inspector({
   onCode: () => void;
   onRelink?: (assetId: string) => void;
   onClearSelect?: () => void;
+  onBakeClipVideo?: (clip: Clip) => void;
+  onCaptureClipPair?: (clip: Clip) => void;
+  onCaptureClipFrame?: (clip: Clip) => void;
+  onDirectClipWithAgent?: (clip: Clip) => void;
 }) {
   const [textTab, setTextTab] = useState<'style' | 'motion'>('style');
   const [mediaTab, setMediaTab] = useState<'frame' | 'adjust' | 'audio'>('frame');
@@ -2085,6 +2097,57 @@ export const Inspector = React.memo(function Inspector({
 
       {component && (
         <>
+          {(onBakeClipVideo || onCaptureClipPair || onCaptureClipFrame || onDirectClipWithAgent) && (
+            <section className="ins-sec">
+              <div className="ins-sec-head">
+                <h4>导演调度 · 3D / 动态出片</h4>
+              </div>
+              <div className="ins-pill-row">
+                {onBakeClipVideo && (
+                  <button
+                    type="button"
+                    className="ins-pill-btn active"
+                    title="将此动态组件录成真 MP4 视频送入画布，可直接做动作迁移/参考生视频"
+                    onClick={() => onBakeClipVideo(clip)}
+                  >
+                    <Clapperboard size={11} /> 录视频→AI
+                  </button>
+                )}
+                {onCaptureClipPair && (
+                  <button
+                    type="button"
+                    className="ins-pill-btn"
+                    title="双拍开场/收尾两帧送入画布，直连首尾帧生视频"
+                    onClick={() => onCaptureClipPair(clip)}
+                  >
+                    <Film size={11} /> 首尾帧→AI
+                  </button>
+                )}
+              </div>
+              <div className="ins-pill-row" style={{ marginTop: 4 }}>
+                {onCaptureClipFrame && (
+                  <button
+                    type="button"
+                    className="ins-pill-btn"
+                    title="拍摄当前帧作为 AI 重绘参考图"
+                    onClick={() => onCaptureClipFrame(clip)}
+                  >
+                    <Camera size={11} /> 拍当前帧
+                  </button>
+                )}
+                {onDirectClipWithAgent && (
+                  <button
+                    type="button"
+                    className="ins-pill-btn"
+                    title="让 Agent 直接调整摄像机轨迹、走线或场景光影"
+                    onClick={() => onDirectClipWithAgent(clip)}
+                  >
+                    <Wand2 size={11} /> AI 调运镜
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
           <section className="ins-sec">
             <div className="ins-sec-head">
               <h4>
@@ -2133,14 +2196,16 @@ export const Inspector = React.memo(function Inspector({
                       {k}
                     </label>
                   ) : typeof v === 'number' ? (
-                    <ScrubInput
-                      key={k}
-                      prefix={k.slice(0, 3)}
-                      label={k}
-                      value={v}
-                      disabled={clip.locked}
-                      onCommit={(value) => prop(k, value)}
-                    />
+                    <div className="ins-inline-row" key={k}>
+                      <span title={k}>{k}</span>
+                      <ScrubInput
+                        prefix="#"
+                        label={k}
+                        value={v}
+                        disabled={clip.locked}
+                        onCommit={(value) => prop(k, value)}
+                      />
+                    </div>
                   ) : (
                     <div className="ins-inline-row" key={k}>
                       <span>{k}</span>

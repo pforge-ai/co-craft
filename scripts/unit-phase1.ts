@@ -1839,6 +1839,74 @@ assert.ok(
     customEnd: [2, 2],
   });
   assert.ok(Math.abs(customPath.x) < 0.05 && Math.abs(customPath.z) < 0.05, 'custom Agent start->end midpoint lands at origin');
+
+  // Lock-safe undoable asset & component deletion
+  const { buildDeleteAssetOperations, buildDeleteComponentOperations } = await import('../src/core/project');
+  const delBase = newProject('Delete Regression');
+  const delSeqId = delBase.sequences[0].id;
+  const delProj = applyOperations(delBase, [
+    {
+      type: 'addAsset',
+      asset: {
+        id: 'asset_del_1',
+        name: 'shot.png',
+        kind: 'image',
+        path: '/tmp/shot.png',
+        duration: 5,
+        width: 1280,
+        height: 720,
+      },
+    },
+    {
+      type: 'putComponent',
+      component: {
+        id: 'comp_del_1',
+        name: '城市白模',
+        source: 'export default () => null;',
+        compiled: 'exports.default = () => null;',
+        hash: 'del_hash_1',
+        props: {},
+      },
+    },
+    {
+      type: 'addClip',
+      sequenceId: delSeqId,
+      clip: { ...newClip('image', 0, 'asset_del_1'), id: 'clip_del_img' },
+    },
+    {
+      type: 'addClip',
+      sequenceId: delSeqId,
+      clip: { ...newClip('code', 150), id: 'clip_del_comp', componentId: 'comp_del_1' },
+    },
+    {
+      type: 'updateProject',
+      changes: {
+        canvasLayout: { 'asset:asset_del_1': { x: 40, y: 116 }, 'comp:comp_del_1': { x: 40, y: 300 } },
+      },
+    },
+  ]);
+
+  // Raw removeComponent rejects while referenced
+  assert.throws(() => applyOperations(delProj, [{ type: 'removeComponent', componentId: 'comp_del_1' }]));
+
+  // buildDeleteAssetOperations + buildDeleteComponentOperations clean unlocked clips + canvasLayout atomically
+  const afterAssetDel = applyOperations(delProj, buildDeleteAssetOperations(delProj, 'asset_del_1'));
+  assert.equal(afterAssetDel.assets.length, 0);
+  assert.equal(afterAssetDel.sequences[0].clips.some((c) => c.id === 'clip_del_img'), false);
+  assert.equal(afterAssetDel.canvasLayout?.['asset:asset_del_1'], undefined);
+
+  const afterCompDel = applyOperations(afterAssetDel, buildDeleteComponentOperations(afterAssetDel, 'comp_del_1'));
+  assert.equal(afterCompDel.components.length, 0);
+  assert.equal(afterCompDel.sequences[0].clips.length, 0);
+  assert.equal(afterCompDel.canvasLayout?.['comp:comp_del_1'], undefined);
+
+  // Locked clip protects both asset and component from deletion
+  const lockedProj = applyOperations(delProj, [
+    { type: 'updateClip', sequenceId: delSeqId, clipId: 'clip_del_img', changes: { locked: true } },
+    { type: 'updateClip', sequenceId: delSeqId, clipId: 'clip_del_comp', changes: { locked: true } },
+  ]);
+  assert.throws(() => buildDeleteAssetOperations(lockedProj, 'asset_del_1'));
+  assert.throws(() => buildDeleteComponentOperations(lockedProj, 'comp_del_1'));
 }
 
 console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage regression tests');

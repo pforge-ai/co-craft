@@ -2627,21 +2627,46 @@ export function App() {
                   onLiveTransform={handleLiveTransformCb}
                   onSelect={selectClip}
                   onEdit={editVoidCb}
-                  onCaptureSpatialMultiPass={() =>
-                    void work('捕获 3 通道空间参考', async () => {
-                      const res = await api<{
-                        envelope: ProjectEnvelope;
-                        captured?: { pass: string; asset: { id: string; name: string } }[];
-                      }>('stage.captureReference', {
-                        sequenceId: sequence.id,
-                        frame: frameRef.current,
-                        passes: ['beauty', 'depth', 'normal'],
-                      });
+                  onCaptureSpatialMultiPass={(targetClip) =>
+                    void work(
+                      targetClip.kind === 'code' ? '拍摄当前组件参考帧' : '捕获 3 通道空间参考',
+                      async () => {
+                        const res = await api<{
+                          envelope: ProjectEnvelope;
+                          captured?: { pass: string; asset: { id: string; name: string } }[];
+                        }>('stage.captureReference', {
+                          sequenceId: sequence.id,
+                          clipId: targetClip.id,
+                          frame: Math.max(0, frameRef.current - targetClip.start),
+                          passes: targetClip.kind === 'code' ? ['beauty'] : ['beauty', 'depth', 'normal'],
+                        });
+                        accept(res.envelope);
+                        const count = res.captured?.length || 1;
+                        notify(
+                          targetClip.kind === 'code'
+                            ? '已拍下当前 3D 画面参考帧并送入「创造」画布，可直接连线 AI 重绘'
+                            : `已捕获 ${count} 通道空间参考（构图 + 深度图 Depth + 法线图 Normal），已送入画布资产库`,
+                        );
+                      },
+                    )
+                  }
+                  onCaptureSpatialPair={(targetClip) =>
+                    void work('拍摄开场/收尾两帧', async () => {
+                      const res = await api<{ envelope: ProjectEnvelope; startAsset: Asset; endAsset: Asset }>(
+                        'stage.captureSpatialPair',
+                        { sequenceId: sequence.id, clipId: targetClip.id },
+                      );
                       accept(res.envelope);
-                      const count = res.captured?.length || 1;
-                      notify(`已捕获 ${count} 通道空间参考（构图 + 深度图 Depth + 法线图 Normal），已送入画布资产库`);
+                      notify('已拍下开场与收尾两帧送入「创造」画布，可直接选中做首尾帧生视频');
                     })
                   }
+                  onDirectClipWithAgent={(targetClip) => {
+                    setScope(clone(targetClip));
+                    setRight('agent');
+                    setShowRight(true);
+                    setPrompt(`请帮我调度「${targetClip.name}」的3D摄像机运镜、视角走线或光影氛围：`);
+                    requestAnimationFrame(() => promptRef.current?.focus());
+                  }}
                   onBakeSpatialVideo={(targetClip) =>
                     void work('录制 3D 预演视频', async () => {
                       const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>(
@@ -3130,6 +3155,49 @@ export function App() {
               onRelink={relinkCb}
               onClearSelect={clearSelectCb}
               onCode={openCodeCb}
+              onBakeClipVideo={(targetClip) =>
+                void work('录制 3D 预演视频', async () => {
+                  const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>(
+                    'stage.bakeSpatialVideo',
+                    {
+                      sequenceId: sequence.id,
+                      clipId: targetClip.id,
+                      durationSeconds: Math.max(2, Math.min(5, targetClip.duration / Math.max(1, sequence.fps))),
+                    },
+                  );
+                  accept(res.envelope);
+                  notify(`已录制预演视频「${res.asset.name}」，切换「创造」画布即可连线 AI 生视频`);
+                })
+              }
+              onCaptureClipPair={(targetClip) =>
+                void work('拍摄开场/收尾两帧', async () => {
+                  const res = await api<{ envelope: ProjectEnvelope; startAsset: Asset; endAsset: Asset }>(
+                    'stage.captureSpatialPair',
+                    { sequenceId: sequence.id, clipId: targetClip.id },
+                  );
+                  accept(res.envelope);
+                  notify('已拍下开场与收尾两帧并送入「创造」画布，可直接用于首尾帧生视频');
+                })
+              }
+              onCaptureClipFrame={(targetClip) =>
+                void work('拍摄当前画面参考帧', async () => {
+                  const res = await api<{ envelope: ProjectEnvelope }>('stage.captureReference', {
+                    sequenceId: sequence.id,
+                    clipId: targetClip.id,
+                    frame: Math.max(0, frameRef.current - targetClip.start),
+                    passes: ['beauty'],
+                  });
+                  accept(res.envelope);
+                  notify('已拍下当前画面参考帧送入「创造」画布，可用于 AI 重绘');
+                })
+              }
+              onDirectClipWithAgent={(targetClip) => {
+                setScope(clone(targetClip));
+                setRight('agent');
+                setShowRight(true);
+                setPrompt(`请帮我调度「${targetClip.name}」的3D摄像机运镜、视角走线或光影氛围：`);
+                requestAnimationFrame(() => promptRef.current?.focus());
+              }}
             />
           ) : (
             <AgentPanel

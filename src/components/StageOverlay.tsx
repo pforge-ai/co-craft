@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Camera, Clapperboard, Crosshair, Lock, Move, Plus, RotateCcw } from 'lucide-react';
+import { Camera, Clapperboard, Crosshair, Film, Lock, Move, Plus, RotateCcw, Wand2 } from 'lucide-react';
 import { evaluateKeyframeTrack, upsertClipKeyframe } from '../core/keyframes';
 import {
   DEFAULT_SPATIAL_BOOKMARKS,
@@ -34,6 +34,8 @@ export interface StageOverlayProps {
   onPin: (pin: { x: number; y: number; frame: number; clipId?: string }) => void;
   onCaptureSpatialMultiPass?: (clip: Clip) => void;
   onBakeSpatialVideo?: (clip: Clip) => void;
+  onCaptureSpatialPair?: (clip: Clip) => void;
+  onDirectClipWithAgent?: (clip: Clip) => void;
   onSpawnCameraShot?: (clip: Clip) => void;
 }
 
@@ -145,6 +147,8 @@ export function StageOverlay({
   onPin,
   onCaptureSpatialMultiPass,
   onBakeSpatialVideo,
+  onCaptureSpatialPair,
+  onDirectClipWithAgent,
   onSpawnCameraShot,
 }: StageOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -784,6 +788,58 @@ export function StageOverlay({
                     >
                       <Plus size={11} /> 新添此机位镜
                     </button>
+                  )}
+                </div>
+              )}
+              {!selectedClip.locked && !is3DStage && selectedClip.kind === 'code' && (
+                <div
+                  className="stage-spatial-bar"
+                  role="toolbar"
+                  aria-label="自定义 3D / 动态组件导演控制"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {onCaptureSpatialMultiPass && (
+                    <button
+                      type="button"
+                      className="stage-spatial-capture"
+                      title="拍摄当前帧送入创造画布作为 AI 风格重绘参考图"
+                      onClick={() => onCaptureSpatialMultiPass(selectedClip)}
+                    >
+                      <Camera size={11} /> 拍参考帧
+                    </button>
+                  )}
+                  {onCaptureSpatialPair && (
+                    <button
+                      type="button"
+                      className="stage-spatial-capture"
+                      title="自动拍摄本镜开场与收尾两帧送入画布，直连首尾帧 AI 生视频"
+                      onClick={() => onCaptureSpatialPair(selectedClip)}
+                    >
+                      <Film size={11} /> 拍首尾帧
+                    </button>
+                  )}
+                  {onBakeSpatialVideo && (
+                    <button
+                      type="button"
+                      className="stage-spatial-capture"
+                      title="将当前 3D / 动态组件录制成真实 MP4 预演视频送入画布，用于动作迁移或参考生视频"
+                      onClick={() => onBakeSpatialVideo(selectedClip)}
+                    >
+                      <Clapperboard size={11} /> 录此镜为视频
+                    </button>
+                  )}
+                  {onDirectClipWithAgent && (
+                    <>
+                      <span className="stage-spatial-sep" />
+                      <button
+                        type="button"
+                        title="在 Agent 对话中直接调度本组件的摄像机轨迹、人物走线或光影"
+                        onClick={() => onDirectClipWithAgent(selectedClip)}
+                      >
+                        <Wand2 size={11} /> AI 调运镜
+                      </button>
+                    </>
                   )}
                 </div>
               )}

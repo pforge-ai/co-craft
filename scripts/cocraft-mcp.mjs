@@ -275,12 +275,13 @@ const TOOLS = [
   },
   {
     name: 'cocraft_bake_spatial_video',
-    description: 'Render a choreographed 3D Spatial Stage (camera, actorAction, actorPath, environmentPreset, 2.5D layers, .glb, or .spz) into a real local MP4 video asset for timeline use or downstream AI video reference/motion-transfer.',
+    description: 'Render a choreographed 3D Spatial Stage OR custom 3D TSX CodeComponent (camera, actorAction, actorPath, environmentPreset, 2.5D layers, .glb, .spz, or componentId/clipId) into a real local MP4 video asset for timeline use or downstream AI video reference/motion-transfer.',
     inputSchema: {
       type: 'object',
       properties: {
         sequenceId: { type: 'string' },
         clipId: { type: 'string' },
+        componentId: { type: 'string' },
         vaultItemId: { type: 'string' },
         assetId: { type: 'string' },
         name: { type: 'string' },

@@ -811,6 +811,7 @@ export type EditOperation =
     }
   | { type: 'updateAssetTranscript'; assetId: string; transcript: TranscriptData }
   | { type: 'putComponent'; component: CodeComponent }
+  | { type: 'removeComponent'; componentId: string }
   | { type: 'putVaultItem'; item: VaultItem }
   | { type: 'removeVaultItem'; itemId: string }
   | { type: 'setActiveBrand'; itemId?: string }

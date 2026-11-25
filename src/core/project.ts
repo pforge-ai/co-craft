@@ -236,6 +236,113 @@ export function prepareScopedComponentOperations(
   return ops;
 }
 
+/**
+ * Builds an atomic, undoable, lock-safe deletion batch for a project media Asset.
+ * - Refuses if referenced by any locked clip or locked clip take.
+ * - Cleans unlocked clips, takes, and vault wrapper references before removing the asset.
+ */
+export function buildDeleteAssetOperations(project: Project, assetId: string): EditOperation[] {
+  const lockedRef = project.sequences.some((s) =>
+    s.clips.some(
+      (c) =>
+        c.locked &&
+        (c.assetId === assetId || c.takes?.some((t) => t.assetId === assetId)),
+    ),
+  );
+  if (lockedRef) {
+    throw new Error('该素材正被已锁定镜头引用，请先解锁对应镜头后再删除');
+  }
+  const ops: EditOperation[] = [];
+  for (const seq of project.sequences) {
+    for (const c of seq.clips) {
+      if (c.assetId === assetId) {
+        ops.push({ type: 'deleteClip', sequenceId: seq.id, clipId: c.id });
+      } else if (c.takes?.some((t) => t.assetId === assetId)) {
+        ops.push({
+          type: 'updateClip',
+          sequenceId: seq.id,
+          clipId: c.id,
+          changes: { takes: c.takes.filter((t) => t.assetId !== assetId) },
+        });
+      }
+    }
+  }
+  for (const v of project.vault || []) {
+    const usesDirectly = v.assetId === assetId;
+    const usesVariant = v.variants?.some((vr) => vr.assetId === assetId);
+    const usesCompound = v.compound?.clips.some((c) => c.assetId === assetId);
+    const usesPack = v.packItems?.some((pi) => pi.assetId === assetId);
+    if (!usesDirectly && !usesVariant && !usesCompound && !usesPack) continue;
+    const nextItem = clone(v);
+    if (nextItem.assetId === assetId) delete nextItem.assetId;
+    if (nextItem.variants) {
+      nextItem.variants = nextItem.variants.map((vr) =>
+        vr.assetId === assetId ? { ...vr, assetId: undefined } : vr,
+      );
+    }
+    if (nextItem.compound) {
+      nextItem.compound = {
+        ...nextItem.compound,
+        clips: nextItem.compound.clips.filter((c) => c.assetId !== assetId),
+      };
+    }
+    if (nextItem.packItems) {
+      nextItem.packItems = nextItem.packItems.filter((pi) => pi.assetId !== assetId);
+    }
+    const isEmptyWrapper =
+      !nextItem.assetId &&
+      !nextItem.textContent &&
+      !nextItem.rig &&
+      !nextItem.recipe &&
+      !nextItem.styleTokens &&
+      (!nextItem.variants || nextItem.variants.every((vr) => !vr.assetId)) &&
+      (!nextItem.compound || nextItem.compound.clips.length === 0) &&
+      (!nextItem.packItems || nextItem.packItems.length === 0);
+    if (isEmptyWrapper) {
+      ops.push({ type: 'removeVaultItem', itemId: v.id });
+    } else {
+      ops.push({ type: 'putVaultItem', item: nextItem });
+    }
+  }
+  ops.push({ type: 'removeAsset', assetId });
+  return ops;
+}
+
+/**
+ * Builds an atomic, undoable, lock-safe deletion batch for a custom TSX CodeComponent.
+ * - Refuses if referenced by any locked clip or locked clip take.
+ * - Removes unlocked clips referencing the component before removing the component itself.
+ */
+export function buildDeleteComponentOperations(project: Project, componentId: string): EditOperation[] {
+  const lockedRef = project.sequences.some((s) =>
+    s.clips.some(
+      (c) =>
+        c.locked &&
+        (c.componentId === componentId || c.takes?.some((t) => t.componentId === componentId)),
+    ),
+  );
+  if (lockedRef) {
+    throw new Error('该组件正被已锁定镜头引用，请先解锁对应镜头后再删除');
+  }
+  const ops: EditOperation[] = [];
+  for (const seq of project.sequences) {
+    for (const c of seq.clips) {
+      if (c.componentId === componentId) {
+        ops.push({ type: 'deleteClip', sequenceId: seq.id, clipId: c.id });
+      } else if (c.takes?.some((t) => t.componentId === componentId)) {
+        ops.push({
+          type: 'updateClip',
+          sequenceId: seq.id,
+          clipId: c.id,
+          changes: { takes: c.takes.filter((t) => t.componentId !== componentId) },
+        });
+      }
+    }
+  }
+  ops.push({ type: 'removeComponent', componentId });
+  return ops;
+}
+
 export function applyOperations(
   input: Project,
   operations: EditOperation[],
@@ -353,6 +460,26 @@ export function applyOperations(
       )
         throw new Error('该文件被资产实体的状态变体或组合包引用，请先解除关联');
       p.assets = p.assets.filter((a) => a.id !== op.assetId);
+      const nodeKey = `asset:${op.assetId}`;
+      if (p.canvasLayout?.[nodeKey]) {
+        p.canvasLayout = { ...p.canvasLayout };
+        delete p.canvasLayout[nodeKey];
+      }
+      if (p.canvasHiddenNodeIds?.includes(nodeKey)) {
+        p.canvasHiddenNodeIds = p.canvasHiddenNodeIds.filter((k) => k !== nodeKey);
+      }
+      if (p.canvasGroups?.length) {
+        p.canvasGroups = p.canvasGroups
+          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((k) => k !== nodeKey) }))
+          .filter((g) => g.nodeIds.length > 0);
+      }
+      if (p.canvasGenerators?.length) {
+        p.canvasGenerators = p.canvasGenerators.map((g) => ({
+          ...g,
+          inputs: g.inputs.filter((inp) => inp.nodeKey !== nodeKey),
+          outputAssetIds: (g.outputAssetIds || []).filter((id) => id !== op.assetId),
+        }));
+      }
       continue;
     }
     if (op.type === 'relinkAsset') {
@@ -411,6 +538,39 @@ export function applyOperations(
       else p.components[i] = clone(op.component);
       continue;
     }
+    if (op.type === 'removeComponent') {
+      if (
+        p.sequences.some((s) =>
+          s.clips.some(
+            (c) =>
+              c.componentId === op.componentId ||
+              c.takes?.some((t) => t.componentId === op.componentId),
+          ),
+        )
+      )
+        throw new Error('该组件仍在成片时间线或镜头候选中引用，请先移除相关片段');
+      p.components = p.components.filter((c) => c.id !== op.componentId);
+      const nodeKey = `comp:${op.componentId}`;
+      if (p.canvasLayout?.[nodeKey]) {
+        p.canvasLayout = { ...p.canvasLayout };
+        delete p.canvasLayout[nodeKey];
+      }
+      if (p.canvasHiddenNodeIds?.includes(nodeKey)) {
+        p.canvasHiddenNodeIds = p.canvasHiddenNodeIds.filter((k) => k !== nodeKey);
+      }
+      if (p.canvasGroups?.length) {
+        p.canvasGroups = p.canvasGroups
+          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((k) => k !== nodeKey) }))
+          .filter((g) => g.nodeIds.length > 0);
+      }
+      if (p.canvasGenerators?.length) {
+        p.canvasGenerators = p.canvasGenerators.map((g) => ({
+          ...g,
+          inputs: g.inputs.filter((inp) => inp.nodeKey !== nodeKey),
+        }));
+      }
+      continue;
+    }
     if (op.type === 'putVaultItem') {
       p.vault = p.vault ? [...p.vault] : [];
       const idx = p.vault.findIndex((v) => v.id === op.item.id);
@@ -430,6 +590,25 @@ export function applyOperations(
       if (boundInLockedShot) throw new Error('该资产被已锁定的分镜绑定引用，请先解锁对应镜头');
       p.vault = (p.vault || []).filter((v) => v.id !== op.itemId);
       if (p.activeBrandId === op.itemId) p.activeBrandId = undefined;
+      const nodeKey = `ent:${op.itemId}`;
+      if (p.canvasLayout?.[nodeKey]) {
+        p.canvasLayout = { ...p.canvasLayout };
+        delete p.canvasLayout[nodeKey];
+      }
+      if (p.canvasHiddenNodeIds?.includes(nodeKey)) {
+        p.canvasHiddenNodeIds = p.canvasHiddenNodeIds.filter((k) => k !== nodeKey);
+      }
+      if (p.canvasGroups?.length) {
+        p.canvasGroups = p.canvasGroups
+          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((k) => k !== nodeKey) }))
+          .filter((g) => g.nodeIds.length > 0);
+      }
+      if (p.canvasGenerators?.length) {
+        p.canvasGenerators = p.canvasGenerators.map((g) => ({
+          ...g,
+          inputs: g.inputs.filter((inp) => inp.nodeKey !== nodeKey),
+        }));
+      }
       continue;
     }
     if (op.type === 'setActiveBrand') {

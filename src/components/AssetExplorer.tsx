@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { mediaUrl } from '../composition/Film';
 import { AudioWaveformPlayer } from './AudioWaveformPlayer';
+import { CodeComponentThumb } from './CodeComponentThumb';
 import { PresetPreview } from './PresetControls';
 import {
   createPresetClip,
@@ -36,6 +37,8 @@ import {
   matchCatalogText,
 } from '../core/catalog';
 import {
+  buildDeleteAssetOperations,
+  buildDeleteComponentOperations,
   instantiateCompoundVaultItemOperations,
   inferDefaultAudioAttachMode,
   newClip,
@@ -662,6 +665,20 @@ export const AssetExplorer = React.memo(function AssetExplorer({
                               </button>
                               <button
                                 type="button"
+                                className="ae-card-del"
+                                title="从当前项目删除"
+                                aria-label={`删除设定 ${v.name}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void onEdit(`删除设定「${v.name}」`, [
+                                    { type: 'removeVaultItem', itemId: v.id },
+                                  ]);
+                                }}
+                              >
+                                <Trash2 size={10} />
+                              </button>
+                              <button
+                                type="button"
                                 className="ae-card-add"
                                 title="添加到时间线"
                                 onClick={(e) => {
@@ -772,6 +789,24 @@ export const AssetExplorer = React.memo(function AssetExplorer({
                                   <ArrowUpFromLine size={10} />
                                 </button>
                               )}
+                              <button
+                                type="button"
+                                className="ae-card-del"
+                                title="从当前项目删除素材"
+                                aria-label={`删除素材 ${a.name}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    const ops = buildDeleteAssetOperations(project, a.id);
+                                    void onEdit(`删除素材「${a.name}」`, ops);
+                                  } catch (err) {
+                                    void onEdit(`删除素材「${a.name}」`, [{ type: 'removeAsset', assetId: a.id }]);
+                                    console.warn(err);
+                                  }
+                                }}
+                              >
+                                <Trash2 size={10} />
+                              </button>
                               <button
                                 type="button"
                                 className="ae-card-add"
@@ -982,6 +1017,23 @@ export const AssetExplorer = React.memo(function AssetExplorer({
                               }}
                             >
                               <ArrowUpFromLine size={11} />
+                            </button>
+                            <button
+                              type="button"
+                              className="ae-audio-act del"
+                              title="从当前项目删除音频"
+                              aria-label={`删除音频 ${a.name}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                try {
+                                  const ops = buildDeleteAssetOperations(project, a.id);
+                                  void onEdit(`删除音频「${a.name}」`, ops);
+                                } catch {
+                                  void onEdit(`删除音频「${a.name}」`, [{ type: 'removeAsset', assetId: a.id }]);
+                                }
+                              }}
+                            >
+                              <Trash2 size={11} />
                             </button>
                             <button
                               type="button"
@@ -1248,11 +1300,8 @@ export const AssetExplorer = React.memo(function AssetExplorer({
                             ]).then(() => onSelectClip(c.id));
                           }}
                         >
-                          <div className="ae-card-placeholder">
-                            <Layers size={16} />
-                            <small>TSX 动态组件</small>
-                          </div>
-                          <span className="ae-card-tag">项目</span>
+                          <CodeComponentThumb component={comp} showPill={false} />
+                          <span className="ae-card-tag">TSX</span>
                           <button
                             type="button"
                             className="ae-card-pub"
@@ -1263,6 +1312,25 @@ export const AssetExplorer = React.memo(function AssetExplorer({
                             }}
                           >
                             <ArrowUpFromLine size={10} />
+                          </button>
+                          <button
+                            type="button"
+                            className="ae-card-del"
+                            title="从当前项目删除组件"
+                            aria-label={`删除组件 ${comp.name}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              try {
+                                const ops = buildDeleteComponentOperations(project, comp.id);
+                                void onEdit(`删除组件「${comp.name}」`, ops);
+                              } catch {
+                                void onEdit(`删除组件「${comp.name}」`, [
+                                  { type: 'removeComponent', componentId: comp.id },
+                                ]);
+                              }
+                            }}
+                          >
+                            <Trash2 size={10} />
                           </button>
                           <button
                             type="button"

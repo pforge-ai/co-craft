@@ -13,6 +13,7 @@ import {
   Sparkles,
   Star,
   Tag,
+  Trash2,
   X,
 } from 'lucide-react';
 import type {
@@ -50,6 +51,7 @@ interface CanvasMultiBarProps {
   onLinkNodes: (keys: string[]) => void;
   onAppendToTimeline: (keys: string[]) => void;
   onHideNodes: (keys: string[]) => void;
+  onDeleteNodes?: (keys: string[]) => void;
   onSaveClipsAsAsset?: (clips: Clip[]) => void;
   onClearSelection: () => void;
 }
@@ -73,6 +75,7 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
   onLinkNodes,
   onAppendToTimeline,
   onHideNodes,
+  onDeleteNodes,
   onSaveClipsAsAsset,
   onClearSelection,
 }: CanvasMultiBarProps) {
@@ -398,6 +401,16 @@ export const CanvasMultiBar = React.memo(function CanvasMultiBar({
           onClick={() => onHideNodes(selectedNodeIds)}
         >
           <EyeOff size={11} /> 移出画布
+        </button>
+      )}
+      {onDeleteNodes && (
+        <button
+          type="button"
+          className="cc-multi-danger"
+          title="从当前项目删除所选资产/节点（支持 ⌘Z 撤销；已锁定镜头受保护）"
+          onClick={() => onDeleteNodes(selectedNodeIds)}
+        >
+          <Trash2 size={11} /> 删除
         </button>
       )}
       {selectedNodeIds.some((k) => k.startsWith('shot:')) && canSaveClipsAsAsset && onSaveClipsAsAsset && (

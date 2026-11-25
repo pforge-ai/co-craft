@@ -86,13 +86,20 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
   const srcShot = sk.startsWith('shot:')
     ? shots.find((s) => `shot:${s.id}` === sk)
     : undefined;
+  const srcComp = sk.startsWith('comp:')
+    ? project.components.find((c) => `comp:${c.id}` === sk)
+    : undefined;
 
   const isTextNode = srcEnt?.entityKind === 'text';
-  const isSpatialSource = Boolean(
+  const isCodeSource = Boolean(srcComp || srcShot?.anchorClip.kind === 'code');
+  const isSpatialStageSource = Boolean(
     srcEnt?.rig?.presetId === 'spatial-stage' ||
       srcEnt?.rig?.presetId === 'teardown-3d' ||
-      srcAsset?.kind === 'model-3d',
+      srcAsset?.kind === 'model-3d' ||
+      srcShot?.anchorClip.props?.presetId === 'spatial-stage' ||
+      srcShot?.anchorClip.props?.presetId === 'teardown-3d',
   );
+  const isSpatialSource = isSpatialStageSource || isCodeSource;
   const rawText = isTextNode && srcEnt ? (textDrafts[srcEnt.id] ?? srcEnt.textContent ?? '').trim() : '';
 
   const hasVisualRef = Boolean(
@@ -147,7 +154,7 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
               }}
             >
               <span className="cc-menu-item-label">
-                <Box size={13} /> A机→B机双拍 → 首尾帧生视频
+                <Box size={13} /> {isCodeSource ? '拍开场/收尾两帧 → 首尾帧生视频' : 'A机→B机双拍 → 首尾帧生视频'}
               </span>
             </button>
           )}
@@ -160,11 +167,11 @@ export const CanvasDropMenu = React.memo(function CanvasDropMenu({
               }}
             >
               <span className="cc-menu-item-label">
-                <Camera size={13} /> 拍当前机位+深度图 → AI 风格重绘
+                <Camera size={13} /> {isCodeSource ? '拍当前 3D 帧 → AI 写实重绘' : '拍当前机位+深度图 → AI 风格重绘'}
               </span>
             </button>
           )}
-          {onSpawnSpatialMultiCam && (
+          {isSpatialStageSource && onSpawnSpatialMultiCam && (
             <button
               type="button"
               onClick={() => {
