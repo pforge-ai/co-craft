@@ -548,6 +548,35 @@ class ClipErrorBoundary extends React.Component<
   }
 }
 
+const DIRECTOR_MANAGED_CAMERA_KEYS = new Set([
+  'cameraPreset',
+  'cameraYaw',
+  'cameraPitch',
+  'cameraDistance',
+  'cameraPanX',
+  'cameraPanY',
+  'cameraLens',
+  'renderPass',
+  'cameraBookmarks',
+  'cameraBookmarksJson',
+  'activeBookmarkId',
+  'stageShots',
+  'stageShotsJson',
+  'activeShotId',
+  '_studioInteractive',
+  '_selectedObjectId',
+  '_showCameraPath',
+]);
+
+function stripDirectorCameraProps(raw?: Record<string, unknown>): Record<string, unknown> {
+  if (!raw) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!DIRECTOR_MANAGED_CAMERA_KEYS.has(k)) out[k] = v;
+  }
+  return out;
+}
+
 function Code({
   component,
   clip,
@@ -574,16 +603,15 @@ function Code({
     rawPass === 'clay' || rawPass === 'depth' || rawPass === 'normal' || rawPass === 'wireframe'
       ? rawPass
       : 'beauty';
-  // Only opt out of automatic Director Studio spherical camera override when the TSX component's
-  // OWN SOURCE CODE explicitly reads cameraYaw/cameraPitch/cameraDistance or useDirectorStage().
-  // Never check component.props, because SpatialDirectorStudio itself persists camera props there!
-  const compHandlesOwnCamera = Boolean(
-    component.source && /\b(cameraYaw|cameraPitch|cameraDistance|useDirectorStage)\b/.test(component.source),
-  );
+  // Only opt out of automatic ThreeCanvas camera override when the TSX component explicitly opts into
+  // CoCraft's Director Studio contract via `useDirectorStage()`.
+  // Components declaring generic props like `cameraDistance = 40` (world meters) keep their native
+  // default camera pose untouched, while ThreeCanvas applies Director Studio's relative yaw/pitch/distance/pan/lens on top!
+  const compUsesDirectorHook = Boolean(component.source && /\buseDirectorStage\b/.test(component.source));
   const directorState = useMemo(
     () => ({
       active: true,
-      applyCameraOverride: !compHandlesOwnCamera,
+      applyCameraOverride: !compUsesDirectorHook,
       cameraYaw: Number(clip.props.cameraYaw ?? 0),
       cameraPitch: Number(clip.props.cameraPitch ?? 0),
       cameraDistance: clip.props.cameraDistance !== undefined ? Number(clip.props.cameraDistance) : 1,
@@ -601,7 +629,7 @@ function Code({
         typeof clip.props._selectedObjectId === 'string' ? clip.props._selectedObjectId : null,
     }),
     [
-      compHandlesOwnCamera,
+      compUsesDirectorHook,
       clip.props.cameraYaw,
       clip.props.cameraPitch,
       clip.props.cameraDistance,
@@ -615,11 +643,17 @@ function Code({
       clip.props._selectedObjectId,
     ],
   );
+  const componentPassProps = useMemo(
+    () =>
+      compUsesDirectorHook
+        ? { ...component.props, ...clip.props }
+        : { ...stripDirectorCameraProps(component.props), ...stripDirectorCameraProps(clip.props) },
+    [compUsesDirectorHook, component.props, clip.props],
+  );
   const node = (
     <DirectorStageProvider value={directorState}>
       <Component
-        {...component.props}
-        {...clip.props}
+        {...componentPassProps}
         assetUrl={(id: string) => mediaUrl(mediaOrigin, id)}
         assets={project.assets.map((a) => ({
           id: a.id,

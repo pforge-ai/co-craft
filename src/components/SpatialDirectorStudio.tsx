@@ -1187,26 +1187,28 @@ export function SpatialDirectorStudio({
         seekTo(clampedFrame + (e.shiftKey ? 10 : 1));
         return;
       }
+      const code = e.code;
       const k = e.key.toLowerCase();
-      if (k === 'k' && isMotionShot) {
+      const hasMod = e.metaKey || e.ctrlKey || e.altKey;
+      if (!hasMod && (code === 'KeyK' || k === 'k') && isMotionShot) {
         e.preventDefault();
         dropMotionKeyframeAt(clampedFrame);
         return;
       }
-      if (isSpatialStageTarget && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (k === 'v') {
+      if (isSpatialStageTarget && !hasMod) {
+        if (code === 'KeyV' || k === 'v') {
           e.preventDefault();
           setViewportTool('camera');
           setLiveStageHud(null);
           return;
         }
-        if (k === 'g') {
+        if (code === 'KeyG' || k === 'g') {
           e.preventDefault();
           setViewportTool('block');
           setLiveStageHud('摆位模式：点选 3D 物体并在地面拖动移位');
           return;
         }
-        if (k === 'p') {
+        if (code === 'KeyP' || k === 'p') {
           e.preventDefault();
           setViewportTool('path');
           setPathStep('start');
@@ -1215,40 +1217,46 @@ export function SpatialDirectorStudio({
           return;
         }
       }
-      if (viewportTool === 'camera' && ['w', 's', 'a', 'd', 'q', 'e'].includes(k)) {
-        e.preventDefault();
-        const dollyStep = e.shiftKey ? 0.18 : 0.08;
+      // Use physical e.code so WASD/QE flight works seamlessly even when Chinese IME is active!
+      if (!hasMod && viewportTool === 'camera') {
+        const zoomFactor = e.shiftKey ? 1.18 : 1.09;
         const panStep = e.shiftKey ? 0.42 : 0.18;
-        if (k === 'w') {
+        if (code === 'KeyW' || k === 'w') {
+          e.preventDefault();
           scheduleDeferredCamCommit('推近镜头', (c) => ({
             ...c,
-            distance: Math.max(0.2, Number((c.distance - dollyStep).toFixed(3))),
-          }), 220);
-        } else if (k === 's') {
+            distance: Math.max(0.2, Number((c.distance / zoomFactor).toFixed(4))),
+          }), 200);
+        } else if (code === 'KeyS' || k === 's') {
+          e.preventDefault();
           scheduleDeferredCamCommit('拉远镜头', (c) => ({
             ...c,
-            distance: Math.min(3.0, Number((c.distance + dollyStep).toFixed(3))),
-          }), 220);
-        } else if (k === 'a') {
+            distance: Math.min(3.0, Number((c.distance * zoomFactor).toFixed(4))),
+          }), 200);
+        } else if (code === 'KeyA' || k === 'a') {
+          e.preventDefault();
           scheduleDeferredCamCommit('左移机位', (c) => ({
             ...c,
             panX: Math.max(-5, Number((c.panX - panStep).toFixed(2))),
-          }), 220);
-        } else if (k === 'd') {
+          }), 200);
+        } else if (code === 'KeyD' || k === 'd') {
+          e.preventDefault();
           scheduleDeferredCamCommit('右移机位', (c) => ({
             ...c,
             panX: Math.min(5, Number((c.panX + panStep).toFixed(2))),
-          }), 220);
-        } else if (k === 'e') {
+          }), 200);
+        } else if (code === 'KeyE' || k === 'e') {
+          e.preventDefault();
           scheduleDeferredCamCommit('抬升机位', (c) => ({
             ...c,
             panY: Math.min(4, Number((c.panY + panStep).toFixed(2))),
-          }), 220);
-        } else if (k === 'q') {
+          }), 200);
+        } else if (code === 'KeyQ' || k === 'q') {
+          e.preventDefault();
           scheduleDeferredCamCommit('压低机位', (c) => ({
             ...c,
             panY: Math.max(-4, Number((c.panY - panStep).toFixed(2))),
-          }), 220);
+          }), 200);
         }
       }
     };
