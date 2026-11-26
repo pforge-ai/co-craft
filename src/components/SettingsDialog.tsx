@@ -19,8 +19,10 @@ import {
   Zap,
   Cable,
   FileCode2,
+  Sparkles,
 } from 'lucide-react';
 import { Modal, Spinner } from './ui';
+import { QuickstartSetupPane } from './QuickstartSetupPane';
 import {
   modelUses,
   adapters,
@@ -65,6 +67,7 @@ type Props = {
 const sections = [
   ['general', '常规', Settings2],
   ['appearance', '外观', Palette],
+  ['quickstart', '快速配置', Sparkles],
   ['providers', '提供商', KeyRound],
   ['models', '模型', Boxes],
   ['defaults', '用途默认值', Workflow],
@@ -571,7 +574,7 @@ export function SettingsDialog({
           {sections.map(([id, name, Icon], i) => (
             <React.Fragment key={id}>
               {i === 2 && <span className="settings-group-label">模型与服务</span>}
-              {i === 6 && <span className="settings-group-label">扩展</span>}
+              {i === 7 && <span className="settings-group-label">扩展</span>}
               <button
                 className={tab === id ? 'active' : ''}
                 onClick={() => {
@@ -596,9 +599,11 @@ export function SettingsDialog({
                   {
                     general: '让工作台适合你的创作方式。',
                     appearance: '清晰的层次，舒适的阅读，恰到好处的质感。',
+                    quickstart: '选一家主力厂商、填一个 API Key，1 分钟自动配齐模型与用途路由并实测连通。',
                     providers: '管理服务连接与凭据。一个连接可以提供多个模型。',
                     models: '登记模型与能力，选择对应接口。模型可以承担多个用途。',
                     defaults: '为不同工作选择合适的模型，项目可以覆盖全局设置。',
+                    system1: '默认完全关闭、零静默扣费；按需开启本地免费或超快模型辅助构图与质检。',
                     assets: '连接素材来源，导入时保留来源与许可。',
                     mcp: '直接粘贴标准 MCP JSON 配置连接运行中的外部 MCP 服务（基于官方 MCP SDK，支持 Streamable HTTP 与 SSE）。',
                     skills: 'Agent 通过 Skills、编码和工具扩展创作能力。',
@@ -607,6 +612,33 @@ export function SettingsDialog({
               }
             </p>
           </header>
+          {tab === 'quickstart' && (
+            <QuickstartSetupPane
+              settings={draft}
+              onApplyAndSave={async (nextSettings) => {
+                await onSave(nextSettings);
+                const synced = structuredClone(nextSettings);
+                synced.providers = synced.providers.map((p) => {
+                  if (p.apiKey) {
+                    const { apiKey: _removed, ...rest } = p;
+                    return { ...rest, hasApiKey: true };
+                  }
+                  return p;
+                });
+                setDraft(synced);
+                const firstCloud = synced.providers.find((p) => p.protocol !== 'system');
+                if (firstCloud) setProviderId(firstCloud.id);
+                const firstModel = synced.models.find((m) => m.adapter !== 'system-speech');
+                if (firstModel) setModelId(firstModel.id);
+              }}
+              onJumpToAdvanced={(targetTab) => {
+                setTab(targetTab);
+                setError('');
+                setInfo('');
+              }}
+              onFinishAndClose={onClose}
+            />
+          )}
           {tab === 'general' && (
             <>
               <div className="settings-section">

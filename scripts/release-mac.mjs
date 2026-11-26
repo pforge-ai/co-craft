@@ -18,7 +18,7 @@ import { join, relative, resolve } from 'node:path';
 const root = resolve('.');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const version = pkg.version;
-const outDir = resolve(root, pkg.build?.directories?.output || 'release/0.4');
+const outDir = resolve(root, pkg.build?.directories?.output || 'release/0.6');
 const appPath = join(outDir, 'mac-arm64', 'CoCraft.app');
 const dmgPath = join(outDir, `CoCraft-${version}-arm64.dmg`);
 const entitlements = resolve(root, 'build/entitlements.mac.plist');

@@ -18,6 +18,7 @@ import { AgentPanel } from './components/AgentPanel';
 import { JobsPopover } from './components/JobsPopover';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { TranscriptPanel } from './components/TranscriptPanel';
+import { WorkbenchTitlebar } from './components/WorkbenchTitlebar';
 import {
   WORKSPACE_LAYOUT_PRESETS,
   dateLabel,
@@ -2005,372 +2006,102 @@ export function App() {
       }}
     >
       {/* Unified 38px Monochrome IDE Titlebar */}
-      <header className="titlebar ide-titlebar">
-        <div className="titlebar-left">
-          <div className="project-switcher-wrap">
-            <button
-              type="button"
-              className="project-menu-btn"
-              onClick={() => setProjectMenuOpen((v) => !v)}
-              aria-label="切换或新建工程"
-            >
-              <BrandMark size={16} />
-              <span>{project.name}</span>
-              <ChevronDown size={11} />
-            </button>
-            {projectMenuOpen && (
-              <div className="project-dropdown" role="menu">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProjectMenuOpen(false);
-                    openDialog('new-project');
-                  }}
-                >
-                  <Plus size={12} /> 新建空白工程…
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProjectMenuOpen(false);
-                    void work('打开工程', async () => {
-                      const e = await api<ProjectEnvelope | null>('project.open');
-                      if (e) await switchProject(e);
-                    });
-                  }}
-                >
-                  <FolderOpen size={12} /> 打开本地工程…
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProjectMenuOpen(false);
-                    setBriefDraft(project.brief);
-                    setShowBrief((v) => !v);
-                  }}
-                >
-                  <FileText size={12} /> 项目创作约定 (brief.md)
-                </button>
-                {projects.length > 0 && <div className="proj-dd-sep" />}
-                {projects.slice(0, 8).map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    className={p.id === project.id ? 'current' : ''}
-                    onClick={() => {
-                      setProjectMenuOpen(false);
-                      if (p.id !== project.id) {
-                        void work('切换工程', async () => {
-                          await switchProject(await api<ProjectEnvelope>('project.open', { path: p.path }));
-                        });
-                      }
-                    }}
-                  >
-                    <span>{p.name}</span>
-                    {p.id === project.id && <Check size={11} />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <span className="titlebar-slash">/</span>
-
-          {/* Film Branch Switcher & Fork */}
-          <div className="branch-bar compact">
-            <GitBranch size={11} />
-            <select
-              aria-label="当前成片分支"
-              value={sequence.id}
-              onChange={(e) => changeSequence(e.target.value)}
-            >
-              {project.sequences.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.isMainBranch ? '主干 · ' : '分支 · '}
-                  {s.name}
-                </option>
-              ))}
-            </select>
-            <div className="branch-fork-anchor">
-              <button
-                type="button"
-                className={`branch-fork-btn ${showStageFork ? 'active' : ''}`}
-                title="从当前版本派生平行实验分支"
-                aria-expanded={showStageFork}
-                aria-haspopup="dialog"
-                onClick={() => {
-                  setProjectMenuOpen(false);
-                  setLayoutMenuOpen(false);
-                  setJobsOpen(false);
-                  setShowStageFork((v) => !v);
-                }}
-              >
-                + 派生
-              </button>
-              {showStageFork && (
-                <form
-                  className="branch-fork-popover"
-                  role="dialog"
-                  aria-label="派生平行实验分支"
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    const newId = uid('seq');
-                    const bName =
-                      stageForkName.trim() ||
-                      (stageForkAspect === 'portrait'
-                        ? '竖屏 9:16'
-                        : stageForkAspect === 'square'
-                          ? '方形 1:1'
-                          : `${sequence.name}-试剪${project.sequences.length}`);
-                    const wantPortrait = stageForkAspect === 'portrait' || /9\s*[:：]\s*16|竖屏/.test(bName);
-                    const wantSquare = stageForkAspect === 'square' || /1\s*[:：]\s*1|方形/.test(bName);
-                    if (wantPortrait || wantSquare) {
-                      const targetW = 1080;
-                      const targetH = wantPortrait ? 1920 : 1080;
-                      await work(`智能重排画幅「${bName}」`, async () => {
-                        const res = await api<{
-                          envelope: ProjectEnvelope;
-                          sequenceId: string;
-                          focalCount: number;
-                          provider: string;
-                        }>('system1.autoReframeBranch', {
-                          sequenceId: sequence.id,
-                          newSequenceId: newId,
-                          branchName: bName,
-                          width: targetW,
-                          height: targetH,
-                        });
-                        accept(res.envelope);
-                        notify(
-                          `已派生 ${targetW}×${targetH} 智能重排分支「${bName}」${res.focalCount > 0 ? `（${res.provider} 已锁 ${res.focalCount} 镜主体焦点）` : '（本地免费构图 + 字幕安全区已适配）'}`,
-                        );
-                      });
-                    } else {
-                      await edit(`派生平行分支「${bName}」`, [
-                        {
-                          type: 'forkSequenceBranch',
-                          sourceSequenceId: sequence.id,
-                          newSequenceId: newId,
-                          branchName: bName,
-                        },
-                      ]);
-                    }
-                    setStageForkName('');
-                    setStageForkAspect('original');
-                    setShowStageFork(false);
-                    changeSequence(newId);
-                  }}
-                >
-                  <div className="branch-fork-head">
-                    <span>
-                      <GitBranch size={12} /> 从「{sequence.name} @ v{project.revision}」派生
-                    </span>
-                    <button
-                      type="button"
-                      className="icon-button tiny"
-                      aria-label="关闭派生浮层"
-                      onClick={() => setShowStageFork(false)}
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                  <input
-                    autoFocus
-                    aria-label="派生分支名称"
-                    placeholder="输入新分支名（如：30s紧凑版）"
-                    value={stageForkName}
-                    onChange={(e) => setStageForkName(e.target.value)}
-                  />
-                  <div className="branch-fork-chips">
-                    {(
-                      [
-                        ['30s 紧凑版', 'original'],
-                        ['竖屏 9:16', 'portrait'],
-                        ['方形 1:1', 'square'],
-                        ['风格试剪', 'original'],
-                      ] as const
-                    ).map(([presetName, aspect]) => (
-                      <button
-                        key={presetName}
-                        type="button"
-                        className={`branch-fork-chip ${stageForkName === presetName ? 'active' : ''}`}
-                        onClick={() => {
-                          setStageForkName(presetName);
-                          setStageForkAspect(aspect);
-                        }}
-                      >
-                        {presetName}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="branch-fork-foot">
-                    {!sequence.isMainBranch && project.sequences.length > 1 ? (
-                      <button
-                        type="button"
-                        className="button tiny"
-                        onClick={() => {
-                          setShowStageFork(false);
-                          void edit(`将「${sequence.name}」设为主干`, [
-                            { type: 'promoteSequenceBranch', sequenceId: sequence.id },
-                          ]);
-                        }}
-                      >
-                        设为主干
-                      </button>
-                    ) : (
-                      <span className="branch-fork-tip">
-                        {stageForkAspect === 'portrait'
-                          ? '1080×1920 智能构图 + 字幕安全区重排'
-                          : stageForkAspect === 'square'
-                            ? '1080×1080 智能裁切居中'
-                            : '零破坏克隆当前时间线'}
-                      </span>
-                    )}
-                    <button type="submit" className="button tiny primary">
-                      创建并切换
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
-          </div>
-
-          <button className="version-chip-btn" onClick={() => setDialog('versions')} title="版本历史与历史派生">
-            v{project.revision}
-          </button>
-
-          {offlineCount > 0 && (
-            <button
-              className="offline-pill"
-              onClick={() => setShowNav(true)}
-              title="部分源媒体文件离线，点击展开资产栏重连"
-            >
-              <AlertTriangle size={11} /> {offlineCount} 离线
-            </button>
-          )}
-        </div>
-
-        {/* Top-Center Dual-Mode Switch: [ 创造 | 剪辑 ] */}
-        <div className="top-mode-capsule" role="tablist" aria-label="核心工作模式">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={appMode === 'create' && !showBrief}
-            className={appMode === 'create' && !showBrief ? 'active' : ''}
-            onClick={() => switchMode('create')}
-          >
-            创造
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={appMode === 'edit' && !showBrief}
-            className={appMode === 'edit' && !showBrief ? 'active' : ''}
-            onClick={() => switchMode('edit')}
-          >
-            剪辑
-          </button>
-        </div>
-
-        {/* Top-Right IDE Pane Toggles (Left Explorer / Bottom Timeline / Right Agent / Search / Settings / Export) */}
-        <div className="titlebar-right ide-toggles">
-          <div className="ide-pane-group" role="group" aria-label="面板布局控制">
-            <button
-              type="button"
-              className={`ide-pane-btn ${showNav ? 'active' : ''}`}
-              aria-label="切换左侧资产栏"
-              title="展开或折叠左侧资产列表 (⌘\)"
-              onClick={() => setShowNav((v) => !v)}
-            >
-              <PanelLeft size={14} />
-            </button>
-            {appMode === 'edit' && (
-              <button
-                type="button"
-                className={`ide-pane-btn ${showBottom ? 'active' : ''}`}
-                aria-label="切换底部时间线"
-                title="展开或折叠底部时间线面板 (⌘J)"
-                onClick={() => setShowBottom((v) => !v)}
-              >
-                <PanelBottom size={14} />
-              </button>
-            )}
-            <button
-              type="button"
-              className={`ide-pane-btn ${showRight ? 'active' : ''}`}
-              aria-label="切换右侧协作栏"
-              title="展开或折叠右侧 Agent / 属性面板"
-              onClick={() => setShowRight((v) => !v)}
-            >
-              <PanelRight size={14} />
-            </button>
-            {appMode === 'edit' && (
-              <div className="layout-preset-anchor">
-                <button
-                  type="button"
-                  className={`ide-pane-btn ${layoutMenuOpen ? 'active' : ''}`}
-                  aria-label="切换工作区布局预设"
-                  aria-expanded={layoutMenuOpen}
-                  title="快速切换布局预设（看画面 / 精剪 / 协作）"
-                  onClick={() => setLayoutMenuOpen((v) => !v)}
-                >
-                  <LayoutGrid size={13} />
-                </button>
-                {layoutMenuOpen && (
-                  <div className="layout-preset-popover" role="menu" aria-label="工作区布局预设">
-                    {WORKSPACE_LAYOUT_PRESETS.map((preset) => {
-                      const activePreset = detectActiveLayoutPreset({
-                        showNav,
-                        showBottom,
-                        showRight,
-                        rightTab: right,
-                      });
-                      const isActive = activePreset === preset.id;
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={isActive}
-                          className={isActive ? 'active' : ''}
-                          onClick={() => applyLayoutPreset(preset.id)}
-                        >
-                          <span className="layout-preset-check">{isActive && <Check size={12} />}</span>
-                          <span className="layout-preset-copy">
-                            <b>{preset.name}</b>
-                            <small>{preset.description}</small>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          <IconButton label="快速命令与搜索 ⌘K" onClick={() => openDialog('command')}>
-            <Search size={14} />
-          </IconButton>
-          <IconButton label="设置 ⌘," onClick={() => openSettings()}>
-            <SettingsIcon size={14} />
-          </IconButton>
-
-          <span className="titlebar-divider" />
-
-          <IconButton
-            label="后台作业"
-            active={jobsOpen}
-            className={runningJob ? 'jobs-active-glow' : ''}
-            onClick={() => setJobsOpen((v) => !v)}
-          >
-            {runningJob ? <Spinner /> : <Clock3 size={14} />}
-          </IconButton>
-          <button className="export-button" onClick={() => setDialog('export')}>
-            导出
-          </button>
-        </div>
-      </header>
+      <WorkbenchTitlebar
+        project={project}
+        projects={projects}
+        sequence={sequence}
+        appMode={appMode}
+        showBrief={showBrief}
+        showNav={showNav}
+        showBottom={showBottom}
+        showRight={showRight}
+        rightTab={right}
+        offlineCount={offlineCount}
+        projectMenuOpen={projectMenuOpen}
+        setProjectMenuOpen={setProjectMenuOpen}
+        showStageFork={showStageFork}
+        setShowStageFork={setShowStageFork}
+        stageForkName={stageForkName}
+        setStageForkName={setStageForkName}
+        stageForkAspect={stageForkAspect}
+        setStageForkAspect={setStageForkAspect}
+        layoutMenuOpen={layoutMenuOpen}
+        setLayoutMenuOpen={setLayoutMenuOpen}
+        jobsOpen={jobsOpen}
+        setJobsOpen={setJobsOpen}
+        runningJob={Boolean(runningJob)}
+        onNewProject={() => openDialog('new-project')}
+        onOpenProject={(path) => {
+          void work(path ? '切换工程' : '打开工程', async () => {
+            const e = await api<ProjectEnvelope | null>('project.open', path ? { path } : undefined);
+            if (e) await switchProject(e);
+          });
+        }}
+        onToggleBrief={() => {
+          setBriefDraft(project.brief);
+          setShowBrief((v) => !v);
+        }}
+        onChangeSequence={changeSequence}
+        onForkSubmit={async (e) => {
+          e.preventDefault();
+          const newId = uid('seq');
+          const bName =
+            stageForkName.trim() ||
+            (stageForkAspect === 'portrait'
+              ? '竖屏 9:16'
+              : stageForkAspect === 'square'
+                ? '方形 1:1'
+                : `${sequence.name}-试剪${project.sequences.length}`);
+          const wantPortrait = stageForkAspect === 'portrait' || /9\s*[:：]\s*16|竖屏/.test(bName);
+          const wantSquare = stageForkAspect === 'square' || /1\s*[:：]\s*1|方形/.test(bName);
+          if (wantPortrait || wantSquare) {
+            const targetW = 1080;
+            const targetH = wantPortrait ? 1920 : 1080;
+            await work(`智能重排画幅「${bName}」`, async () => {
+              const res = await api<{
+                envelope: ProjectEnvelope;
+                sequenceId: string;
+                focalCount: number;
+                provider: string;
+              }>('system1.autoReframeBranch', {
+                sequenceId: sequence.id,
+                newSequenceId: newId,
+                branchName: bName,
+                width: targetW,
+                height: targetH,
+              });
+              accept(res.envelope);
+              notify(
+                `已派生 ${targetW}×${targetH} 智能重排分支「${bName}」${res.focalCount > 0 ? `（${res.provider} 已锁 ${res.focalCount} 镜主体焦点）` : '（本地免费构图 + 字幕安全区已适配）'}`,
+              );
+            });
+          } else {
+            await edit(`派生平行分支「${bName}」`, [
+              {
+                type: 'forkSequenceBranch',
+                sourceSequenceId: sequence.id,
+                newSequenceId: newId,
+                branchName: bName,
+              },
+            ]);
+          }
+          setStageForkName('');
+          setStageForkAspect('original');
+          setShowStageFork(false);
+          changeSequence(newId);
+        }}
+        onEdit={(name, ops) => edit(name, ops).then(() => {})}
+        onOpenVersions={() => setDialog('versions')}
+        onOpenNav={() => setShowNav(true)}
+        onSwitchMode={switchMode}
+        onToggleNav={() => setShowNav((v) => !v)}
+        onToggleBottom={() => setShowBottom((v) => !v)}
+        onToggleRight={() => setShowRight((v) => !v)}
+        onApplyLayoutPreset={applyLayoutPreset}
+        onOpenCommand={() => openDialog('command')}
+        onOpenSettings={() => openSettings()}
+        onOpenExport={() => setDialog('export')}
+      />
 
       {/* Collapsible Left Asset & Shot Explorer (shared across Create & Edit!) */}
       {showNav && (
@@ -2653,6 +2384,7 @@ export function App() {
                   pause();
                   setSpatialStudio(t);
                 }}
+                onOpenQuickSetup={() => openSettings('quickstart')}
                 onAskAgentForShot={(shotClip, draftPrompt) => {
                   setScope(clone(shotClip));
                   setStrictScope(true);

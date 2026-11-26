@@ -63,7 +63,7 @@ export class McpClientManager {
 
   constructor(
     private settings: SettingsStore,
-    private appVersion = '0.4.0',
+    private appVersion = '0.6.0',
   ) {}
 
   private fingerprint(c: McpServerConfig): string {

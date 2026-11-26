@@ -20,7 +20,9 @@ const require = createRequire(import.meta.url);
 const { _electron: electron } = require('playwright');
 
 const root = resolve('.');
-const packagedExec = resolve(root, 'release/0.4/mac-arm64/CoCraft.app/Contents/MacOS/CoCraft');
+const packagedExec =
+  process.env.COCRAFT_PACKAGED_EXECUTABLE ||
+  resolve(root, 'release/0.6/mac-arm64/CoCraft.app/Contents/MacOS/CoCraft');
 const mcpScript = resolve(root, 'scripts/cocraft-mcp.mjs');
 const dataDir = await mkdtemp(join(tmpdir(), 'cocraft-mcp-smoke-'));
 const discoveryPath = join(dataDir, 'mcp-bridge.json');
@@ -197,8 +199,9 @@ export default function Badge() {
   // 8. Verify Settings UI renders MCP toggle & status accurately
   await page.getByLabel('设置').click();
   await page.locator('.settings-shell').waitFor({ state: 'visible' });
+  await page.locator('.settings-page', { hasText: `127.0.0.1:${meta.port}` }).waitFor({ state: 'visible', timeout: 5000 });
   const mcpStatusText = await page.locator('.settings-page').innerText();
-  assert.ok(mcpStatusText.includes('本地 MCP 服务') && mcpStatusText.includes(`127.0.0.1:${meta.port}`), 'Settings UI reflects running MCP bridge port');
+  assert.ok(mcpStatusText.includes('本地 MCP') && mcpStatusText.includes(`127.0.0.1:${meta.port}`), 'Settings UI reflects running MCP bridge port');
   console.log('✓ 7. Settings UI displays live MCP status & one-click copy config');
 
   console.log('ALL COCRAFT BUILT-IN MCP SERVER SMOKE CHECKS PASSED (7/7)!');

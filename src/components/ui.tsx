@@ -51,7 +51,7 @@ export function Modal({
     const preferred =
       ref.current?.querySelector<HTMLElement>('input:not(:disabled),textarea:not(:disabled),select:not(:disabled)') ||
       ref.current?.querySelector<HTMLElement>('button:not(:disabled)');
-    preferred?.focus();
+    preferred?.focus({ preventScroll: true });
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
       if (e.key === 'Tab') {

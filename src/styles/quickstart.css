@@ -1,0 +1,450 @@
+/* CoCraft v0.6 Quickstart 1-Min Setup Wizard & 3-Min First-Film Starter */
+
+/* ── 3-Min First-Film Starter Guide on Empty Creation Canvas ── */
+.cc-empty-hero.cc-starter-v06 {
+  width: min(860px, calc(100% - 48px));
+  max-width: 860px;
+}
+
+.cc-starter-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 3px 11px;
+  margin-bottom: 10px;
+}
+
+.cc-engine-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px auto 16px;
+  padding: 9px 12px 9px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(10px);
+  text-align: left;
+}
+
+.cc-engine-banner.setup {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+
+.cc-engine-banner-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+  min-width: 0;
+}
+
+.cc-engine-banner-copy svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.cc-engine-banner.ready .cc-engine-banner-copy svg {
+  color: var(--green);
+}
+
+.cc-engine-banner.setup .cc-engine-banner-copy svg {
+  color: var(--accent-strong);
+}
+
+.cc-engine-banner-copy strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.cc-engine-banner-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.12s ease;
+}
+
+.cc-engine-banner-btn.primary {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+.cc-engine-banner-btn:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+}
+
+.cc-engine-banner-btn.primary:hover {
+  background: var(--text);
+  color: var(--bg);
+  opacity: 0.92;
+}
+
+.cc-starter-grid.cc-starter-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .cc-starter-grid.cc-starter-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.cc-starter-card.featured {
+  border-color: color-mix(in srgb, var(--text) 34%, var(--line));
+  background: color-mix(in srgb, var(--raised) 88%, var(--accent) 12%);
+}
+
+.cc-starter-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--bg);
+  letter-spacing: 0.01em;
+}
+
+.cc-starter-foot-links {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.cc-starter-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cc-starter-link:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.cc-starter-dot {
+  opacity: 0.45;
+}
+
+/* ── Settings -> 1-Minute Quickstart Setup Pane ── */
+.qs-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.qs-step {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qs-step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.qs-step-num {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--text);
+  color: var(--bg);
+  margin-top: 1px;
+}
+
+.qs-step-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.qs-step-head p {
+  margin: 1px 0 0;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.qs-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.qs-profile-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.qs-profile-card:hover {
+  border-color: color-mix(in srgb, var(--text) 34%, var(--line));
+  background: var(--raised);
+}
+
+.qs-profile-card.active {
+  border-color: var(--text);
+  background: color-mix(in srgb, var(--raised) 86%, var(--accent) 14%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 24%, transparent);
+}
+
+.qs-profile-top {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.qs-profile-top b {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.qs-profile-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--well);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.qs-profile-badge.connected {
+  background: color-mix(in srgb, var(--green) 18%, transparent);
+  border-color: color-mix(in srgb, var(--green) 48%, transparent);
+  color: var(--text);
+}
+
+.qs-profile-card p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+
+.qs-cap-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 1px;
+}
+
+.qs-cap-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--well);
+  border: 1px solid var(--line-soft);
+  color: var(--dim);
+}
+
+.qs-form-box {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.qs-form-row-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.qs-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11.5px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.qs-collapse-toggle:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.qs-overwrite-check {
+  font-size: 11.5px;
+  margin: 0;
+}
+
+.qs-preview-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.qs-preview-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.qs-preview-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.qs-route-pill {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--well);
+  border: 1px solid var(--line-soft);
+  color: var(--dim);
+}
+
+.qs-route-pill b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.qs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qs-actions-spacer {
+  flex: 1;
+}
+
+.qs-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.qs-status-card.verified {
+  border-color: color-mix(in srgb, var(--green) 52%, var(--line));
+  background: color-mix(in srgb, var(--green) 10%, var(--panel));
+}
+
+.qs-status-card.saved-only {
+  border-color: color-mix(in srgb, var(--text) 28%, var(--line));
+}
+
+.qs-status-card.error {
+  border-color: color-mix(in srgb, #e5534b 54%, var(--line));
+  background: color-mix(in srgb, #e5534b 10%, var(--panel));
+}
+
+.qs-status-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.qs-status-card.verified .qs-status-head svg {
+  color: var(--green);
+}
+
+.qs-status-card.error .qs-status-head svg {
+  color: #e5534b;
+}
+
+.qs-status-card p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.qs-status-uses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.qs-status-uses span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.qs-status-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+}

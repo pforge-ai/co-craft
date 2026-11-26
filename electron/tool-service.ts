@@ -1015,7 +1015,7 @@ export class CoCraftToolService {
       case 'status': {
         const p = await target.project();
         return {
-          appVersion: this.deps.appVersion || '0.4.0',
+          appVersion: this.deps.appVersion || '0.6.0',
           mcpBridge: this.deps.getMcpStatus?.(),
           activeProject: {
             id: p.id,

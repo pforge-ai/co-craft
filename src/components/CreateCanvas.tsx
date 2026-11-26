@@ -88,8 +88,12 @@ import {
   type PortSide,
 } from './CanvasWiresLayer';
 import { CanvasAnimaticModal } from './canvas/CanvasAnimaticModal';
+import { CanvasAssetCard } from './canvas/CanvasAssetCard';
+import { CanvasComponentCard } from './canvas/CanvasComponentCard';
+import { CanvasContextMenu, CanvasSubjectModal } from './canvas/CanvasContextMenu';
 import { CanvasDropMenu, type CanvasDropMenuState } from './canvas/CanvasDropMenu';
 import { CanvasForkPopover, type ForkSourceTarget } from './canvas/CanvasForkPopover';
+import { CanvasFramesLayer } from './canvas/CanvasFramesLayer';
 import {
   CanvasGeneratorNodeCard,
   GENERATOR_ACTION_META,
@@ -100,7 +104,9 @@ import { CanvasLeftToolbar } from './canvas/CanvasLeftToolbar';
 import { CanvasMultiBar } from './canvas/CanvasMultiBar';
 import { CanvasOmnibar, type OmnibarSlashAction } from './canvas/CanvasOmnibar';
 import { CanvasShotCard } from './canvas/CanvasShotCard';
+import { CanvasStarterGuide } from './canvas/CanvasStarterGuide';
 import { CanvasTopHud, type CanvasAssetFilter } from './canvas/CanvasTopHud';
+import { CanvasVaultCard } from './canvas/CanvasVaultCard';
 import {
   collectVisualSelection,
   resolveShotGenContextFull,
@@ -246,6 +252,7 @@ interface CreateCanvasProps {
     placement?: Pt;
   }) => Promise<{ asset?: import('../core/types').Asset; captured?: { pass: string; asset: import('../core/types').Asset }[] } | undefined>;
   onOpenSpatialDirector?: (target: SpatialDirectorTarget) => void;
+  onOpenQuickSetup?: () => void;
 }
 
 export function CreateCanvas({
@@ -292,6 +299,7 @@ export function CreateCanvas({
   onCaptureSpatialPair,
   onCaptureSpatialReference,
   onOpenSpatialDirector,
+  onOpenQuickSetup,
 }: CreateCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const omnibarInputRef = useRef<HTMLTextAreaElement>(null);
@@ -1583,7 +1591,8 @@ export function CreateCanvas({
     extraProps?: Record<string, unknown>,
     derivedFrom?: VaultItem['derivedFrom'],
     placement?: { x: number; y: number },
-  ) {
+    openRigPopover = true,
+  ): Promise<VaultItem> {
     setAddMenuOpen(false);
     const def = getPreset(presetId);
     const isThree = presetId === 'spatial-stage' || presetId === 'teardown-3d';
@@ -1614,7 +1623,8 @@ export function CreateCanvas({
     }
     await onEdit(`新建画布节点「${label}」`, ops);
     setSelectedNodeIds([`ent:${item.id}`]);
-    setRigPopoverFor(item.id);
+    if (openRigPopover) setRigPopoverFor(item.id);
+    return item;
   }
 
   async function createSpatialStageFromAssets(
@@ -3330,307 +3340,77 @@ export function CreateCanvas({
 
       {/* Right-Click TapNow Context Menu */}
       {contextMenu && (
-        <div
-          className="cc-popover cc-tap-menu cc-context-menu"
-          style={{ left: contextMenu.clientX, top: contextMenu.clientY }}
-          role="menu"
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          {contextMenu.nodeKey || selectedNodeIds.length > 0 ? (
-            <>
-              <div className="cc-menu-group">
-                {selectedNodeIds.length > 1 ? `已选 ${selectedNodeIds.length} 个节点` : '节点操作'}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const targets = selectedNodeIds.length ? selectedNodeIds : contextMenu.nodeKey ? [contextMenu.nodeKey] : [];
-                  const refs = collectRefsFromNodeKeys(targets);
-                  setContextMenu(null);
-                  if (onAddRefsToChat && refs.length) onAddRefsToChat(refs, true);
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <AtSign size={13} /> 添加到对话
-                </span>
-                <kbd>@</kbd>
-              </button>
-              {selectedNodeIds.length >= 2 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setContextMenu(null);
-                    void createGroupFromNodeKeys(selectedNodeIds);
-                  }}
-                >
-                  <span className="cc-menu-item-label">
-                    <Group size={13} /> 成组归类
-                  </span>
-                  <kbd>⌘G</kbd>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  const targets = selectedNodeIds.length ? selectedNodeIds : contextMenu.nodeKey ? [contextMenu.nodeKey] : [];
-                  setContextMenu(null);
-                  void packNodeKeys(targets, false);
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <Package size={13} /> 打成素材包存入个人库
-                </span>
-              </button>
-              {onExportMaterialPack && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const targets = selectedNodeIds.length ? selectedNodeIds : contextMenu.nodeKey ? [contextMenu.nodeKey] : [];
-                    setContextMenu(null);
-                    void packNodeKeys(targets, true);
-                  }}
-                >
-                  <span className="cc-menu-item-label">
-                    <Download size={13} /> 导出离线素材包…
-                  </span>
-                </button>
-              )}
-              <div className="cc-menu-divider" />
-              <button
-                type="button"
-                className="danger"
-                onClick={() => {
-                  const targets = selectedNodeIds.length ? selectedNodeIds : contextMenu.nodeKey ? [contextMenu.nodeKey] : [];
-                  setContextMenu(null);
-                  void deleteNodeKeysFromProject(targets);
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <Trash2 size={13} /> 删除资产 / 节点
-                </span>
-                <kbd>⌫</kbd>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setContextMenu(null);
-                  clearSelection();
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <X size={13} /> 取消选中
-                </span>
-                <kbd>Esc</kbd>
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setContextMenu(null);
-                  onImportMedia();
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <Upload size={13} /> 上传素材
-                </span>
-                <kbd>U</kbd>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const wx = Math.round((contextMenu.clientX - panRef.current.x) / zoomRef.current);
-                  const wy = Math.round((contextMenu.clientY - panRef.current.y) / zoomRef.current);
-                  setContextMenu(null);
-                  void createTextNode('', { x: wx, y: wy });
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <FileText size={13} /> 添加文本节点
-                </span>
-                <kbd>T</kbd>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setContextMenu(null);
-                  setSubjectModal({ mode: 'new' });
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <UserCheck size={13} /> 添加角色 / 设定
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setContextMenu(null);
-                  void appendShotFromRigOrBlank();
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <Clapperboard size={13} /> 添加分镜镜头
-                </span>
-              </button>
-              <div className="cc-menu-divider" />
-              {onUndo && (
-                <button
-                  type="button"
-                  disabled={!canUndo}
-                  onClick={() => {
-                    setContextMenu(null);
-                    onUndo();
-                  }}
-                >
-                  <span className="cc-menu-item-label">
-                    <Undo2 size={13} /> 撤销
-                  </span>
-                  <kbd>⌘Z</kbd>
-                </button>
-              )}
-              {onRedo && (
-                <button
-                  type="button"
-                  disabled={!canRedo}
-                  onClick={() => {
-                    setContextMenu(null);
-                    onRedo();
-                  }}
-                >
-                  <span className="cc-menu-item-label">
-                    <Redo2 size={13} /> 重做
-                  </span>
-                  <kbd>⇧⌘Z</kbd>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={async () => {
-                  const wx = Math.round((contextMenu.clientX - panRef.current.x) / zoomRef.current);
-                  const wy = Math.round((contextMenu.clientY - panRef.current.y) / zoomRef.current);
-                  setContextMenu(null);
-                  try {
-                    const txt = await navigator.clipboard.readText();
-                    await createTextNode(txt || '', { x: wx, y: wy });
-                  } catch {
-                    await createTextNode('', { x: wx, y: wy });
-                  }
-                }}
-              >
-                <span className="cc-menu-item-label">
-                  <ClipboardPaste size={13} /> 粘贴为文本节点
-                </span>
-                <kbd>⌘V</kbd>
-              </button>
-            </>
-          )}
-        </div>
+        <CanvasContextMenu
+          contextMenu={contextMenu}
+          selectedNodeIds={selectedNodeIds}
+          pan={panRef.current}
+          zoom={zoomRef.current}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          collectRefsFromNodeKeys={collectRefsFromNodeKeys}
+          onAddRefsToChat={onAddRefsToChat}
+          onCreateGroup={createGroupFromNodeKeys}
+          onPackNodes={packNodeKeys}
+          onExportMaterialPack={onExportMaterialPack}
+          onDeleteNodes={deleteNodeKeysFromProject}
+          onClearSelection={clearSelection}
+          onImportMedia={onImportMedia}
+          onCreateTextNode={createTextNode}
+          onOpenNewSubject={() => setSubjectModal({ mode: 'new' })}
+          onAppendShot={() => appendShotFromRigOrBlank()}
+          onUndo={onUndo}
+          onRedo={onRedo}
+          onClose={() => setContextMenu(null)}
+        />
       )}
 
       {/* Subject / Variant Floating Popover */}
       {subjectModal && (
-        <form
-          className="cc-popover cc-modal-card"
-          onPointerDown={(e) => e.stopPropagation()}
-          onSubmit={(e) => void submitSubjectModal(e)}
-        >
-          <div className="cc-card-head">
-            <b>{subjectModal.mode === 'variant' ? '新增主体状态分支' : '新建角色 / 产品 / 场景设定'}</b>
-            <button type="button" onClick={() => setSubjectModal(null)} aria-label="关闭">
-              <X size={13} />
-            </button>
-          </div>
-          {subjectModal.mode === 'new' && (
-            <div className="cc-grid-2">
-              <select value={subjRole} onChange={(e) => setSubjRole(e.target.value as any)} aria-label="主体角色类型">
-                <option value="character">角色形象</option>
-                <option value="product">产品主体</option>
-                <option value="environment">场景环境</option>
-              </select>
-              <input
-                required
-                autoFocus
-                aria-label="主体名称"
-                placeholder="名称（如：林夏）"
-                value={subjName}
-                onChange={(e) => setSubjName(e.target.value)}
-              />
-            </div>
-          )}
-          <div className="cc-grid-2">
-            <input
-              aria-label="状态分支名称"
-              placeholder="状态（如：雨夜风衣态）"
-              value={subjVar}
-              onChange={(e) => setSubjVar(e.target.value)}
-            />
-            <select value={subjRef} onChange={(e) => setSubjRef(e.target.value)} aria-label="绑定参考图片">
-              <option value="">无参考图（仅特征词）</option>
-              {project.assets
-                .filter((a) => a.kind === 'image')
-                .map((img) => (
-                  <option key={img.id} value={img.id}>
-                    参考图：{img.name}
-                  </option>
-                ))}
-            </select>
-          </div>
-          <textarea
-            rows={2}
-            aria-label="外观特征锁定描述"
-            placeholder="特征锚点词（连线绑定到分镜后，AI 生成候选时自动带入）…"
-            value={subjDesc}
-            onChange={(e) => setSubjDesc(e.target.value)}
-          />
-          <div className="cc-card-foot">
-            <button type="submit" className="button tiny primary">
-              保存节点
-            </button>
-          </div>
-        </form>
+        <CanvasSubjectModal
+          modal={subjectModal}
+          imageAssets={project.assets.filter((a) => a.kind === 'image')}
+          subjRole={subjRole}
+          subjName={subjName}
+          subjVar={subjVar}
+          subjRef={subjRef}
+          subjDesc={subjDesc}
+          onChangeRole={setSubjRole}
+          onChangeName={setSubjName}
+          onChangeVar={setSubjVar}
+          onChangeRef={setSubjRef}
+          onChangeDesc={setSubjDesc}
+          onSubmit={submitSubjectModal}
+          onClose={() => setSubjectModal(null)}
+        />
       )}
 
-      {/* Clean Starter Guide on Empty Canvas */}
+      {/* Clean Starter Guide on Empty Canvas (3-Min First-Film Mainlines) */}
       {isEmpty && !subjectModal && (
-        <div className="cc-empty-hero">
-          <h2>以文本、参考素材与镜头节点自由串联创作</h2>
-          <p>点击下方 ( + ) 添加文本或媒体，双击空白处新建文本节点，拖拽空白框选可多选编组与打包。</p>
-          <div className="cc-starter-grid">
-            <button type="button" className="cc-starter-card" onClick={() => void createTextNode('')}>
-              <div className="cc-starter-head">
-                <FileText size={15} />
-                <span className="cc-starter-step">T</span>
-              </div>
-              <b>新建文本脚本节点</b>
-              <small>写下分镜脚本，拖线拆解成片镜头或生成画面</small>
-            </button>
-            <button
-              type="button"
-              className="cc-starter-card"
-              onClick={() => setSubjectModal({ mode: 'new' })}
-            >
-              <div className="cc-starter-head">
-                <UserCheck size={15} />
-                <span className="cc-starter-step">S</span>
-              </div>
-              <b>新建角色 / 设定</b>
-              <small>锚定角色外观、产品形态与多状态参考图</small>
-            </button>
-            <button
-              type="button"
-              className="cc-starter-card"
-              onClick={() => void addQuickCanvasRigNode('spatial-stage', 'environment', '统一空间摄影棚')}
-            >
-              <div className="cc-starter-head">
-                <Box size={15} />
-                <span className="cc-starter-step">C</span>
-              </div>
-              <b>统一空间摄影棚</b>
-              <small>2.5D 立体漫剧、3D 白模多机位与深度图预演</small>
-            </button>
-          </div>
-        </div>
+        <CanvasStarterGuide
+          settings={settings}
+          onStartSpatialDirector={() => {
+            void addQuickCanvasRigNode(
+              'spatial-stage',
+              'environment',
+              '3D 导演摄影棚',
+              { sceneType: 'previs-blocking', environmentPreset: 'rooftop-night', actorAction: 'walk', actorPath: 'approach' },
+              undefined,
+              undefined,
+              !onOpenSpatialDirector,
+            ).then((item) => {
+              if (onOpenSpatialDirector) {
+                onOpenSpatialDirector({ kind: 'vault', vaultItemId: item.id });
+              }
+            });
+          }}
+          onCreateScriptNode={() => void createTextNode('')}
+          onStartCodeMotion={() =>
+            void addQuickCanvasRigNode('whiteboard-sketch', 'whiteboard', '可编程科普图解')
+          }
+          onImportAndEdit={onImportMedia}
+          onCreateSubject={() => setSubjectModal({ mode: 'new' })}
+          onOpenQuickSetup={onOpenQuickSetup}
+        />
       )}
 
       {/* Transformed Infinite World Layer */}
@@ -3640,271 +3420,74 @@ export function CreateCanvas({
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
         }}
       >
-        {/* Spatial Canvas Groups Layer (expanded frames + collapsed card decks) */}
-        {groupBoxes.map(({ grp, x, y, w, h }) => {
-          const isEditingName = editingGroupId === grp.id;
-          return (
-            <div
-              key={grp.id}
-              className="cc-group-frame"
-              style={{ left: x, top: y, width: w, height: h }}
-            >
-              <div
-                className="cc-group-header"
-                onPointerDown={(e) => {
-                  if ((e.target as HTMLElement).closest('button, input')) return;
-                  e.stopPropagation();
-                  const now = Date.now();
-                  if (lastGroupDownRef.current?.id === grp.id && now - lastGroupDownRef.current.time < 380) {
-                    e.preventDefault();
-                    lastGroupDownRef.current = null;
-                    setEditingGroupId(grp.id);
-                    setGroupNameDraft(grp.name);
-                    return;
+        {/* Spatial Canvas Groups & Semantic Collapsible Zone Frames */}
+        <CanvasFramesLayer
+          groupBoxes={groupBoxes}
+          collapsedGroups={collapsedGroups}
+          semanticZoneMeta={semanticZoneMeta}
+          editingGroupId={editingGroupId}
+          groupNameDraft={groupNameDraft}
+          onGroupHeaderPointerDown={(e, grp) => {
+            if ((e.target as HTMLElement).closest('button, input')) return;
+            e.stopPropagation();
+            const now = Date.now();
+            if (lastGroupDownRef.current?.id === grp.id && now - lastGroupDownRef.current.time < 380) {
+              e.preventDefault();
+              lastGroupDownRef.current = null;
+              setEditingGroupId(grp.id);
+              setGroupNameDraft(grp.name);
+              return;
+            }
+            lastGroupDownRef.current = { id: grp.id, time: now };
+            const origMap = new Map<string, Pt>();
+            for (const id of grp.nodeIds) {
+              if (layoutRef.current[id]) origMap.set(id, { ...layoutRef.current[id] });
+            }
+            const sx = e.clientX;
+            const sy = e.clientY;
+            startManagedDrag(
+              pointerDrag(
+                e,
+                (mx, my) => {
+                  const dx = Math.round((mx - sx) / zoomRef.current);
+                  const dy = Math.round((my - sy) / zoomRef.current);
+                  const next = { ...nodePositionsRef.current };
+                  for (const [k, op] of origMap) next[k] = { x: op.x + dx, y: op.y + dy };
+                  nodePositionsRef.current = next;
+                  setNodePositions(next);
+                },
+                (mx, my) => {
+                  if (mx !== sx || my !== sy) {
+                    void onEdit('移动画布分组', [
+                      { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
+                    ]);
                   }
-                  lastGroupDownRef.current = { id: grp.id, time: now };
-                  const origMap = new Map<string, Pt>();
-                  for (const id of grp.nodeIds) {
-                    if (layoutRef.current[id]) origMap.set(id, { ...layoutRef.current[id] });
-                  }
-                  const sx = e.clientX;
-                  const sy = e.clientY;
-                  startManagedDrag(
-                    pointerDrag(
-                      e,
-                      (mx, my) => {
-                        const dx = Math.round((mx - sx) / zoomRef.current);
-                        const dy = Math.round((my - sy) / zoomRef.current);
-                        const next = { ...nodePositionsRef.current };
-                        for (const [k, op] of origMap) next[k] = { x: op.x + dx, y: op.y + dy };
-                        nodePositionsRef.current = next;
-                        setNodePositions(next);
-                      },
-                      (mx, my) => {
-                        if (mx !== sx || my !== sy) {
-                          void onEdit('移动画布分组', [
-                            { type: 'updateProject', changes: { canvasLayout: nodePositionsRef.current } },
-                          ]);
-                        }
-                      },
-                      'grabbing',
-                    ),
-                  );
-                }}
-              >
-                <button
-                  type="button"
-                  className="cc-group-fold-btn"
-                  title="折叠分组为紧凑卡叠"
-                  aria-label={`折叠分组 ${grp.name}`}
-                  onClick={() => void toggleCollapseGroup(grp.id)}
-                >
-                  <ChevronDown size={11} />
-                </button>
-                <Group size={11} />
-                {isEditingName ? (
-                  <input
-                    className="cc-group-rename-input"
-                    aria-label="重命名分组"
-                    autoFocus
-                    value={groupNameDraft}
-                    onChange={(e) => setGroupNameDraft(e.target.value)}
-                    onBlur={() => void renameCanvasGroup(grp.id, groupNameDraft)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void renameCanvasGroup(grp.id, groupNameDraft);
-                      if (e.key === 'Escape') setEditingGroupId(null);
-                    }}
-                  />
-                ) : (
-                  <span
-                    title="双击重命名分组"
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      setEditingGroupId(grp.id);
-                      setGroupNameDraft(grp.name);
-                    }}
-                  >
-                    {grp.name}
-                  </span>
-                )}
-                <div className="cc-group-acts">
-                  <button
-                    type="button"
-                    title="将整组节点添加到对话"
-                    onClick={() => {
-                      const refs = collectRefsFromNodeKeys(grp.nodeIds);
-                      if (onAddRefsToChat && refs.length) onAddRefsToChat(refs, true);
-                    }}
-                  >
-                    <AtSign size={10} />
-                  </button>
-                  <button
-                    type="button"
-                    title="整组打成素材包"
-                    onClick={() => void packNodeKeys(grp.nodeIds, false)}
-                  >
-                    <Package size={10} />
-                  </button>
-                  <button
-                    type="button"
-                    title="解散此分组"
-                    onClick={() =>
-                      void onEdit('解散分组', [
-                        {
-                          type: 'updateProject',
-                          changes: { canvasGroups: (project.canvasGroups || []).filter((g) => g.id !== grp.id) },
-                        },
-                      ])
-                    }
-                  >
-                    <X size={10} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-
-        {collapsedGroups.map(({ grp, x, y, previews }) => (
-          <div
-            key={`stack-${grp.id}`}
-            className="cc-group-stack"
-            style={{ left: x, top: y }}
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            <div className="cc-group-stack-layers" onClick={() => void toggleCollapseGroup(grp.id)}>
-              <div className="cc-stack-back layer-2" />
-              <div className="cc-stack-back layer-1" />
-              <div className="cc-stack-front">
-                {previews.length > 0 ? (
-                  <div className={`cc-stack-mosaic count-${previews.length}`}>
-                    {previews.map((src, i) => (
-                      <img key={i} src={src} alt="" draggable={false} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="cc-stack-empty">
-                    <Group size={20} />
-                  </div>
-                )}
-                <span className="cc-stack-badge">{grp.nodeIds.length} 项</span>
-              </div>
-            </div>
-            <div className="cc-group-stack-foot">
-              <button
-                type="button"
-                className="cc-stack-expand-btn"
-                title="展开此分组"
-                aria-label={`展开分组 ${grp.name}`}
-                onClick={() => void toggleCollapseGroup(grp.id)}
-              >
-                <ChevronRight size={11} />
-                <b>{grp.name}</b>
-              </button>
-              <div className="cc-group-acts">
-                <button
-                  type="button"
-                  title="将整组节点添加到对话"
-                  onClick={() => {
-                    const refs = collectRefsFromNodeKeys(grp.nodeIds);
-                    if (onAddRefsToChat && refs.length) onAddRefsToChat(refs, true);
-                  }}
-                >
-                  <AtSign size={10} />
-                </button>
-                <button
-                  type="button"
-                  title="整组打成素材包"
-                  onClick={() => void packNodeKeys(grp.nodeIds, false)}
-                >
-                  <Package size={10} />
-                </button>
-                <button
-                  type="button"
-                  title="解散此分组"
-                  onClick={() =>
-                    void onEdit('解散分组', [
-                      {
-                        type: 'updateProject',
-                        changes: { canvasGroups: (project.canvasGroups || []).filter((g) => g.id !== grp.id) },
-                      },
-                    ])
-                  }
-                >
-                  <X size={10} />
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {/* Semantic Collapsible Zone Frames (3-B: 剧本与设定 / 探索工坊 / 成片分镜序列) */}
-        {semanticZoneMeta.map((z) => {
-          if (z.count === 0) return null;
-          if (z.collapsed) {
-            return (
-              <div
-                key={`zone-stack-${z.id}`}
-                className="cc-group-stack cc-zone-stack"
-                style={{ left: z.deckPos.x, top: z.deckPos.y }}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                <div className="cc-group-stack-layers" onClick={() => void toggleSemanticZone(z.id)}>
-                  <div className="cc-stack-back layer-2" />
-                  <div className="cc-stack-back layer-1" />
-                  <div className="cc-stack-front">
-                    {z.previews.length > 0 ? (
-                      <div className={`cc-stack-mosaic count-${z.previews.length}`}>
-                        {z.previews.map((src, i) => (
-                          <img key={i} src={src} alt="" draggable={false} />
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="cc-stack-empty">
-                        <Layers size={20} />
-                      </div>
-                    )}
-                    <span className="cc-stack-badge">{z.count} 项</span>
-                  </div>
-                </div>
-                <div className="cc-group-stack-foot">
-                  <button
-                    type="button"
-                    className="cc-stack-expand-btn"
-                    title={`展开「${z.label}」分区`}
-                    aria-label={`展开分区 ${z.label}`}
-                    onClick={() => void toggleSemanticZone(z.id)}
-                  >
-                    <ChevronRight size={11} />
-                    <b>{z.label}</b>
-                  </button>
-                </div>
-              </div>
+                },
+                'grabbing',
+              ),
             );
+          }}
+          onStartRenameGroup={(grp) => {
+            setEditingGroupId(grp.id);
+            setGroupNameDraft(grp.name);
+          }}
+          onChangeGroupNameDraft={setGroupNameDraft}
+          onCommitRenameGroup={renameCanvasGroup}
+          onCancelRenameGroup={() => setEditingGroupId(null)}
+          onToggleCollapseGroup={toggleCollapseGroup}
+          onDissolveGroup={(groupId) =>
+            onEdit('解散分组', [
+              {
+                type: 'updateProject',
+                changes: { canvasGroups: (project.canvasGroups || []).filter((g) => g.id !== groupId) },
+              },
+            ])
           }
-          if (!z.frame) return null;
-          return (
-            <div
-              key={`zone-frame-${z.id}`}
-              className={`cc-zone-frame zone-${z.id}`}
-              style={{ left: z.frame.x, top: z.frame.y, width: z.frame.w, height: z.frame.h }}
-            >
-              <div className="cc-zone-header" onPointerDown={(e) => e.stopPropagation()}>
-                <button
-                  type="button"
-                  className="cc-zone-fold-btn"
-                  title={`折叠「${z.label}」为紧凑卡叠`}
-                  aria-label={`折叠分区 ${z.label}`}
-                  onClick={() => void toggleSemanticZone(z.id)}
-                >
-                  <ChevronDown size={11} />
-                  <span>{z.label}</span>
-                  <small>{z.count}</small>
-                </button>
-              </div>
-            </div>
-          );
-        })}
+          collectRefsFromNodeKeys={collectRefsFromNodeKeys}
+          onAddRefsToChat={onAddRefsToChat}
+          onPackNodes={packNodeKeys}
+          onToggleSemanticZone={toggleSemanticZone}
+        />
 
         {/* 1px Curved Bezier Relationship Wires (Focus Mode Default + 4 Semantic Categories + Trace Spotlight) */}
         <CanvasWiresSvg
@@ -3919,808 +3502,73 @@ export function CreateCanvas({
         {visibleUpstreamEntities.map((ent) => {
           const nodeKey = `ent:${ent.id}`;
           const pos = layout[nodeKey] || { x: 40, y: 44 };
-          const selected = selectedNodeIds.includes(nodeKey);
-          const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
-          const isTextNote = ent.entityKind === 'text';
-          const isCompound = ent.entityKind === 'compound';
-          const isRecipe = ent.subkind === 'recipe' && Boolean(ent.recipe?.workshop);
-          const variants = ent.variants || [];
-          const activeVar =
-            variants.find((v) => v.id === (activeVarByEnt[ent.id] || ent.defaultVariantId)) || variants[0];
-          const refAssetId = activeVar?.assetId || ent.assetId;
-          const refAsset = refAssetId ? project.assets.find((a) => a.id === refAssetId) : undefined;
-          const hasRig = Boolean(ent.rig?.presetId && getPreset(ent.rig.presetId));
-          const deg = wireDegrees.get(nodeKey);
-
           return (
-            <div
+            <CanvasVaultCard
               key={nodeKey}
-              data-node-id={nodeKey}
-              className={`cc-node upstream ${isTextNote ? 'text-note' : ''} ${isCompound ? 'compound' : ''} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''} ${isNodeDimmed(nodeKey) ? 'trace-dimmed' : ''}`}
-              style={{ left: pos.x, top: pos.y }}
-              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
-              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
+              ent={ent}
+              nodeKey={nodeKey}
+              pos={pos}
+              selected={selectedNodeIds.includes(nodeKey)}
+              isPrimarySelected={primarySelectedId === nodeKey && selectedNodeIds.length === 1}
+              isWireTarget={wireHoverKey === nodeKey}
+              isDimmed={isNodeDimmed(nodeKey)}
+              deg={wireDegrees.get(nodeKey)}
+              project={project}
+              sequence={sequence}
+              previewOrigin={previewOrigin}
+              upstreamEntities={upstreamEntities}
+              activeVariantId={activeVarByEnt[ent.id]}
+              textDraft={textDrafts[ent.id]}
+              rigExplodeDraft={rigExplodeDrafts[ent.id]}
+              voicePopoverOpen={voicePopoverFor === ent.id}
+              rigPopoverOpen={rigPopoverFor === ent.id}
+              onHoverChange={(h) => setHoveredNodeKey((k) => (h ? nodeKey : k === nodeKey ? null : k))}
               onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
-            >
-              {isPrimarySelected && (
-                <div
-                  className="cc-node-toolbar"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {isTextNote ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const rawContent = textDrafts[ent.id] ?? ent.textContent ?? '';
-                          const content = rawContent.trim();
-                          if (!content) return;
-                          const dirty = rawContent !== (ent.textContent || '');
-                          const saveOp: EditOperation[] = dirty
-                            ? [
-                                {
-                                  type: 'putVaultItem',
-                                  item: {
-                                    ...clone(ent),
-                                    textContent: rawContent,
-                                    version: ent.version + 1,
-                                    updatedAt: new Date().toISOString(),
-                                  },
-                                },
-                              ]
-                            : [];
-                          const ops = scriptOutlineToShotOperations(
-                            sequence,
-                            content,
-                            {
-                              entityId: ent.id,
-                              version: ent.version + (dirty ? 1 : 0),
-                            },
-                            upstreamEntities,
-                          );
-                          if (ops.length) await onEdit(`从「${ent.name}」拆解分镜`, [...saveOp, ...ops]);
-                        }}
-                      >
-                        <Clapperboard size={12} /> 拆为分镜序列
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onOpenGeneration({ use: 'image', prompt: textDrafts[ent.id] ?? ent.textContent ?? ent.name })
-                        }
-                      >
-                        <Sparkles size={12} /> AI 生图
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onOpenGeneration({ use: 'speech', prompt: textDrafts[ent.id] ?? ent.textContent ?? ent.name })
-                        }
-                      >
-                        <AudioLines size={12} /> AI 配音
-                      </button>
-                    </>
-                  ) : isRecipe ? (
-                    <>
-                      <button
-                        type="button"
-                        title="按此配方一键生成可运行工坊卡（若同时选中新角色/视频/音频则自动接入对应槽位）"
-                        onClick={() => void instantiateWorkshopRecipe(ent, pos)}
-                      >
-                        <Sparkles size={12} /> 套用配方
-                      </button>
-                      <button
-                        type="button"
-                        title="发布配方至跨项目个人库"
-                        onClick={() => void onPublishToLibrary({ itemId: ent.id })}
-                      >
-                        ↑个人库
-                      </button>
-                    </>
-                  ) : isCompound ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const tail = sequence.clips.length
-                            ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
-                            : 0;
-                          const { operations, primaryClipId } = instantiateCompoundVaultItemOperations(
-                            sequence.id,
-                            ent,
-                            tail,
-                            sequence.fps,
-                          );
-                          if (operations.length) {
-                            void onEdit(`置入复合资产「${ent.name}」`, operations).then(() => {
-                              if (primaryClipId) onSelectClip(primaryClipId);
-                            });
-                          }
-                        }}
-                      >
-                        <Plus size={12} /> 放入时间线
-                      </button>
-                      <button
-                        type="button"
-                        title="发布至跨项目个人库"
-                        onClick={() => void onPublishToLibrary({ itemId: ent.id })}
-                      >
-                        ↑个人库
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {ent.rig?.presetId === 'spatial-stage' || ent.rig?.presetId === 'teardown-3d' ? (
-                        <>
-                          {onOpenSpatialDirector && (
-                            <button
-                              type="button"
-                              className="cc-tb-primary"
-                              title="进入独立全屏「3D 导演棚」自由鼠标运镜、调灯光走线与出片"
-                              onClick={() => onOpenSpatialDirector({ kind: 'vault', vaultItemId: ent.id })}
-                            >
-                              <Box size={12} /> 导演棚
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            title="把当前 3D 摄像机运镜、人物动作、走线与环境直接录成真实 MP4 预演视频，并自动连入动作迁移/参考生视频工坊"
-                            onClick={() =>
-                              void bakeSpatialSourceToAiVideo(nodeKey, { x: pos.x + 306, y: pos.y })
-                            }
-                          >
-                            <Clapperboard size={12} /> 录视频→AI生片
-                          </button>
-                          <button
-                            type="button"
-                            title="从当前 3D 空间自动拍下 A机(首帧) 与 B机(尾帧)，直接连入首尾帧生视频工坊"
-                            onClick={() =>
-                              void captureSpatialPairToAiVideo(nodeKey, { x: pos.x + 306, y: pos.y })
-                            }
-                          >
-                            <Box size={12} /> A→B首尾帧
-                          </button>
-                          <button
-                            type="button"
-                            title="用当前同一套 3D 布景一键派生 A主镜 + B过肩反打 + C低仰拍 三镜连续分镜组"
-                            onClick={() => void spawnSpatialMultiCamShots(nodeKey)}
-                          >
-                            <Film size={12} /> 派生3机位
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRigPopoverFor(rigPopoverFor === ent.id ? null : ent.id)}
-                          >
-                            <SlidersHorizontal size={12} /> 导演参数
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onOpenGeneration({
-                                use: 'image',
-                                prompt: `${ent.name}，${activeVar?.promptDelta || ent.promptAnchor || ''}`,
-                                referenceAssetId: refAsset?.kind === 'image' ? refAsset.id : undefined,
-                              })
-                            }
-                          >
-                            <Sparkles size={12} /> AI 生成设定图
-                          </button>
-                          {hasRig ? (
-                            <button
-                              type="button"
-                              onClick={() => setRigPopoverFor(rigPopoverFor === ent.id ? null : ent.id)}
-                            >
-                              <SlidersHorizontal size={12} /> 参数
-                            </button>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSubjVar('');
-                                  setSubjDesc('');
-                                  setSubjectModal({ mode: 'variant', entId: ent.id });
-                                }}
-                              >
-                                <GitBranch size={12} /> +状态
-                              </button>
-                              <button
-                                type="button"
-                                title="为演员/角色绑定专属配音音色（剧本写「角色名：台词」时自动沿用）"
-                                onClick={() =>
-                                  setVoicePopoverFor((prev) => (prev === ent.id ? null : ent.id))
-                                }
-                              >
-                                <AudioLines size={12} /> {ent.voiceProfile?.voice || ent.voiceId ? '声纹✓' : '声纹'}
-                              </button>
-                            </>
-                          )}
-                          <button type="button" onClick={() => void appendShotFromRigOrBlank(undefined, ent)}>
-                            <Plus size={12} /> 派生镜头
-                          </button>
-                        </>
-                      )}
-                      <button
-                        type="button"
-                        title="发布至跨项目个人库"
-                        onClick={() => void onPublishToLibrary({ itemId: ent.id })}
-                      >
-                        ↑个人库
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    title="快速大图预览 (Space)"
-                    aria-label={`预览 ${ent.name}`}
-                    onClick={() => setQuickLookKey(nodeKey)}
-                  >
-                    <Eye size={11} />
-                  </button>
-                  <button
-                    type="button"
-                    title="移出画布（保留工程资产）"
-                    aria-label={`将 ${ent.name} 移出画布`}
-                    onClick={() => void hideNodeKeysFromCanvas([nodeKey])}
-                  >
-                    <EyeOff size={11} />
-                  </button>
-                  <button
-                    type="button"
-                    title="移除节点"
-                    onClick={() =>
-                      void onEdit(`删除「${ent.name}」`, [{ type: 'removeVaultItem', itemId: ent.id }])
-                    }
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                </div>
-              )}
-
-              <button
-                type="button"
-                className="cc-port in"
-                title="拖出或接收连线"
-                aria-label={`${ent.name} 左侧连线端口`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'left')}
-              />
-              {deg && deg.inCount > 0 && (
-                <button
-                  type="button"
-                  className="cc-port-badge in"
-                  title={`有 ${deg.inCount} 个上游关联，点击溯源完整链路`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleTraceNode(nodeKey);
-                  }}
-                >
-                  ← {deg.inCount}
-                </button>
-              )}
-
-              <div className="cc-node-header">
-                {isTextNote ? (
-                  <FileText size={11} />
-                ) : isCompound ? (
-                  <Layers size={11} />
-                ) : hasRig ? (
-                  <Box size={11} />
-                ) : (
-                  <ImageIcon size={11} />
-                )}
-                <span>
-                  {isTextNote
-                    ? ent.name
-                    : isRecipe
-                      ? `配方 · ${ent.name}`
-                      : isCompound
-                        ? `精剪 · ${formatCanvasDisplayName(ent.name, true)}`
-                        : `${ROLE_LABELS[inferAssetRole(ent)]} · ${formatCanvasDisplayName(ent.name)}`}
-                </span>
-                <small>
-                  {isCompound && ent.compound
-                    ? `${(ent.compound.durationFrames / ent.compound.fps).toFixed(1)}s`
-                    : ent.voiceProfile?.voice || ent.voiceId
-                      ? `${ent.voiceProfile?.voice || ent.voiceId} · v${ent.version}`
-                      : `v${ent.version}`}
-                </small>
-              </div>
-
-              <div className="cc-node-card">
-                {isTextNote ? (
-                  <textarea
-                    className="cc-text-node-body"
-                    rows={4}
-                    aria-label="画布文本内容"
-                    placeholder="输入分镜脚本（每行一镜）、创意构思或提示词…"
-                    value={textDrafts[ent.id] ?? ent.textContent ?? ''}
-                    onClick={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onChange={(e) => {
-                      const val = e.currentTarget.value;
-                      setTextDrafts((prev) => ({ ...prev, [ent.id]: val }));
-                    }}
-                    onBlur={(e) => {
-                      const val = e.currentTarget.value;
-                      if (val === (ent.textContent || '')) {
-                        setTextDrafts((prev) => {
-                          if (!(ent.id in prev)) return prev;
-                          const next = { ...prev };
-                          delete next[ent.id];
-                          return next;
-                        });
-                        return;
-                      }
-                      void onEdit(`更新文本「${ent.name}」`, [
-                        {
-                          type: 'putVaultItem',
-                          item: {
-                            ...clone(ent),
-                            textContent: val,
-                            version: ent.version + 1,
-                            updatedAt: new Date().toISOString(),
-                          },
-                        },
-                      ]).finally(() => {
-                        setTextDrafts((prev) => {
-                          if (prev[ent.id] !== val) return prev;
-                          const next = { ...prev };
-                          delete next[ent.id];
-                          return next;
-                        });
-                      });
-                    }}
-                  />
-                ) : isRecipe && ent.recipe?.workshop ? (
-                  <div className="cc-recipe-body">
-                    <div className="cc-recipe-slots">
-                      {ent.recipe.workshop.inputSlots.map((slot, sIdx) => (
-                        <span key={`${slot}-${sIdx}`} className="cc-recipe-slot-pill">
-                          {SLOT_LABELS[slot] || slot}
-                        </span>
-                      ))}
-                      <span className="cc-recipe-slot-pill">
-                        → {(GENERATOR_ACTION_META[ent.recipe.workshop.action] || GENERATOR_ACTION_META['text-to-image']).label}
-                      </span>
-                    </div>
-                    {ent.recipe.workshop.prompt && (
-                      <p className="cc-recipe-prompt">{ent.recipe.workshop.prompt}</p>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      className="cc-node-visual"
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setQuickLookKey(nodeKey);
-                      }}
-                    >
-                      {hasRig ? (
-                        <PresetPreview
-                          presetId={ent.rig!.presetId!}
-                          values={{
-                            ...(ent.rig!.props || {}),
-                            ...(rigExplodeDrafts[ent.id] !== undefined ? { explode: rigExplodeDrafts[ent.id] } : {}),
-                          }}
-                          project={project}
-                          mediaOrigin={previewOrigin}
-                          playing={isPrimarySelected}
-                          thumbnail={!isPrimarySelected && rigExplodeDrafts[ent.id] === undefined}
-                        />
-                      ) : refAsset && !refAsset.offline && refAsset.thumbnail ? (
-                        <img src={mediaUrl(previewOrigin, refAsset.id, true)} alt={ent.name} draggable={false} />
-                      ) : isCompound ? (
-                        <div className="cc-compound-placeholder">
-                          <Layers size={18} />
-                          <small>{ent.compound?.clips.length || 0} 层精剪组合</small>
-                        </div>
-                      ) : (
-                        <div className="cc-anchor-text">
-                          <p>{activeVar?.promptDelta || ent.promptAnchor || ent.description}</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {variants.length > 0 && (
-                      <div className="cc-node-variants">
-                        {variants.map((vr) => (
-                          <button
-                            key={vr.id}
-                            type="button"
-                            className={vr.id === activeVar?.id ? 'active' : ''}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveVarByEnt((s) => ({ ...s, [ent.id]: vr.id }));
-                            }}
-                          >
-                            {vr.name}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-
-              <button
-                type="button"
-                className="cc-port out"
-                title="拖出连线至任意节点或空白画布派生"
-                aria-label={`从 ${ent.name} 拖线`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'right')}
-              />
-              {deg && deg.outCount > 0 && (
-                <button
-                  type="button"
-                  className="cc-port-badge out"
-                  title={`已连向 ${deg.outCount} 个下游节点，点击溯源完整链路`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleTraceNode(nodeKey);
-                  }}
-                >
-                  {deg.outCount} →
-                </button>
-              )}
-
-              {voicePopoverFor === ent.id && !isTextNote && !isCompound && !hasRig && (
-                <div
-                  className="cc-popover cc-rig-inspector"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="cc-card-head">
-                    <b>{ent.name} · 专属声纹</b>
-                    <button type="button" onClick={() => setVoicePopoverFor(null)} aria-label="关闭声纹设置">
-                      <X size={12} />
-                    </button>
-                  </div>
-                  <label className="cc-mini-field">
-                    <span>音色 ID（如 Cherry / Ethan / 沉稳男声）</span>
-                    <input
-                      aria-label="演员专属音色"
-                      placeholder="例如：Cherry / Ethan / alloy"
-                      value={ent.voiceProfile?.voice ?? ent.voiceId ?? ''}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        void onEdit(`更新「${ent.name}」专属音色`, [
-                          {
-                            type: 'putVaultItem',
-                            item: {
-                              ...clone(ent),
-                              voiceId: v || undefined,
-                              voiceProfile: { ...(ent.voiceProfile || {}), voice: v || undefined },
-                            },
-                          },
-                        ]);
-                      }}
-                    />
-                  </label>
-                  <div className="cc-voice-presets">
-                    {['Cherry', 'Ethan', 'Chelsie', 'Serena', 'alloy'].map((presetVoice) => (
-                      <button
-                        key={presetVoice}
-                        type="button"
-                        className={`branch-fork-chip ${(ent.voiceProfile?.voice || ent.voiceId) === presetVoice ? 'active' : ''}`}
-                        onClick={() =>
-                          void onEdit(`绑定「${ent.name}」音色 ${presetVoice}`, [
-                            {
-                              type: 'putVaultItem',
-                              item: {
-                                ...clone(ent),
-                                voiceId: presetVoice,
-                                voiceProfile: { ...(ent.voiceProfile || {}), voice: presetVoice },
-                              },
-                            },
-                          ])
-                        }
-                      >
-                        {presetVoice}
-                      </button>
-                    ))}
-                  </div>
-                  <label className="cc-mini-field">
-                    <span>表演语气备注</span>
-                    <input
-                      aria-label="演员表演语气"
-                      placeholder="如：低沉克制、略带冷幽默"
-                      value={ent.voiceProfile?.styleNote ?? ''}
-                      onChange={(e) => {
-                        const note = e.target.value;
-                        void onEdit(`更新「${ent.name}」配音语气`, [
-                          {
-                            type: 'putVaultItem',
-                            item: {
-                              ...clone(ent),
-                              voiceProfile: { ...(ent.voiceProfile || {}), styleNote: note || undefined },
-                            },
-                          },
-                        ]);
-                      }}
-                    />
-                  </label>
-                </div>
-              )}
-
-              {rigPopoverFor === ent.id && ent.rig?.presetId && (
-                <div className="cc-popover cc-rig-inspector" onClick={(e) => e.stopPropagation()}>
-                  <div className="cc-card-head">
-                    <b>{ent.name} · 参数</b>
-                    <button type="button" onClick={() => setRigPopoverFor(null)}>
-                      <X size={12} />
-                    </button>
-                  </div>
-                  <label className="cc-mini-field">
-                    <span>主标题文案</span>
-                    <input
-                      value={String(ent.rig.props?.text || '')}
-                      onChange={(e) => {
-                        const nextProps = { ...(ent.rig?.props || {}), text: e.target.value };
-                        void onEdit('更新画布组件文案', [
-                          {
-                            type: 'putVaultItem',
-                            item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
-                          },
-                        ]);
-                      }}
-                    />
-                  </label>
-                  {(ent.rig.presetId === 'spatial-stage' || ent.rig.presetId === 'teardown-3d') && (() => {
-                    const activeSceneType = String(
-                      ent.rig.props?.sceneType ||
-                        (ent.rig.presetId === 'teardown-3d' ? 'turbine' : 'parallax-25d'),
-                    );
-                    const isPrevisMode = activeSceneType === 'previs-blocking';
-                    const isDeviceMode = activeSceneType === 'device-showcase';
-                    const isTeardownMode =
-                      activeSceneType === 'turbine' ||
-                      activeSceneType === 'chip-stack' ||
-                      activeSceneType === 'factory-flow';
-                    const updateSpatialProp = (label: string, patch: Record<string, unknown>) => {
-                      const nextProps = { ...(ent.rig?.props || {}), ...patch };
-                      void onEdit(label, [
-                        {
-                          type: 'putVaultItem',
-                          item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
-                        },
-                      ]);
-                    };
-                    return (
-                    <>
-                      <label className="cc-mini-field">
-                        <span>置景模式</span>
-                        <select
-                          value={activeSceneType}
-                          onChange={(e) => updateSpatialProp('切换空间摄影棚模式', { sceneType: e.target.value })}
-                        >
-                          <option value="parallax-25d">2.5D 立体漫剧/原画</option>
-                          <option value="previs-blocking">3D 导演走线预演棚</option>
-                          <option value="device-showcase">3D 硬件动态贴屏</option>
-                          <option value="turbine">同轴光学镜组拆解</option>
-                          <option value="chip-stack">AI 芯片叠层</option>
-                          <option value="factory-flow">节点流水线沙盘</option>
-                        </select>
-                      </label>
-                      {isPrevisMode && (
-                        <>
-                          <label className="cc-mini-field">
-                            <span>3D 场景环境</span>
-                            <select
-                              value={String(ent.rig.props?.environmentPreset || 'rooftop-night')}
-                              onChange={(e) =>
-                                updateSpatialProp('切换 3D 场景环境', { environmentPreset: e.target.value })
-                              }
-                            >
-                              {SPATIAL_ENVIRONMENT_OPTIONS.map((opt) => (
-                                <option key={opt.id} value={opt.id}>
-                                  {opt.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="cc-mini-field">
-                            <span>人物动作表演</span>
-                            <select
-                              value={String(ent.rig.props?.actorAction || 'walk')}
-                              onChange={(e) =>
-                                updateSpatialProp('切换人物动作表演', { actorAction: e.target.value })
-                              }
-                            >
-                              {SPATIAL_ACTOR_ACTION_OPTIONS.map((opt) => (
-                                <option key={opt.id} value={opt.id}>
-                                  {opt.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="cc-mini-field">
-                            <span>人物走线路径</span>
-                            <select
-                              value={String(ent.rig.props?.actorPath || 'approach')}
-                              onChange={(e) =>
-                                updateSpatialProp('切换人物走线路径', { actorPath: e.target.value })
-                              }
-                            >
-                              {SPATIAL_ACTOR_PATH_OPTIONS.map((opt) => (
-                                <option key={opt.id} value={opt.id}>
-                                  {opt.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        </>
-                      )}
-                      {isDeviceMode && (
-                        <label className="cc-mini-field">
-                          <span>硬件样机形态</span>
-                          <select
-                            value={String(ent.rig.props?.deviceType || 'phone')}
-                            onChange={(e) =>
-                              updateSpatialProp('切换硬件样机形态', { deviceType: e.target.value })
-                            }
-                          >
-                            <option value="phone">钛金属旗舰手机</option>
-                            <option value="laptop">超薄专业笔记本</option>
-                            <option value="cinema-display">悬浮电影级巨幕</option>
-                          </select>
-                        </label>
-                      )}
-                      <div className="cc-mini-field">
-                        <span>多机位书签</span>
-                        <div className="cc-spatial-pills">
-                          {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => (
-                            <button
-                              key={bm.id}
-                              type="button"
-                              className={String(ent.rig?.props?.activeBookmarkId || '') === bm.id ? 'active' : ''}
-                              title={`${bm.label} (${bm.cameraLens}mm)`}
-                              onClick={() =>
-                                updateSpatialProp(`切换空间机位「${bm.label}」`, {
-                                  activeBookmarkId: bm.id,
-                                  cameraPreset: bm.cameraPreset,
-                                  cameraLens: bm.cameraLens,
-                                  cameraYaw: bm.cameraYaw,
-                                  cameraPitch: bm.cameraPitch,
-                                  cameraDistance: bm.cameraDistance,
-                                })
-                              }
-                            >
-                              {bm.shortKey}机
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="cc-mini-field">
-                        <span>输出通道（成片 / AI 控图）</span>
-                        <div className="cc-spatial-pills">
-                          {SPATIAL_RENDER_PASS_OPTIONS.slice(0, 4).map((rp) => (
-                            <button
-                              key={rp.id}
-                              type="button"
-                              className={String(ent.rig?.props?.renderPass || 'beauty') === rp.id ? 'active' : ''}
-                              onClick={() =>
-                                updateSpatialProp(`切换空间通道「${rp.label}」`, { renderPass: rp.id })
-                              }
-                            >
-                              {rp.short}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <label className="cc-mini-field">
-                        <span>导演运镜轨迹</span>
-                        <select
-                          value={String(ent.rig.props?.cameraPreset || 'dolly-in')}
-                          onChange={(e) =>
-                            updateSpatialProp('切换三维视角', { cameraPreset: e.target.value })
-                          }
-                        >
-                          <option value="dolly-in">平滑推镜 (Dolly In)</option>
-                          <option value="dolly-zoom">希区柯克变焦 (Vertigo)</option>
-                          <option value="orbit">环绕审视 (Orbit)</option>
-                          <option value="pan-sweep">横摇巡视 (Pan Sweep)</option>
-                          <option value="crane-up">摇臂升降 (Crane Up)</option>
-                          <option value="hero-low">低机位仰视</option>
-                          <option value="top-down">垂直俯瞰</option>
-                          <option value="isometric">等轴测俯视</option>
-                        </select>
-                      </label>
-                      <label className="cc-mini-field">
-                        <span>3D 空间体积粒子</span>
-                        <select
-                          value={String(ent.rig.props?.particles3D || 'none')}
-                          onChange={(e) =>
-                            updateSpatialProp('切换三维氛围粒子', { particles3D: e.target.value })
-                          }
-                        >
-                          <option value="none">关闭</option>
-                          <option value="dust">电影浮尘光粒</option>
-                          <option value="rain">三维空间雨丝</option>
-                          <option value="snow">立体飘雪</option>
-                          <option value="embers">炽热火星</option>
-                        </select>
-                      </label>
-                      {isTeardownMode && (
-                        <label className="cc-mini-field">
-                          <span>
-                            拆解间距 (
-                            {Math.round(
-                              Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65) * 100,
-                            )}
-                            %)
-                          </span>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1.3}
-                            step={0.05}
-                            value={Number(rigExplodeDrafts[ent.id] ?? ent.rig.props?.explode ?? 0.65)}
-                            onChange={(e) => {
-                              const val = Number(e.target.value);
-                              setRigExplodeDrafts((prev) => ({ ...prev, [ent.id]: val }));
-                            }}
-                            onPointerUp={(e) => {
-                              const val = Number(e.currentTarget.value);
-                              setRigExplodeDrafts((prev) => {
-                                const next = { ...prev };
-                                delete next[ent.id];
-                                return next;
-                              });
-                              if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
-                                updateSpatialProp('调整三维拆解间距', { explode: val });
-                              }
-                            }}
-                            onBlur={(e) => {
-                              const val = Number(e.currentTarget.value);
-                              if (rigExplodeDrafts[ent.id] === undefined) return;
-                              setRigExplodeDrafts((prev) => {
-                                const next = { ...prev };
-                                delete next[ent.id];
-                                return next;
-                              });
-                              if (val !== Number(ent.rig?.props?.explode ?? 0.65)) {
-                                updateSpatialProp('调整三维拆解间距', { explode: val });
-                              }
-                            }}
-                          />
-                        </label>
-                      )}
-                    </>
-                    );
-                  })()}
-                  {ent.rig.presetId === 'screen-focus-rig' && (
-                    <label className="cc-mini-field">
-                      <span>设备外壳样式</span>
-                      <select
-                        value={String(ent.rig.props?.frameStyle || 'macos')}
-                        onChange={(e) => {
-                          const nextProps = { ...(ent.rig?.props || {}), frameStyle: e.target.value };
-                          void onEdit('切换设备外壳', [
-                            {
-                              type: 'putVaultItem',
-                              item: { ...clone(ent), rig: { ...ent.rig!, props: nextProps } },
-                            },
-                          ]);
-                        }}
-                      >
-                        <option value="macos">macOS 圆角窗</option>
-                        <option value="browser">极简浏览器框</option>
-                        <option value="phone">竖屏手机壳</option>
-                        <option value="terminal">暗色终端窗</option>
-                      </select>
-                    </label>
-                  )}
-                </div>
-              )}
-            </div>
+              onStartWireDrag={(e, side) => startWireDrag(e, nodeKey, side)}
+              onToggleTrace={() => toggleTraceNode(nodeKey)}
+              onSelectVariant={(variantId) => setActiveVarByEnt((s) => ({ ...s, [ent.id]: variantId }))}
+              onTextDraftChange={(val) => setTextDrafts((prev) => ({ ...prev, [ent.id]: val }))}
+              onTextDraftClear={(expectedVal) =>
+                setTextDrafts((prev) => {
+                  if (!(ent.id in prev)) return prev;
+                  if (expectedVal !== undefined && prev[ent.id] !== expectedVal) return prev;
+                  const next = { ...prev };
+                  delete next[ent.id];
+                  return next;
+                })
+              }
+              onRigExplodeDraftChange={(val) =>
+                setRigExplodeDrafts((prev) => {
+                  if (val === undefined) {
+                    if (!(ent.id in prev)) return prev;
+                    const next = { ...prev };
+                    delete next[ent.id];
+                    return next;
+                  }
+                  return { ...prev, [ent.id]: val };
+                })
+              }
+              onToggleVoicePopover={() => setVoicePopoverFor((prev) => (prev === ent.id ? null : ent.id))}
+              onToggleRigPopover={() => setRigPopoverFor((prev) => (prev === ent.id ? null : ent.id))}
+              onOpenNewVariant={() => {
+                setSubjVar('');
+                setSubjDesc('');
+                setSubjectModal({ mode: 'variant', entId: ent.id });
+              }}
+              onOpenQuickLook={() => setQuickLookKey(nodeKey)}
+              onHideFromCanvas={() => void hideNodeKeysFromCanvas([nodeKey])}
+              onSelectClip={onSelectClip}
+              onEdit={onEdit}
+              onOpenGeneration={onOpenGeneration}
+              onPublishToLibrary={onPublishToLibrary}
+              onInstantiateWorkshopRecipe={instantiateWorkshopRecipe}
+              onAppendShotFromEnt={(item) => appendShotFromRigOrBlank(undefined, item)}
+              onBakeSpatialToAiVideo={bakeSpatialSourceToAiVideo}
+              onCaptureSpatialPairToAiVideo={captureSpatialPairToAiVideo}
+              onSpawnSpatialMultiCamShots={spawnSpatialMultiCamShots}
+              onOpenSpatialDirector={onOpenSpatialDirector}
+            />
           );
         })}
 
@@ -4728,613 +3576,61 @@ export function CreateCanvas({
         {visibleStandaloneAssets.map((a) => {
           const nodeKey = `asset:${a.id}`;
           const pos = layout[nodeKey] || { x: 40, y: CANVAS_LANE_TOP };
-          const selected = selectedNodeIds.includes(nodeKey);
-          const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
-          const isAudio = a.kind === 'audio';
-          const isVideo = a.kind === 'video';
-          const explicitRole = a.role;
-          const hasAiSource = Boolean(a.source && (a.source.prompt || a.source.modelId));
-          const deg = wireDegrees.get(nodeKey);
-          const kindLabel =
-            isAudio ? '音频' : isVideo ? '视频' : a.kind === 'model-3d' ? '三维模型' : '图片';
-          const tail = sequence.clips.length
-            ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
-            : 0;
-
           return (
-            <div
+            <CanvasAssetCard
               key={nodeKey}
-              data-node-id={nodeKey}
-              className={`cc-node asset ${a.kind} ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''} ${isNodeDimmed(nodeKey) ? 'trace-dimmed' : ''}`}
-              style={{ left: pos.x, top: pos.y }}
-              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
-              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
+              asset={a}
+              nodeKey={nodeKey}
+              pos={pos}
+              selected={selectedNodeIds.includes(nodeKey)}
+              isPrimarySelected={primarySelectedId === nodeKey && selectedNodeIds.length === 1}
+              isWireTarget={wireHoverKey === nodeKey}
+              isDimmed={isNodeDimmed(nodeKey)}
+              justCompleted={Boolean(justCompletedKeys[nodeKey])}
+              deg={wireDegrees.get(nodeKey)}
+              sequence={sequence}
+              shots={shots}
+              previewOrigin={previewOrigin}
+              deriveMenuOpen={deriveMenuFor === a.id}
+              roleMenuOpen={roleMenuFor === a.id}
+              onHoverChange={(h) => setHoveredNodeKey((k) => (h ? nodeKey : k === nodeKey ? null : k))}
               onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
-            >
-              {isPrimarySelected && (
-                <div
-                  className="cc-node-toolbar"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {isAudio ? (
-                    <>
-                      {onTrimAudioSilence && (
-                        <button
-                          type="button"
-                          title="本地 FFmpeg 0 费用自动裁去口播停顿气口静音，生成紧凑版音频卡"
-                          onClick={() =>
-                            void onTrimAudioSilence(a.id, { x: pos.x + 300, y: pos.y })
-                          }
-                        >
-                          <Scissors size={11} /> 去静音
-                        </button>
-                      )}
-                      {onNormalizeAudio && (
-                        <button
-                          type="button"
-                          title="本地 FFmpeg 0 费用人声响度标准化至广播级 -14 LUFS"
-                          onClick={() =>
-                            void onNormalizeAudio(a.id, { x: pos.x + 300, y: pos.y + 108 })
-                          }
-                        >
-                          <AudioLines size={11} /> -14 LUFS
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => onOpenGeneration({ use: 'transcription', assetId: a.id })}
-                      >
-                        <FileText size={11} /> 转录字幕
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onOpenGeneration({ use: 'speech', prompt: a.name })}
-                      >
-                        <Sparkles size={11} /> AI 配音
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const audioEnd = sequence.clips
-                            .filter((c) => c.track === 'audio')
-                            .reduce((m, c) => Math.max(m, c.start + c.duration), 0);
-                          const dur = Math.max(1, Math.floor(a.duration * sequence.fps));
-                          const c: Clip = {
-                            ...newClip('audio', audioEnd, a.id),
-                            name: a.name,
-                            duration: dur,
-                            audioAttachMode: inferDefaultAudioAttachMode(a, dur, sequence.fps),
-                          };
-                          void onEdit(`铺入音频「${a.name}」`, [
-                            { type: 'addClip', sequenceId: sequence.id, clip: c },
-                          ]);
-                        }}
-                      >
-                        <Plus size={11} /> 铺入音轨
-                      </button>
-                    </>
-                  ) : isVideo ? (
-                    <>
-                      {onExtractVideoFrame && (
-                        <button
-                          type="button"
-                          title="秒抽视频末帧为新图片卡落回画布（可直接拖线作下一镜首帧）"
-                          onClick={() =>
-                            void onExtractVideoFrame(a.id, 'last', { x: pos.x + 300, y: pos.y })
-                          }
-                        >
-                          <Camera size={11} /> 抽尾帧
-                        </button>
-                      )}
-                      {onExtractVideoFrame && (
-                        <button
-                          type="button"
-                          title="秒抽视频首帧为新图片卡落回画布"
-                          onClick={() =>
-                            void onExtractVideoFrame(a.id, 'first', { x: pos.x + 300, y: pos.y + 186 })
-                          }
-                        >
-                          <ImageIcon size={11} /> 抽首帧
-                        </button>
-                      )}
-                      {onDetachVideoAudio && (
-                        <button
-                          type="button"
-                          title="用 FFmpeg 秒提取视频音轨为独立波形资产卡"
-                          onClick={() =>
-                            void onDetachVideoAudio(a.id, { x: pos.x + 300, y: pos.y + 186 })
-                          }
-                        >
-                          <AudioLines size={11} /> 抽音轨
-                        </button>
-                      )}
-                      {onVisionDescribeAsset && (
-                        <button
-                          type="button"
-                          title="用视觉模型反推画面提示词并落为可编辑文本节点"
-                          onClick={() =>
-                            void onVisionDescribeAsset(a.id, { x: pos.x + 300, y: pos.y - 160 })
-                          }
-                        >
-                          <Wand2 size={11} /> 反推提示词
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => onOpenGeneration({ use: 'transcription', assetId: a.id })}
-                      >
-                        <FileText size={11} /> 转录
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const c: Clip = {
-                            ...newClip('video', tail, a.id),
-                            name: a.name,
-                            duration: Math.max(15, Math.floor((a.duration || 5) * sequence.fps)),
-                          };
-                          void onEdit(`加入分镜「${a.name}」`, [
-                            { type: 'addClip', sequenceId: sequence.id, clip: c },
-                          ]);
-                        }}
-                      >
-                        <Plus size={11} /> 入选镜头
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {a.kind === 'image' && (
-                        <button
-                          type="button"
-                          title="在右侧原地展开 AI 加工转换工坊卡（改图 / 视频 / 三视图 / 抠图）"
-                          onClick={() => {
-                            setRoleMenuFor(null);
-                            setDeriveMenuFor((prev) => (prev === a.id ? null : a.id));
-                          }}
-                        >
-                          <Sparkles size={11} /> 衍生 ▾
-                        </button>
-                      )}
-                      {a.kind === 'image' && onVisionDescribeAsset && (
-                        <button
-                          type="button"
-                          title="用视觉模型反推该图提示词，在右侧生成可编辑文本节点（可直接拖线给工坊卡改图）"
-                          onClick={() =>
-                            void onVisionDescribeAsset(a.id, { x: pos.x + 306, y: pos.y })
-                          }
-                        >
-                          <Wand2 size={11} /> 反推提示词
-                        </button>
-                      )}
-                      {a.kind === 'image' && hasAiSource && (
-                        <button
-                          type="button"
-                          title="还原该图原始提示词、模型与上游参考图，在画布原地微调再抽一次"
-                          onClick={() => {
-                            const srcRefIds = Array.isArray(a.source?.referenceAssetIds)
-                              ? (a.source?.referenceAssetIds as string[])
-                              : typeof a.source?.referenceAssetId === 'string'
-                                ? [a.source.referenceAssetId]
-                                : [];
-                            const inputs: CanvasGeneratorInput[] =
-                              srcRefIds.length > 0
-                                ? srcRefIds.map((rid) => ({ nodeKey: `asset:${rid}`, slot: 'subject' }))
-                                : [{ nodeKey, slot: 'subject' }];
-                            void spawnGeneratorNode({
-                              use: 'image',
-                              action: srcRefIds.length >= 2 ? 'multi-ref-image' : 'image-edit',
-                              inputs,
-                              prompt: String(a.source?.prompt || ''),
-                              placement: { x: pos.x + 306, y: pos.y },
-                            });
-                          }}
-                        >
-                          <RotateCw size={11} /> 再抽
-                        </button>
-                      )}
-                      {a.kind === 'image' && (
-                        <button
-                          type="button"
-                          title="在右侧一键并排派生 2–3 组不同景别/光影的变体做比稿"
-                          onClick={() =>
-                            setForkSource({
-                              label: formatCanvasDisplayName(a.name, true),
-                              basePrompt: String(a.source?.prompt || a.name.replace(/\.[^.]+$/, '')),
-                              refAssetIds: [a.id],
-                              sourceNodeKeys: [nodeKey],
-                              anchorPos: pos,
-                            })
-                          }
-                        >
-                          <GitBranch size={11} /> 变体
-                        </button>
-                      )}
-                      {(a.kind === 'image' || a.kind === 'video') &&
-                        (() => {
-                          const parentShotRef = a.derivedFrom?.find((d) => d.vaultItemId?.startsWith('shot:'));
-                          const targetShot = parentShotRef
-                            ? shots.find((s) => `shot:${s.id}` === parentShotRef.vaultItemId && !s.locked)
-                            : undefined;
-                          if (!targetShot) return null;
-                          return (
-                            <button
-                              type="button"
-                              title={`将此变体直接采纳为镜头 #${targetShot.index} 的当前激活候选画面`}
-                              onClick={() => {
-                                const nextNum = (targetShot.anchorClip.takes?.length || 1) + 1;
-                                const take: ClipTake = {
-                                  id: uid('take'),
-                                  label: `T${nextNum} · ${formatCanvasDisplayName(a.name, true).slice(0, 14)}`,
-                                  kind: a.kind === 'video' ? 'video' : 'image',
-                                  sourceIn: 0,
-                                  assetId: a.id,
-                                  props: { fit: 'cover', opacity: 1, scale: 1 },
-                                  createdAt: new Date().toISOString(),
-                                };
-                                void onEdit(`采纳「${a.name}」至镜头 #${targetShot.index}`, [
-                                  {
-                                    type: 'addClipTake',
-                                    sequenceId: sequence.id,
-                                    clipId: targetShot.anchorClip.id,
-                                    take,
-                                    activate: true,
-                                  },
-                                ]);
-                              }}
-                            >
-                              <Check size={11} /> 采纳至镜头 #{targetShot.index}
-                            </button>
-                          );
-                        })()}
-                      {a.kind === 'image' && (
-                        <button
-                          type="button"
-                          title="就地标记创作角色（角色 / 场景 / 道具 / 风格），自动归入设定分区与连线槽位"
-                          onClick={() => {
-                            setDeriveMenuFor(null);
-                            setRoleMenuFor((prev) => (prev === a.id ? null : a.id));
-                          }}
-                        >
-                          <Tag size={11} /> {explicitRole ? ROLE_LABELS[explicitRole].slice(0, 2) : '标角色'} ▾
-                        </button>
-                      )}
-                      {a.kind === 'model-3d' && onOpenSpatialDirector && (
-                        <button
-                          type="button"
-                          className="cc-tb-primary"
-                          title="进入独立全屏「3D 导演棚」预览此 3D 模型/空间世界并运镜录片"
-                          onClick={() => onOpenSpatialDirector({ kind: 'asset', assetId: a.id })}
-                        >
-                          <Box size={11} /> 导演棚
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const c: Clip = {
-                            ...newClip(a.kind === 'model-3d' ? 'shape' : a.kind, tail, a.id),
-                            name: a.name,
-                            duration: Math.max(
-                              15,
-                              Math.floor((a.kind === 'image' ? 5 : a.duration) * sequence.fps),
-                            ),
-                          };
-                          void onEdit(`加入分镜「${a.name}」`, [
-                            { type: 'addClip', sequenceId: sequence.id, clip: c },
-                          ]);
-                        }}
-                      >
-                        <Plus size={11} /> 入选镜头
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    title="快速大图预览 / 播放 (Space)"
-                    aria-label={`预览 ${a.name}`}
-                    onClick={() => setQuickLookKey(nodeKey)}
-                  >
-                    <Eye size={11} />
-                  </button>
-                  <button
-                    type="button"
-                    title="发布至跨项目个人库"
-                    onClick={() => void onPublishToLibrary({ assetId: a.id })}
-                  >
-                    ↑个人库
-                  </button>
-                  <button
-                    type="button"
-                    title="移出画布（不删除工程文件，随时可恢复）"
-                    aria-label={`将 ${a.name} 移出画布`}
-                    onClick={() => void hideNodeKeysFromCanvas([nodeKey])}
-                  >
-                    <EyeOff size={11} />
-                  </button>
-                  <button
-                    type="button"
-                    title="从工程删除素材（支持 ⌘Z 撤销；已锁定镜头受保护）"
-                    aria-label={`删除素材 ${a.name}`}
-                    onClick={() => void deleteNodeKeysFromProject([nodeKey])}
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                </div>
-              )}
-
-              {deriveMenuFor === a.id && (
-                <div
-                  className="cc-popover cc-tap-menu cc-inline-subpop"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="cc-menu-group">资产 → 新资产原地加工</div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void spawnGeneratorNode({
-                        use: 'image',
-                        action: 'image-edit',
-                        inputs: [{ nodeKey, slot: explicitRole === 'environment' ? 'scene' : explicitRole === 'visual-style' ? 'style' : 'subject' }],
-                        placement: { x: pos.x + 306, y: pos.y },
-                      })
-                    }
-                  >
-                    <span className="cc-menu-item-label">
-                      <Wand2 size={12} /> 指令改图 / 风格延展
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void spawnGeneratorNode({
-                        use: 'video',
-                        action: 'image-to-video',
-                        inputs: [{ nodeKey, slot: 'first-frame' }],
-                        placement: { x: pos.x + 306, y: pos.y },
-                      })
-                    }
-                  >
-                    <span className="cc-menu-item-label">
-                      <Clapperboard size={12} /> 图生视频（作首帧）
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void spawnGeneratorNode({
-                        use: 'image',
-                        action: 'turnaround',
-                        inputs: [{ nodeKey, slot: 'subject' }],
-                        placement: { x: pos.x + 306, y: pos.y },
-                      })
-                    }
-                  >
-                    <span className="cc-menu-item-label">
-                      <UserCheck size={12} /> 角色 / 主体三视图
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void spawnGeneratorNode({
-                        use: 'image',
-                        action: 'cutout',
-                        inputs: [{ nodeKey, slot: 'subject' }],
-                        placement: { x: pos.x + 306, y: pos.y },
-                      })
-                    }
-                  >
-                    <span className="cc-menu-item-label">
-                      <Sparkles size={12} /> 透明底智能抠图
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void spawnGeneratorNode({
-                        use: 'image',
-                        action: 'multi-ref-image',
-                        inputs: [{ nodeKey, slot: 'subject' }],
-                        placement: { x: pos.x + 306, y: pos.y },
-                      })
-                    }
-                  >
-                    <span className="cc-menu-item-label">
-                      <Layers size={12} /> 多图融合工坊卡
-                    </span>
-                  </button>
-                  <div className="cc-menu-divider" />
-                  <div className="cc-menu-group">空间摄影棚（L1 零视频费）</div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void createSpatialStageFromAssets([a.id], 'parallax-25d', { x: pos.x + 306, y: pos.y })
-                    }
-                  >
-                    <span className="cc-menu-item-label">
-                      <Box size={12} /> 立为 2.5D 立体空间镜（¥0）
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void createSpatialStageFromAssets([a.id], 'device-showcase', { x: pos.x + 306, y: pos.y + 42 })
-                    }
-                  >
-                    <span className="cc-menu-item-label">
-                      <Box size={12} /> 贴屏至 3D 硬件样机（¥0）
-                    </span>
-                  </button>
-                </div>
-              )}
-
-              {roleMenuFor === a.id && (
-                <div
-                  className="cc-popover cc-tap-menu cc-inline-subpop"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="cc-menu-group">标记资产创作角色</div>
-                  {QUICK_ASSET_ROLES.map((r) => (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => {
-                        setRoleMenuFor(null);
-                        void onEdit(`标记「${a.name}」为${r.label}`, [
-                          { type: 'updateAssetMeta', assetId: a.id, changes: { role: r.id } },
-                        ]);
-                      }}
-                    >
-                      <span className="cc-menu-item-label">
-                        <Tag size={11} /> {r.label}
-                      </span>
-                      {explicitRole === r.id && <Check size={11} />}
-                    </button>
-                  ))}
-                  {explicitRole && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRoleMenuFor(null);
-                        void onEdit(`清除「${a.name}」角色标记`, [
-                          { type: 'updateAssetMeta', assetId: a.id, changes: { role: null } },
-                        ]);
-                      }}
-                    >
-                      <span className="cc-menu-item-label">
-                        <X size={11} /> 取消角色标记
-                      </span>
-                    </button>
-                  )}
-                  <div className="cc-menu-divider" />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRoleMenuFor(null);
-                      setSubjName(a.name.replace(/\.[^.]+$/, '').slice(0, 16));
-                      setSubjRef(a.id);
-                      setSubjDesc('');
-                      setSubjectModal({ mode: 'new' });
-                    }}
-                  >
-                    <span className="cc-menu-item-label">
-                      <GitBranch size={11} /> 升级为多状态设定集…
-                    </span>
-                  </button>
-                </div>
-              )}
-
-              <button
-                type="button"
-                className="cc-port in"
-                title="拖出或接收参考连线"
-                aria-label={`${a.name} 左侧连线端口`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'left')}
-              />
-              {deg && deg.inCount > 0 && (
-                <button
-                  type="button"
-                  className="cc-port-badge in"
-                  title={`有 ${deg.inCount} 个上游关联，点击溯源完整链路`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleTraceNode(nodeKey);
-                  }}
-                >
-                  ← {deg.inCount}
-                </button>
-              )}
-
-              <div className="cc-node-header">
-                {isAudio ? <AudioLines size={11} /> : a.kind === 'model-3d' ? <Box size={11} /> : <ImageIcon size={11} />}
-                <span title={a.name}>
-                  {kindLabel} · {formatCanvasDisplayName(a.name, true)}
-                </span>
-                {explicitRole && (
-                  <button
-                    type="button"
-                    className="cc-role-badge"
-                    title="点击修改资产创作角色"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setRoleMenuFor((prev) => (prev === a.id ? null : a.id));
-                    }}
-                  >
-                    {ROLE_LABELS[explicitRole].slice(0, 2)}
-                  </button>
-                )}
-                <small>{formatAssetCardMeta(a)}</small>
-              </div>
-
-              <div
-                className={`cc-node-card asset-card ${justCompletedKeys[nodeKey] ? 'cc-just-completed' : ''}`}
-                onDoubleClick={(e) => {
-                  e.stopPropagation();
-                  setQuickLookKey(nodeKey);
-                }}
-              >
-                {isAudio ? (
-                  <div className="cc-audio-card-body">
-                    <AudioWaveformPlayer
-                      id={a.id}
-                      name={a.name}
-                      url={mediaUrl(previewOrigin, a.id)}
-                      duration={a.duration}
-                      waveform={a.waveform}
-                    />
-                  </div>
-                ) : a.thumbnail ? (
-                  <div className="cc-node-preview">
-                    <img src={mediaUrl(previewOrigin, a.id, true)} alt={a.name} draggable={false} />
-                    {a.qualityScore && (
-                      <span
-                        className={`cc-quality-badge ${a.qualityScore.recommended ? 'recommended' : a.qualityScore.issues?.length ? 'has-issue' : ''}`}
-                        title={
-                          a.qualityScore.issues?.length
-                            ? `${a.qualityScore.provider} 评分 ${a.qualityScore.score} · ${a.qualityScore.issues.join('、')}`
-                            : `${a.qualityScore.provider} 评分 ${a.qualityScore.score}${a.qualityScore.recommended ? '（推荐最佳候选）' : ''}`
-                        }
-                      >
-                        {a.qualityScore.recommended ? `★ 推荐 ${a.qualityScore.score}` : `${a.qualityScore.score}`}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <div className="cc-node-placeholder">
-                    {a.kind === 'model-3d' ? <Box size={22} /> : <ImageIcon size={22} />}
-                    <small>{kindLabel}资产</small>
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                className="cc-port out"
-                title="拖出连线建立参考关联或生成下游镜头"
-                aria-label={`从 ${a.name} 拖线`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'right')}
-              />
-              {deg && deg.outCount > 0 && (
-                <button
-                  type="button"
-                  className="cc-port-badge out"
-                  title={`已关联 ${deg.outCount} 个下游节点，点击溯源完整链路`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleTraceNode(nodeKey);
-                  }}
-                >
-                  {deg.outCount} →
-                </button>
-              )}
-            </div>
+              onStartWireDrag={(e, side) => startWireDrag(e, nodeKey, side)}
+              onToggleTrace={() => toggleTraceNode(nodeKey)}
+              onToggleDeriveMenu={() => {
+                setRoleMenuFor(null);
+                setDeriveMenuFor((prev) => (prev === a.id ? null : a.id));
+              }}
+              onToggleRoleMenu={() => {
+                setDeriveMenuFor(null);
+                setRoleMenuFor((prev) => (prev === a.id ? null : a.id));
+              }}
+              onCloseRoleMenu={() => setRoleMenuFor(null)}
+              onOpenForkPopover={setForkSource}
+              onUpgradeToSubject={(asset) => {
+                setSubjName(asset.name.replace(/\.[^.]+$/, '').slice(0, 16));
+                setSubjRef(asset.id);
+                setSubjDesc('');
+                setSubjectModal({ mode: 'new' });
+              }}
+              onOpenQuickLook={() => setQuickLookKey(nodeKey)}
+              onHideFromCanvas={() => void hideNodeKeysFromCanvas([nodeKey])}
+              onDeleteFromProject={() => void deleteNodeKeysFromProject([nodeKey])}
+              onEdit={onEdit}
+              onOpenGeneration={onOpenGeneration}
+              onPublishToLibrary={onPublishToLibrary}
+              onSpawnGeneratorNode={async (opts) => {
+                await spawnGeneratorNode(opts);
+              }}
+              onCreateSpatialStageFromAssets={createSpatialStageFromAssets}
+              onTrimAudioSilence={onTrimAudioSilence}
+              onNormalizeAudio={onNormalizeAudio}
+              onExtractVideoFrame={onExtractVideoFrame}
+              onDetachVideoAudio={onDetachVideoAudio}
+              onVisionDescribeAsset={onVisionDescribeAsset}
+              onOpenSpatialDirector={onOpenSpatialDirector}
+            />
           );
         })}
 
@@ -5342,248 +3638,36 @@ export function CreateCanvas({
         {visibleStandaloneComponents.map((comp) => {
           const nodeKey = `comp:${comp.id}`;
           const pos = layout[nodeKey] || { x: 40, y: CANVAS_LANE_TOP };
-          const selected = selectedNodeIds.includes(nodeKey);
-          const isPrimarySelected = primarySelectedId === nodeKey && selectedNodeIds.length === 1;
-          const tail = sequence.clips.length
-            ? Math.max(...sequence.clips.map((c) => c.start + c.duration))
-            : 0;
           return (
-            <div
+            <CanvasComponentCard
               key={nodeKey}
-              data-node-id={nodeKey}
-              className={`cc-node asset component ${selected ? 'selected' : ''} ${wireHoverKey === nodeKey ? 'wire-target' : ''}`}
-              style={{ left: pos.x, top: pos.y }}
-              onMouseEnter={() => setHoveredNodeKey(nodeKey)}
-              onMouseLeave={() => setHoveredNodeKey((k) => (k === nodeKey ? null : k))}
+              comp={comp}
+              nodeKey={nodeKey}
+              pos={pos}
+              selected={selectedNodeIds.includes(nodeKey)}
+              isPrimarySelected={primarySelectedId === nodeKey && selectedNodeIds.length === 1}
+              isWireTarget={wireHoverKey === nodeKey}
+              sequence={sequence}
+              popoverOpen={compPopoverFor === comp.id}
+              promptDraft={compPromptDraft}
+              onPromptDraftChange={setCompPromptDraft}
+              onTogglePopover={() => setCompPopoverFor((prev) => (prev === comp.id ? null : comp.id))}
+              onClosePopover={() => setCompPopoverFor(null)}
+              onHoverChange={(h) => setHoveredNodeKey((k) => (h ? nodeKey : k === nodeKey ? null : k))}
               onPointerDown={(e) => handleNodePointerDown(e, nodeKey, pos)}
               onClick={(e) => handleNodeCardClick(e, nodeKey)}
-            >
-              {isPrimarySelected && (
-                <div
-                  className="cc-node-toolbar"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {onOpenSpatialDirector && (
-                    <button
-                      type="button"
-                      className="cc-tb-primary"
-                      title="进入独立全屏「3D 导演棚」大屏预览、调参数并一键录片"
-                      onClick={() => onOpenSpatialDirector({ kind: 'component', componentId: comp.id })}
-                    >
-                      <Box size={11} /> 导演棚
-                    </button>
-                  )}
-                  {onBakeSpatialVideo && (
-                    <button
-                      type="button"
-                      title="把当前 3D / 动态组件直接录成真 MP4 视频并自动接入 AI 生视频工坊"
-                      onClick={() =>
-                        void bakeSpatialSourceToAiVideo(nodeKey, { x: pos.x + 286, y: pos.y })
-                      }
-                    >
-                      <Clapperboard size={11} /> 录视频→AI生片
-                    </button>
-                  )}
-                  {onCaptureSpatialPair && (
-                    <button
-                      type="button"
-                      title="自动拍摄开场与收尾两帧，直连首尾帧 AI 生视频工坊"
-                      onClick={() =>
-                        void captureSpatialPairToAiVideo(nodeKey, { x: pos.x + 286, y: pos.y })
-                      }
-                    >
-                      <Film size={11} /> 首尾帧→AI
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className={compPopoverFor === comp.id ? 'active' : ''}
-                    title="调整组件参数，或用自然语言让 Agent 调度摄像机轨迹、人物走线与光影"
-                    onClick={() => setCompPopoverFor(compPopoverFor === comp.id ? null : comp.id)}
-                  >
-                    <SlidersHorizontal size={11} /> 调度
-                  </button>
-                  <button
-                    type="button"
-                    title="作为分镜加入时间线"
-                    onClick={() => {
-                      const c: Clip = {
-                        ...newClip('code', tail),
-                        name: comp.name,
-                        componentId: comp.id,
-                        props: { ...comp.props },
-                      };
-                      void onEdit(`加入组件「${comp.name}」`, [
-                        { type: 'addClip', sequenceId: sequence.id, clip: c },
-                      ]);
-                    }}
-                  >
-                    <Plus size={11} /> 放入镜头
-                  </button>
-                  <button
-                    type="button"
-                    title="发布组件至个人库"
-                    onClick={() => void onPublishToLibrary({ componentId: comp.id })}
-                  >
-                    ↑个人库
-                  </button>
-                  <button
-                    type="button"
-                    title="移出画布（保留工程组件）"
-                    onClick={() => void hideNodeKeysFromCanvas([nodeKey])}
-                  >
-                    <EyeOff size={11} />
-                  </button>
-                  <button
-                    type="button"
-                    title="从工程删除组件（支持 ⌘Z 撤销；已锁定镜头受保护）"
-                    aria-label={`删除组件 ${comp.name}`}
-                    onClick={() => void deleteNodeKeysFromProject([nodeKey])}
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                </div>
-              )}
-              {compPopoverFor === comp.id && (
-                <div
-                  className="cc-popover cc-rig-inspector"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="cc-card-head">
-                    <b>{comp.name} · 导演调度</b>
-                    <button type="button" onClick={() => setCompPopoverFor(null)}>
-                      <X size={12} />
-                    </button>
-                  </div>
-                  {Object.keys(comp.props || {}).length > 0 &&
-                    Object.entries(comp.props || {}).map(([k, v]) => {
-                      const commitCompProp = (nextVal: string | number | boolean) => {
-                        const updatedComp = { ...comp, props: { ...comp.props, [k]: nextVal } };
-                        const syncOps: EditOperation[] = [
-                          { type: 'putComponent', component: updatedComp },
-                          ...sequence.clips
-                            .filter((c) => c.componentId === comp.id && !c.locked)
-                            .map((c) => ({
-                              type: 'updateClip' as const,
-                              sequenceId: sequence.id,
-                              clipId: c.id,
-                              changes: { props: { [k]: nextVal } },
-                            })),
-                        ];
-                        void onEdit(`调整组件参数 ${k}`, syncOps);
-                      };
-                      return (
-                        <label key={k} className="cc-mini-field">
-                          <span>{k}</span>
-                          {typeof v === 'boolean' ? (
-                            <input
-                              type="checkbox"
-                              checked={v}
-                              onChange={(e) => commitCompProp(e.target.checked)}
-                            />
-                          ) : typeof v === 'number' ? (
-                            <input
-                              type="number"
-                              step="any"
-                              defaultValue={v}
-                              onBlur={(e) => {
-                                const n = Number(e.currentTarget.value);
-                                if (Number.isFinite(n) && n !== v) commitCompProp(n);
-                              }}
-                            />
-                          ) : (
-                            <input
-                              type="text"
-                              defaultValue={String(v)}
-                              onBlur={(e) => {
-                                if (e.currentTarget.value !== String(v)) {
-                                  commitCompProp(e.currentTarget.value);
-                                }
-                              }}
-                            />
-                          )}
-                        </label>
-                      );
-                    })}
-                  <div className="cc-mini-field">
-                    <span>一键 AI 导演运镜与布景调度</span>
-                    <div className="cc-comp-direct-chips">
-                      {[
-                        { label: '环绕航拍', prompt: '改为平滑 360° 电影级低空环绕航拍运镜，并暴露 cameraYaw/cameraPitch/cameraDistance 参数' },
-                        { label: '低空穿梭', prompt: '改为贴近楼宇街道的低空穿越推进运镜，增强纵深透视与速度感' },
-                        { label: '推近拉远', prompt: '改为电影感慢推近再拉远的大景别运镜，突出地标主体层次' },
-                        { label: '雨夜霓虹', prompt: '升级为雨夜氛围光影、体积雾气与湿润路面反射' },
-                        { label: '加人物走线', prompt: '在街道/天台加入可动画的白模人物走线调度，并保持运镜跟拍' },
-                      ].map((chip) => (
-                        <button
-                          key={chip.label}
-                          type="button"
-                          className="cc-comp-chip"
-                          onClick={() => {
-                            setCompPopoverFor(null);
-                            onSendCanvasInstruction(
-                              `请直接修改组件「${comp.name}」（componentId: ${comp.id}）：${chip.prompt}。`,
-                              sequence.clips.find((c) => c.componentId === comp.id),
-                            );
-                          }}
-                        >
-                          {chip.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <form
-                    className="cc-comp-direct-form"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const txt = compPromptDraft.trim();
-                      if (!txt) return;
-                      setCompPromptDraft('');
-                      setCompPopoverFor(null);
-                      onSendCanvasInstruction(
-                        `请直接修改组件「${comp.name}」（componentId: ${comp.id}）：${txt}`,
-                        sequence.clips.find((c) => c.componentId === comp.id),
-                      );
-                    }}
-                  >
-                    <input
-                      type="text"
-                      placeholder="输入自定义调度指令，如：从帝国大厦俯冲拉升…"
-                      value={compPromptDraft}
-                      onChange={(e) => setCompPromptDraft(e.target.value)}
-                    />
-                    <button type="submit" disabled={!compPromptDraft.trim()}>
-                      <Wand2 size={11} />
-                    </button>
-                  </form>
-                </div>
-              )}
-              <button
-                type="button"
-                className="cc-port in"
-                title="拖出或接收连线"
-                aria-label={`${comp.name} 左侧连线端口`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'left')}
-              />
-              <div className="cc-node-header">
-                <Layers size={11} />
-                <span>组件 · {comp.name}</span>
-              </div>
-              <div className="cc-node-card asset-card">
-                <div className="cc-node-preview">
-                  <CodeComponentThumb component={comp} />
-                </div>
-              </div>
-              <button
-                type="button"
-                className="cc-port out"
-                title="拖线挂载到分镜或时间线"
-                aria-label={`从 ${comp.name} 拖线`}
-                onPointerDown={(e) => startWireDrag(e, nodeKey, 'right')}
-              />
-            </div>
+              onStartWireDrag={(e, side) => startWireDrag(e, nodeKey, side)}
+              onEdit={onEdit}
+              onPublishToLibrary={onPublishToLibrary}
+              onHideFromCanvas={() => void hideNodeKeysFromCanvas([nodeKey])}
+              onDeleteFromProject={() => void deleteNodeKeysFromProject([nodeKey])}
+              onSendCanvasInstruction={onSendCanvasInstruction}
+              hasBakeSpatialVideo={Boolean(onBakeSpatialVideo)}
+              hasCaptureSpatialPair={Boolean(onCaptureSpatialPair)}
+              onBakeSpatialToAiVideo={bakeSpatialSourceToAiVideo}
+              onCaptureSpatialPairToAiVideo={captureSpatialPairToAiVideo}
+              onOpenSpatialDirector={onOpenSpatialDirector}
+            />
           );
         })}
 

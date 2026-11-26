@@ -53,7 +53,8 @@ import {
   shotsToCameraBookmarks,
 } from '../src/core/spatialStage';
 import { ProjectStore } from '../electron/store';
-import type { Asset, CodeComponent } from '../src/core/types';
+import { QUICKSTART_PROFILES, applyQuickstartProfile } from '../src/core/quickstart';
+import type { Asset, CodeComponent, Settings } from '../src/core/types';
 import {
   filterPresets,
   filterStudioMediaByKind,
@@ -2268,4 +2269,117 @@ assert.ok(
   assert.equal(radarBms[4].shortKey, 'S5');
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client + Multi-Track & Curve Drawer + Full 3D Director Studio (Scene->Shots->Assets) regression tests');
+// 54. Wave D (v0.6.0) — 1-Minute Quickstart Setup Profiles & Modular IPC Registry Completeness
+{
+  const baseSettings: Settings = {
+    theme: 'dark',
+    glass: true,
+    glow: 'subtle',
+    glowColor: 'emerald',
+    motionEffects: true,
+    allowShell: false,
+    allowNetwork: false,
+    mcpBridgeEnabled: false,
+    providers: [{ id: 'system', name: '本机语音', protocol: 'system', baseUrl: '', requiresKey: false, hasApiKey: true }],
+    models: [
+      {
+        id: 'system-speech',
+        providerId: 'system',
+        name: 'macOS 系统语音',
+        modelId: 'macos-say',
+        capabilities: ['speech'],
+        adapter: 'system-speech',
+        parameters: {},
+      },
+    ],
+    defaults: { speech: 'system-speech' },
+    pexelsKey: undefined,
+    hasPexelsKey: false,
+  };
+
+  assert.equal(QUICKSTART_PROFILES.length, 6, 'Quickstart should curate 6 primary ecosystems');
+
+  // Missing API key throws cleanly for cloud profiles
+  assert.throws(
+    () => applyQuickstartProfile(baseSettings, { profileId: 'dashscope', apiKey: '' }),
+    /API Key/,
+  );
+
+  // DashScope one-click configures all 6 capabilities + replaces system-speech default
+  const ds = applyQuickstartProfile(baseSettings, { profileId: 'dashscope', apiKey: 'sk-test-dashscope' });
+  assert.equal(ds.reusedProvider, false);
+  assert.equal(ds.provider.protocol, 'dashscope');
+  assert.equal(ds.addedModelCount, 9);
+  assert.deepEqual(
+    [...ds.assignedUses].sort(),
+    ['agent', 'image', 'speech', 'transcription', 'video', 'vision'],
+  );
+  assert.notEqual(ds.nextSettings.defaults.speech, 'system-speech');
+
+  // Re-applying same profile with existing saved key reuses provider and avoids duplicate models
+  const dsSaved: Settings = structuredClone(ds.nextSettings);
+  dsSaved.providers = dsSaved.providers.map((p) =>
+    p.id === ds.provider.id ? { ...p, apiKey: undefined, hasApiKey: true } : p,
+  );
+  const dsAgain = applyQuickstartProfile(dsSaved, { profileId: 'dashscope', apiKey: '' });
+  assert.equal(dsAgain.reusedProvider, true);
+  assert.equal(dsAgain.addedModelCount, 0);
+  assert.equal(
+    dsAgain.nextSettings.providers.filter((p) => p.protocol === 'dashscope').length,
+    1,
+    'Quickstart must not duplicate existing matching provider',
+  );
+
+  // Applying DeepSeek with overwriteDefaults=false keeps existing DashScope agent default
+  const dsKeep = applyQuickstartProfile(dsSaved, {
+    profileId: 'deepseek',
+    apiKey: 'sk-test-ds',
+    overwriteDefaults: false,
+  });
+  assert.equal(dsKeep.nextSettings.defaults.agent, dsSaved.defaults.agent);
+  assert.equal(dsKeep.addedModelCount, 2);
+
+  // Local Ollama profile requires no key and honors customModelId
+  const localRes = applyQuickstartProfile(baseSettings, {
+    profileId: 'local',
+    customModelId: 'qwen3:8b',
+  });
+  assert.equal(localRes.provider.requiresKey, false);
+  assert.equal(localRes.addedModelCount, 1);
+  assert.ok(localRes.nextSettings.models.some((m) => m.modelId === 'qwen3:8b'));
+
+  // Verify modular electron/ipc/* registers all 78 IPC methods with zero duplicates
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const ipcDir = join(process.cwd(), 'electron', 'ipc');
+  const ipcFiles = readdirSync(ipcDir).filter(
+    (f) => f.endsWith('.ts') && f !== 'index.ts' && f !== 'types.ts',
+  );
+  assert.ok(ipcFiles.length >= 6, 'IPC handlers should be split into domain modules');
+  const methodSet = new Set<string>();
+  const duplicates: string[] = [];
+  for (const file of ipcFiles) {
+    const content = readFileSync(join(ipcDir, file), 'utf8');
+    for (const m of content.matchAll(/^\s{2}(?:'([a-zA-Z0-9_.]+)'|(boot)):/gm)) {
+      const name = m[1] || m[2];
+      if (methodSet.has(name)) duplicates.push(name);
+      methodSet.add(name);
+    }
+  }
+  assert.deepEqual(duplicates, [], 'No duplicate IPC method keys across electron/ipc modules');
+  assert.equal(methodSet.size, 78, `Expected 78 IPC methods across domain modules, got ${methodSet.size}`);
+  for (const critical of [
+    'boot',
+    'project.edit',
+    'media.relink',
+    'agent.start',
+    'providers.inspect',
+    'mcp.client.test',
+    'stage.shootDirectorShots',
+    'asset.trimSilence',
+    'system1.autoReframeBranch',
+  ]) {
+    assert.ok(methodSet.has(critical), `Missing critical IPC handler: ${critical}`);
+  }
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Wave D (v0.6.0) + Milestone 1–3 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1–M3 + Spatial Stage + MCP Client + Multi-Track & Curve Drawer + Full 3D Director Studio regression tests');

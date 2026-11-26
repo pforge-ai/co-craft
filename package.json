@@ -1,6 +1,6 @@
 {
   "name": "cocraft",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "private": true,
   "description": "A video creation, asset storyboard, and editing workbench for people and coding agents",
   "type": "module",
@@ -133,7 +133,7 @@
       ]
     },
     "directories": {
-      "output": "release/0.4"
+      "output": "release/0.6"
     },
     "asarUnpack": [
       "node_modules/@esbuild/**/*",

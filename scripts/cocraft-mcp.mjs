@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_INFO = { name: 'cocraft-mcp', version: '0.4.0' };
+const SERVER_INFO = { name: 'cocraft-mcp', version: '0.6.0' };
 
 const TOOLS = [
   {

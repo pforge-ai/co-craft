@@ -78,7 +78,7 @@ export interface AgentPanelProps {
   onSetMentionIndex: React.Dispatch<React.SetStateAction<number>>;
   onApplyMentionCandidate: (candidate: MentionCandidate) => void;
   onSeekTimecode: (seconds: number) => void;
-  onOpenSettings: (tab: 'providers' | 'defaults' | 'models') => void;
+  onOpenSettings: (tab: 'quickstart' | 'providers' | 'defaults' | 'models') => void;
   onComposerDrop: React.DragEventHandler<HTMLDivElement>;
   onComposerPaste: React.ClipboardEventHandler<HTMLTextAreaElement>;
   onRemoveComposerSkill: (skillName: string) => void;
@@ -338,9 +338,9 @@ export function AgentPanel({
         {!chatConnected && (
           <button
             className="connect-hint"
-            onClick={() => onOpenSettings(chatModel ? 'providers' : 'defaults')}
+            onClick={() => onOpenSettings(chatModel ? 'providers' : 'quickstart')}
           >
-            <span className="muted-dot" /> 连接模型，开启 Agent 创作 <ArrowUpRight size={11} />
+            <span className="muted-dot" /> 1 分钟接入模型，开启 Agent 创作 <ArrowUpRight size={11} />
           </button>
         )}
         <div
