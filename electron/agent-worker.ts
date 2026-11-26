@@ -600,8 +600,20 @@ async function start(data: any) {
       label: `[${mt.serverName}] ${mt.name}`,
       description: `[External MCP · ${mt.serverName}] ${mt.description || mt.name}`,
       parameters: safeSchema as any,
-      execute: async (_id, args) =>
-        result(await request('__mcp_call__', { qualifiedName: mt.qualifiedName, args: args || {} })),
+      execute: async (_id, args) => {
+        const raw = await request('__mcp_call__', { qualifiedName: mt.qualifiedName, args: args || {} });
+        if (raw && typeof raw === 'object' && Array.isArray((raw as any).__llmImages)) {
+          const { __llmImages, ...clean } = raw as Record<string, unknown>;
+          return {
+            content: [
+              { type: 'text' as const, text: JSON.stringify(clean) },
+              ...(__llmImages as Array<{ type: 'image'; data: string; mimeType: string }>),
+            ],
+            details: {},
+          };
+        }
+        return result(raw);
+      },
     });
   }
   const connectedMcpServers = Array.from(new Set(mcpTools.map((t) => t.serverName)));

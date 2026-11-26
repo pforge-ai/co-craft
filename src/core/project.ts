@@ -165,6 +165,25 @@ export function validateProject(p: Project): void {
       throw new Error('静音轨道配置无效');
     if (s.mutedVideoAudio !== undefined && typeof s.mutedVideoAudio !== 'boolean')
       throw new Error('视频原声静音配置无效');
+    if (s.tracks !== undefined) {
+      if (!Array.isArray(s.tracks)) throw new Error('多轨轨道配置无效');
+      const seenTrackIds = new Set<string>();
+      for (const tr of s.tracks) {
+        if (
+          !tr ||
+          typeof tr.id !== 'string' ||
+          !tr.id.trim() ||
+          seenTrackIds.has(tr.id) ||
+          !['visual', 'overlay', 'caption', 'audio'].includes(tr.kind) ||
+          typeof tr.name !== 'string' ||
+          !tr.name.trim() ||
+          !Number.isSafeInteger(tr.layer)
+        ) {
+          throw new Error('轨道定义无效或标识重复');
+        }
+        seenTrackIds.add(tr.id);
+      }
+    }
     for (const c of s.clips) {
       if (ids.has(c.id)) throw new Error('片段标识重复');
       ids.add(c.id);
@@ -716,6 +735,7 @@ export function applyOperations(
         'height',
         'fps',
         'background',
+        'tracks',
         'mutedTracks',
         'soloTracks',
         'mutedVideoAudio',
@@ -859,6 +879,7 @@ export function applyOperations(
         'name',
         'kind',
         'track',
+        'trackId',
         'layer',
         'start',
         'duration',

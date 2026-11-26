@@ -11,14 +11,39 @@ import {
   Layers,
   AlertTriangle,
   Sparkles,
+  Plus,
+  X,
+  Diamond,
 } from 'lucide-react';
-import type { Sequence, Clip, Project, EditOperation, Track, TransitionType, Asset } from '../core/types';
+import type {
+  Sequence,
+  Clip,
+  Project,
+  EditOperation,
+  Track,
+  TransitionType,
+  Asset,
+  TimelineTrackDef,
+  KeyframeProperty,
+} from '../core/types';
 import { BUILT_IN_TRANSITIONS } from '../core/presets';
 import { listAllKeyframeFrames, moveClipKeyframeFrame } from '../core/keyframes';
+import {
+  createNewTrackDef,
+  findTrackForClip,
+  formatTrackCode,
+  isTrackCompatibleWithClip,
+  resolveSequenceTracks,
+} from '../core/tracks';
 import { durationOf, splitOperations, timecode, timecodeFrames } from '../core/project';
 import { mediaUrl } from '../composition/Film';
 import { pointerDrag } from '../lib/pointerDrag';
 import type { PlayheadClock } from '../lib/playheadClock';
+import {
+  TimelineCurveHeader,
+  TimelineCurveLane,
+  defaultCurvePropertyForClip,
+} from './TimelineCurveDrawer';
 
 const WaveformSvg = React.memo(function WaveformSvg({
   waveform,
@@ -66,17 +91,12 @@ const WaveformSvg = React.memo(function WaveformSvg({
   );
 });
 
-const tracks: { id: Track; code: string; label: string; icon: typeof Film }[] = [
-  { id: 'overlay', code: 'V2', label: '叠加', icon: Layers },
-  { id: 'visual', code: 'V1', label: '主镜', icon: Film },
-  { id: 'caption', code: 'T1', label: '字幕', icon: Type },
-  { id: 'audio', code: 'A1', label: '声音', icon: Volume2 },
-];
-
 const TICK_STEPS = [0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 
 type LaneRow = {
   id: Track;
+  trackId: string;
+  trackDef: TimelineTrackDef;
   code: string;
   label: string;
   icon: typeof Film;
@@ -85,15 +105,32 @@ type LaneRow = {
   key: string;
 };
 
+const iconForTrack = (kind: Track) =>
+  kind === 'overlay' ? Layers : kind === 'visual' ? Film : kind === 'caption' ? Type : Volume2;
+
 const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
   labelsRef,
   fps,
   rows,
-  overlayCount,
+  allTracks,
   allClips,
+  sequenceId,
   mutedSet,
   soloSet,
+  anySolo,
   mutedVideoAudio,
+  curveClip,
+  curveRowKey,
+  curveProp,
+  curveSelectedFrame,
+  currentFrame,
+  onChangeCurveProp,
+  onSelectCurveFrame,
+  onCloseCurve,
+  onEdit,
+  onAddTrack,
+  onRenameTrack,
+  onDeleteTrack,
   onToggleLock,
   onToggleSolo,
   onToggleVisMute,
@@ -102,99 +139,237 @@ const TimelineTrackLabels = React.memo(function TimelineTrackLabels({
   labelsRef: React.RefObject<HTMLDivElement | null>;
   fps: number;
   rows: LaneRow[];
-  overlayCount: number;
+  allTracks: TimelineTrackDef[];
   allClips: Clip[];
+  sequenceId: string;
   mutedSet: Set<Track>;
   soloSet: Set<Track>;
+  anySolo: boolean;
   mutedVideoAudio: boolean;
-  onToggleLock: (trackId: Track) => void;
-  onToggleSolo: (trackId: Track) => void;
-  onToggleVisMute: (trackId: Track) => void;
+  curveClip: Clip | null;
+  curveRowKey: string | null;
+  curveProp: KeyframeProperty;
+  curveSelectedFrame: number | null;
+  currentFrame: number;
+  onChangeCurveProp: (p: KeyframeProperty) => void;
+  onSelectCurveFrame: (f: number | null) => void;
+  onCloseCurve: () => void;
+  onEdit: (name: string, ops: EditOperation[]) => void;
+  onAddTrack: (group: 'video' | 'caption' | 'audio') => void;
+  onRenameTrack: (trackId: string, name: string) => void;
+  onDeleteTrack: (trackId: string) => void;
+  onToggleLock: (trackDef: TimelineTrackDef) => void;
+  onToggleSolo: (trackDef: TimelineTrackDef) => void;
+  onToggleVisMute: (trackDef: TimelineTrackDef) => void;
   onToggleVideoAudioMute: () => void;
 }) {
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const primaryVisualId = allTracks.find((t) => t.kind === 'visual')?.id;
+  const visualCount = allTracks.filter((t) => t.kind === 'visual').length;
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement)?.closest('.track-add-anchor')) setAddMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [addMenuOpen]);
+
   return (
     <div className="track-labels" ref={labelsRef}>
-      <div className="ruler-label">{fps} FPS</div>
+      <div className="ruler-label">
+        <span>{fps} FPS</span>
+        <div className="track-add-anchor">
+          <button
+            type="button"
+            className="track-add-btn"
+            aria-label="新增轨道"
+            title="新增视频 / 声音 / 字幕轨道"
+            aria-expanded={addMenuOpen}
+            onClick={() => setAddMenuOpen((v) => !v)}
+          >
+            <Plus size={11} />
+          </button>
+          {addMenuOpen && (
+            <div className="track-add-popover" role="menu" aria-label="新增多轨轨道">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setAddMenuOpen(false);
+                  onAddTrack('video');
+                }}
+              >
+                <Layers size={11} /> 新增视频轨 (V)
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setAddMenuOpen(false);
+                  onAddTrack('audio');
+                }}
+              >
+                <Volume2 size={11} /> 新增声音轨 (A)
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setAddMenuOpen(false);
+                  onAddTrack('caption');
+                }}
+              >
+                <Type size={11} /> 新增字幕轨 (T)
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
       {rows.map((t) => {
-        const isHiddenOrMuted = mutedSet.has(t.id);
-        const isSolo = soloSet.has(t.id);
-        const isDimmedBySolo = soloSet.size > 0 && !isSolo;
+        const def = t.trackDef;
+        const isHiddenOrMuted = Boolean(def.muted) || mutedSet.has(t.id);
+        const isSolo = Boolean(def.solo) || soloSet.has(t.id);
+        const isDimmedBySolo = anySolo && !isSolo;
         const isAudio = t.id === 'audio';
-        const isVisual = t.id === 'visual';
-        const trackClips = allClips.filter((c) => c.track === t.id);
+        const isPrimaryVisual = def.id === primaryVisualId;
+        const trackClips = allClips.filter((c) => findTrackForClip(c, allTracks)?.id === def.id);
         const trackLocked = trackClips.length > 0 && trackClips.every((c) => c.locked);
-        const displayCode =
-          t.id === 'overlay'
-            ? `V${overlayCount + 1 - t.index}`
-            : t.index === 0
-              ? t.code
-              : `${t.code[0]}${t.index + 1}`;
+        const canDelete = !(def.kind === 'visual' && visualCount <= 1) && t.index === 0;
+        const displayCode = t.index === 0 ? t.code : `${t.code}·${t.index + 1}`;
+        const isRenaming = renamingId === def.id && t.index === 0;
+        const hasLockedClips = trackClips.some((c) => c.locked);
+
+        const commitRename = () => {
+          const next = renameDraft.trim();
+          setRenamingId(null);
+          if (next && next !== def.name) onRenameTrack(def.id, next);
+        };
+
         return (
-          <div key={t.key} className={`track-label ${t.id} ${isHiddenOrMuted || isDimmedBySolo ? 'is-muted' : ''} ${isSolo ? 'is-solo' : ''}`}>
-            <b className="track-code">{displayCode}</b>
-            <span>{t.label}</span>
-            {t.index === 0 && (
-              <div className="track-head-acts">
-                <button
-                  type="button"
-                  className={`track-solo-btn ${isSolo ? 'active' : ''}`}
-                  aria-label={`${isSolo ? '取消独奏' : '独奏'}${t.label}轨`}
-                  title={`${isSolo ? '取消' : '开启'}${t.label}轨独奏 (Solo)`}
-                  onClick={() => onToggleSolo(t.id)}
+          <React.Fragment key={t.key}>
+            <div
+              className={`track-label ${t.id} ${isHiddenOrMuted || isDimmedBySolo ? 'is-muted' : ''} ${isSolo ? 'is-solo' : ''}`}
+              data-track-id={def.id}
+            >
+              <b className="track-code">{displayCode}</b>
+              {isRenaming ? (
+                <input
+                  className="track-rename-input"
+                  aria-label={`重命名轨道 ${def.name}`}
+                  autoFocus
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename();
+                    if (e.key === 'Escape') setRenamingId(null);
+                  }}
+                />
+              ) : (
+                <span
+                  className="track-name-text"
+                  title={t.index === 0 ? `${t.label}（双击重命名轨道）` : t.label}
+                  onDoubleClick={() => {
+                    if (t.index !== 0) return;
+                    setRenamingId(def.id);
+                    setRenameDraft(def.name);
+                  }}
                 >
-                  S
-                </button>
-                <button
-                  type="button"
-                  className={`track-head-btn ${trackLocked ? 'locked-active' : ''}`}
-                  aria-label={`${trackLocked ? '解锁' : '锁定'}${t.label}轨`}
-                  title={`${trackLocked ? '解锁整条' : '锁定整条'}${t.label}轨`}
-                  disabled={!trackClips.length}
-                  onClick={() => onToggleLock(t.id)}
-                >
-                  {trackLocked ? <Lock size={10} /> : <Unlock size={10} />}
-                </button>
-                {isVisual && (
+                  {t.label}
+                </span>
+              )}
+              {t.index === 0 && !isRenaming && (
+                <div className="track-head-acts">
                   <button
                     type="button"
-                    className={`track-mute-btn ${mutedVideoAudio ? 'active' : ''}`}
-                    aria-label={mutedVideoAudio ? '恢复视频原声' : '静音视频原声'}
-                    title={
-                      mutedVideoAudio
-                        ? '恢复 V1 视频内嵌同期声（独立于 A1 声音轨）'
-                        : '静音 V1 视频内嵌同期声（不影响 A1 独立声音轨）'
-                    }
-                    onClick={onToggleVideoAudioMute}
+                    className={`track-solo-btn ${isSolo ? 'active' : ''}`}
+                    aria-label={`${isSolo ? '取消独奏' : '独奏'}${t.label}轨`}
+                    title={`${isSolo ? '取消' : '开启'}${t.label}轨独奏 (Solo)`}
+                    onClick={() => onToggleSolo(def)}
                   >
-                    {mutedVideoAudio ? <VolumeX size={11} /> : <Volume2 size={11} />}
+                    S
                   </button>
-                )}
-                <button
-                  type="button"
-                  className={`track-mute-btn ${isHiddenOrMuted ? 'active' : ''}`}
-                  aria-label={
-                    isAudio
-                      ? `${isHiddenOrMuted ? '取消静音' : '静音'}${t.label}轨`
-                      : `${isHiddenOrMuted ? '显示' : '隐藏'}${t.label}轨`
-                  }
-                  title={
-                    isAudio
-                      ? `${isHiddenOrMuted ? '恢复声音' : '静音'} A1 独立声音轨（不影响 V1 视频原声）`
-                      : `${isHiddenOrMuted ? '显示' : '隐藏'}${t.label}轨画面`
-                  }
-                  onClick={() => onToggleVisMute(t.id)}
-                >
-                  {isAudio ? (
-                    isHiddenOrMuted ? <VolumeX size={11} /> : <Volume2 size={11} />
-                  ) : isHiddenOrMuted ? (
-                    <EyeOff size={11} />
-                  ) : (
-                    <Eye size={11} />
+                  <button
+                    type="button"
+                    className={`track-head-btn ${trackLocked ? 'locked-active' : ''}`}
+                    aria-label={`${trackLocked ? '解锁' : '锁定'}${t.label}轨`}
+                    title={`${trackLocked ? '解锁整条' : '锁定整条'}${t.label}轨`}
+                    disabled={!trackClips.length}
+                    onClick={() => onToggleLock(def)}
+                  >
+                    {trackLocked ? <Lock size={10} /> : <Unlock size={10} />}
+                  </button>
+                  {isPrimaryVisual && (
+                    <button
+                      type="button"
+                      className={`track-mute-btn ${mutedVideoAudio ? 'active' : ''}`}
+                      aria-label={mutedVideoAudio ? '恢复视频原声' : '静音视频原声'}
+                      title={
+                        mutedVideoAudio
+                          ? '恢复 V1 视频内嵌同期声（独立于声音轨）'
+                          : '静音 V1 视频内嵌同期声（不影响独立声音轨）'
+                      }
+                      onClick={onToggleVideoAudioMute}
+                    >
+                      {mutedVideoAudio ? <VolumeX size={11} /> : <Volume2 size={11} />}
+                    </button>
                   )}
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    className={`track-mute-btn ${isHiddenOrMuted ? 'active' : ''}`}
+                    aria-label={
+                      isAudio
+                        ? `${isHiddenOrMuted ? '取消静音' : '静音'}${t.label}轨`
+                        : `${isHiddenOrMuted ? '显示' : '隐藏'}${t.label}轨`
+                    }
+                    title={
+                      isAudio
+                        ? `${isHiddenOrMuted ? '恢复声音' : '静音'} ${t.label}轨`
+                        : `${isHiddenOrMuted ? '显示' : '隐藏'} ${t.label}轨画面`
+                    }
+                    onClick={() => onToggleVisMute(def)}
+                  >
+                    {isAudio ? (
+                      isHiddenOrMuted ? <VolumeX size={11} /> : <Volume2 size={11} />
+                    ) : isHiddenOrMuted ? (
+                      <EyeOff size={11} />
+                    ) : (
+                      <Eye size={11} />
+                    )}
+                  </button>
+                  {canDelete && (
+                    <button
+                      type="button"
+                      className="track-head-btn track-del-btn"
+                      aria-label={`删除轨道 ${t.label}`}
+                      disabled={hasLockedClips}
+                      title={hasLockedClips ? '轨道包含已锁定片段，无法删除' : `删除轨道「${t.label}」`}
+                      onClick={() => onDeleteTrack(def.id)}
+                    >
+                      <X size={10} />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            {curveClip && curveRowKey === t.key && (
+              <TimelineCurveHeader
+                clip={curveClip}
+                sequenceId={sequenceId}
+                prop={curveProp}
+                selectedFrame={curveSelectedFrame}
+                currentFrame={currentFrame}
+                onChangeProp={onChangeCurveProp}
+                onSelectFrame={onSelectCurveFrame}
+                onEdit={onEdit}
+                onClose={onCloseCurve}
+              />
             )}
-          </div>
+          </React.Fragment>
         );
       })}
     </div>
@@ -229,7 +404,9 @@ const TimelineLanes = React.memo(function TimelineLanes({
   rows,
   mutedSet,
   soloSet,
+  anySolo,
   assetsById,
+  sequenceId,
   fps,
   totalFrames,
   contentWidth,
@@ -238,6 +415,15 @@ const TimelineLanes = React.memo(function TimelineLanes({
   drag,
   toolMode,
   mediaOrigin,
+  curveClip,
+  curveRowKey,
+  curveProp,
+  curveSelectedFrame,
+  onSelectCurveFrame,
+  onToggleCurveForClip,
+  onSeek,
+  onEndScrub,
+  onEdit,
   onLaneClick,
   onAssetDropAt,
   onClipDragStart,
@@ -250,17 +436,35 @@ const TimelineLanes = React.memo(function TimelineLanes({
   rows: LaneRow[];
   mutedSet: Set<Track>;
   soloSet: Set<Track>;
+  anySolo: boolean;
   assetsById: Map<string, Asset>;
+  sequenceId: string;
   fps: number;
   totalFrames: number;
   contentWidth: number;
   selected: string | null;
   selectedIds: string[];
-  drag: { id: string; start: number; duration: number; sourceIn: number; snapFrame?: number } | null;
+  drag: {
+    id: string;
+    start: number;
+    duration: number;
+    sourceIn: number;
+    snapFrame?: number;
+    targetTrackId?: string;
+  } | null;
   toolMode: 'select' | 'razor';
   mediaOrigin: string;
+  curveClip: Clip | null;
+  curveRowKey: string | null;
+  curveProp: KeyframeProperty;
+  curveSelectedFrame: number | null;
+  onSelectCurveFrame: (f: number | null) => void;
+  onToggleCurveForClip: (clipId: string) => void;
+  onSeek: (frame: number, options?: { scrubbing?: boolean }) => void;
+  onEndScrub?: (frame: number) => void;
+  onEdit: (name: string, ops: EditOperation[]) => void;
   onLaneClick: (e: React.MouseEvent<HTMLDivElement>) => void;
-  onAssetDropAt: (payload: string, target: HTMLDivElement, clientX: number) => void;
+  onAssetDropAt: (payload: string, target: HTMLDivElement, clientX: number, trackDef: TimelineTrackDef) => void;
   onClipDragStart: (e: React.PointerEvent<HTMLElement>, clip: Clip, mode: 'move' | 'in' | 'out') => void;
   onClipRazorHover: (e: React.PointerEvent<HTMLDivElement>, clip: Clip) => void;
   onClipDoubleClick: (start: number) => void;
@@ -276,142 +480,164 @@ const TimelineLanes = React.memo(function TimelineLanes({
   return (
     <>
       {rows.map((track) => {
-        const isMuted = mutedSet.has(track.id) || (soloSet.size > 0 && !soloSet.has(track.id));
+        const def = track.trackDef;
+        const isMuted =
+          Boolean(def.muted) ||
+          mutedSet.has(track.id) ||
+          (anySolo && !def.solo && !soloSet.has(track.id));
+        const isDropTarget = drag?.targetTrackId === def.id && track.index === 0;
         return (
-          <div
-            className={`lane ${track.id} ${isMuted ? 'lane-muted' : ''}`}
-            key={track.key}
-            onClick={onLaneClick}
-            onDragOver={(e) => {
-              if (e.dataTransfer.types.includes('application/cocraft-asset')) e.preventDefault();
-            }}
-            onDrop={(e) => {
-              const id = e.dataTransfer.getData('application/cocraft-asset');
-              if (id) {
-                e.preventDefault();
-                e.stopPropagation();
-                onAssetDropAt(id, e.currentTarget, e.clientX);
-              }
-            }}
-          >
-            {track.clips.map((c) => {
-              const clip = drag?.id === c.id ? { ...c, ...drag } : c;
-              const asset = c.assetId ? assetsById.get(c.assetId) : undefined;
-              const clipPxWidth = (clip.duration / totalFrames) * contentWidth;
-              const waveBars = Math.max(24, Math.min(120, Math.round(clipPxWidth / 4)));
-              const showWave = (c.kind === 'audio' || c.kind === 'video') && !!asset?.waveform?.length;
-              const trMeta = c.transitionIn
-                ? BUILT_IN_TRANSITIONS.find((x) => x.id === c.transitionIn?.type)
-                : undefined;
-              const isSelected = selectedSet.has(c.id);
-              const isPrimarySelected = selected === c.id;
-              return (
-                <div
-                  key={c.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`片段 ${c.name}`}
-                  aria-pressed={isSelected}
-                  className={`timeline-clip ${c.kind} ${isSelected ? 'selected' : ''} ${c.locked ? 'locked' : ''} ${asset?.offline ? 'offline' : ''} ${drag?.id === c.id ? 'dragging' : ''}`}
-                  style={{
-                    left: `${(clip.start / totalFrames) * 100}%`,
-                    width: `${(clip.duration / totalFrames) * 100}%`,
-                  }}
-                  onPointerDown={(e) => onClipDragStart(e, c, 'move')}
-                  onPointerMove={(e) => {
-                    if (toolMode === 'razor') onClipRazorHover(e, c);
-                  }}
-                  onDoubleClick={() => onClipDoubleClick(c.start)}
-                  onDragOver={(e) => {
-                    if (
-                      e.dataTransfer.types.includes('application/cocraft-transition') &&
-                      c.kind !== 'audio' &&
-                      !c.locked
-                    ) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }
-                  }}
-                  onDrop={(e) => {
-                    const trType = e.dataTransfer.getData('application/cocraft-transition') as TransitionType;
-                    if (trType && c.kind !== 'audio' && !c.locked) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onApplyTransition(c, trType);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') onClipSelect(c.id, e.shiftKey || e.metaKey || e.ctrlKey);
-                  }}
-                  title={`${c.name} · ${timecodeFrames(c.start, fps)} — ${timecodeFrames(c.start + c.duration, fps)}${asset?.offline ? ' (素材离线)' : ''}`}
-                >
-                  {asset?.thumbnail && !asset.offline && (
-                    <div
-                      className="clip-thumbnails"
-                      style={{ backgroundImage: `url("${mediaUrl(mediaOrigin, asset.id, true)}")` }}
-                    />
-                  )}
-                  {c.transitionIn && (
-                    <span
-                      className="clip-transition-badge"
-                      title={`入场转场：${trMeta?.name || c.transitionIn.type} (${(c.transitionIn.durationFrames / fps).toFixed(1)}s)`}
-                    >
-                      <Sparkles size={9} />
-                      {clipPxWidth > 76 && <span>{trMeta?.name || c.transitionIn.type}</span>}
-                    </span>
-                  )}
-                  <div className="clip-label">
-                    {asset?.offline ? (
-                      <AlertTriangle size={11} />
-                    ) : c.locked ? (
-                      <Lock size={10} />
-                    ) : c.kind === 'code' ? (
-                      <span className="mono">{'{}'}</span>
-                    ) : null}
-                    {c.muted && <VolumeX size={10} aria-label="片段已静音" />}
-                    <span>{c.name}</span>
-                    {c.track === 'audio' && clipPxWidth > 68 && (
-                      <em
-                        className={`clip-attach-pill ${c.audioAttachMode === 'shot' ? 'shot' : 'timeline'}`}
-                        title={
-                          c.audioAttachMode === 'shot'
-                            ? '随镜移动：分镜换序时跟随所属镜头一起移动'
-                            : '固定时间线：分镜换序时保持在原时间位置'
-                        }
-                      >
-                        {c.audioAttachMode === 'shot' ? '随镜' : '固定'}
-                      </em>
+          <React.Fragment key={track.key}>
+            <div
+              className={`lane ${track.id} ${isMuted ? 'lane-muted' : ''} ${isDropTarget ? 'drop-target-track' : ''}`}
+              data-track-id={def.id}
+              data-track-kind={def.kind}
+              onClick={onLaneClick}
+              onDragOver={(e) => {
+                if (e.dataTransfer.types.includes('application/cocraft-asset')) e.preventDefault();
+              }}
+              onDrop={(e) => {
+                const id = e.dataTransfer.getData('application/cocraft-asset');
+                if (id) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onAssetDropAt(id, e.currentTarget, e.clientX, def);
+                }
+              }}
+            >
+              {track.clips.map((c) => {
+                const clip = drag?.id === c.id ? { ...c, ...drag } : c;
+                const asset = c.assetId ? assetsById.get(c.assetId) : undefined;
+                const clipPxWidth = (clip.duration / totalFrames) * contentWidth;
+                const waveBars = Math.max(24, Math.min(120, Math.round(clipPxWidth / 4)));
+                const showWave = (c.kind === 'audio' || c.kind === 'video') && !!asset?.waveform?.length;
+                const trMeta = c.transitionIn
+                  ? BUILT_IN_TRANSITIONS.find((x) => x.id === c.transitionIn?.type)
+                  : undefined;
+                const isSelected = selectedSet.has(c.id);
+                const isPrimarySelected = selected === c.id;
+                const kfFrames = c.keyframes ? listAllKeyframeFrames(c) : [];
+                const isCurveOpen = curveClip?.id === c.id;
+
+                return (
+                  <div
+                    key={c.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`片段 ${c.name}`}
+                    aria-pressed={isSelected}
+                    className={`timeline-clip ${c.kind} ${isSelected ? 'selected' : ''} ${c.locked ? 'locked' : ''} ${asset?.offline ? 'offline' : ''} ${drag?.id === c.id ? 'dragging' : ''}`}
+                    style={{
+                      left: `${(clip.start / totalFrames) * 100}%`,
+                      width: `${(clip.duration / totalFrames) * 100}%`,
+                    }}
+                    onPointerDown={(e) => onClipDragStart(e, c, 'move')}
+                    onPointerMove={(e) => {
+                      if (toolMode === 'razor') onClipRazorHover(e, c);
+                    }}
+                    onDoubleClick={() => onClipDoubleClick(c.start)}
+                    onDragOver={(e) => {
+                      if (
+                        e.dataTransfer.types.includes('application/cocraft-transition') &&
+                        c.kind !== 'audio' &&
+                        !c.locked
+                      ) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }
+                    }}
+                    onDrop={(e) => {
+                      const trType = e.dataTransfer.getData('application/cocraft-transition') as TransitionType;
+                      if (trType && c.kind !== 'audio' && !c.locked) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onApplyTransition(c, trType);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') onClipSelect(c.id, e.shiftKey || e.metaKey || e.ctrlKey);
+                    }}
+                    title={`${c.name} · ${timecodeFrames(c.start, fps)} — ${timecodeFrames(c.start + c.duration, fps)}${asset?.offline ? ' (素材离线)' : ''}`}
+                  >
+                    {asset?.thumbnail && !asset.offline && (
+                      <div
+                        className="clip-thumbnails"
+                        style={{ backgroundImage: `url("${mediaUrl(mediaOrigin, asset.id, true)}")` }}
+                      />
                     )}
-                  </div>
-                  {showWave && (
-                    <WaveformSvg
-                      waveform={asset!.waveform!}
-                      sourceIn={clip.sourceIn}
-                      clipDuration={clip.duration}
-                      assetDurationFrames={(asset!.duration || 1) * fps}
-                      volume={c.muted ? 0 : Number(clip.props.volume ?? 1)}
-                      bars={waveBars}
-                      isVideo={c.kind === 'video'}
-                    />
-                  )}
-                  {drag?.id === c.id && (
-                    <div className="clip-drag-hud">
-                      {timecodeFrames(clip.start, fps)} · {(clip.duration / fps).toFixed(2)}s
-                      {clip.kind !== 'title' && clip.kind !== 'caption' && clip.kind !== 'image'
-                        ? ` · 源 ${timecodeFrames(clip.sourceIn, fps)}`
-                        : ''}
+                    {c.transitionIn && (
+                      <span
+                        className="clip-transition-badge"
+                        title={`入场转场：${trMeta?.name || c.transitionIn.type} (${(c.transitionIn.durationFrames / fps).toFixed(1)}s)`}
+                      >
+                        <Sparkles size={9} />
+                        {clipPxWidth > 76 && <span>{trMeta?.name || c.transitionIn.type}</span>}
+                      </span>
+                    )}
+                    <div className="clip-label">
+                      {asset?.offline ? (
+                        <AlertTriangle size={11} />
+                      ) : c.locked ? (
+                        <Lock size={10} />
+                      ) : c.kind === 'code' ? (
+                        <span className="mono">{'{}'}</span>
+                      ) : null}
+                      {c.muted && <VolumeX size={10} aria-label="片段已静音" />}
+                      <span>{c.name}</span>
+                      {(kfFrames.length > 0 || isPrimarySelected) && clipPxWidth > 54 && (
+                        <button
+                          type="button"
+                          className={`clip-curve-toggle ${isCurveOpen ? 'active' : ''}`}
+                          aria-label={`${isCurveOpen ? '收起' : '展开'}「${c.name}」关键帧曲线`}
+                          title={isCurveOpen ? '收起关键帧曲线抽屉' : '在下方展开关键帧曲线与贝塞尔手柄'}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleCurveForClip(c.id);
+                          }}
+                        >
+                          <Diamond size={8} />
+                        </button>
+                      )}
+                      {c.track === 'audio' && clipPxWidth > 68 && (
+                        <em
+                          className={`clip-attach-pill ${c.audioAttachMode === 'shot' ? 'shot' : 'timeline'}`}
+                          title={
+                            c.audioAttachMode === 'shot'
+                              ? '随镜移动：分镜换序时跟随所属镜头一起移动'
+                              : '固定时间线：分镜换序时保持在原时间位置'
+                          }
+                        >
+                          {c.audioAttachMode === 'shot' ? '随镜' : '固定'}
+                        </em>
+                      )}
                     </div>
-                  )}
-                  {isPrimarySelected && !c.locked && toolMode === 'select' && (
-                    <>
-                      <div className="trim-handle left" onPointerDown={(e) => onClipDragStart(e, c, 'in')} />
-                      <div className="trim-handle right" onPointerDown={(e) => onClipDragStart(e, c, 'out')} />
-                    </>
-                  )}
-                  {c.keyframes && (() => {
-                    const kfFrames = listAllKeyframeFrames(c);
-                    if (!kfFrames.length) return null;
-                    return (
+                    {showWave && (
+                      <WaveformSvg
+                        waveform={asset!.waveform!}
+                        sourceIn={clip.sourceIn}
+                        clipDuration={clip.duration}
+                        assetDurationFrames={(asset!.duration || 1) * fps}
+                        volume={c.muted ? 0 : Number(clip.props.volume ?? 1)}
+                        bars={waveBars}
+                        isVideo={c.kind === 'video'}
+                      />
+                    )}
+                    {drag?.id === c.id && (
+                      <div className="clip-drag-hud">
+                        {timecodeFrames(clip.start, fps)} · {(clip.duration / fps).toFixed(2)}s
+                        {clip.kind !== 'title' && clip.kind !== 'caption' && clip.kind !== 'image'
+                          ? ` · 源 ${timecodeFrames(clip.sourceIn, fps)}`
+                          : ''}
+                      </div>
+                    )}
+                    {isPrimarySelected && !c.locked && toolMode === 'select' && (
+                      <>
+                        <div className="trim-handle left" onPointerDown={(e) => onClipDragStart(e, c, 'in')} />
+                        <div className="trim-handle right" onPointerDown={(e) => onClipDragStart(e, c, 'out')} />
+                      </>
+                    )}
+                    {kfFrames.length > 0 && (
                       <div className="clip-kf-bar" aria-label={`${c.name} 关键帧`}>
                         {kfFrames.map((kf) => (
                           <button
@@ -426,21 +652,34 @@ const TimelineLanes = React.memo(function TimelineLanes({
                           />
                         ))}
                       </div>
-                    );
-                  })()}
+                    )}
+                  </div>
+                );
+              })}
+              {!track.clips.length && (
+                <div className="lane-empty">
+                  {track.id === 'visual'
+                    ? '拖入素材，开始剪辑'
+                    : track.id === 'caption'
+                      ? '字幕会出现在这里'
+                      : ''}
                 </div>
-              );
-            })}
-            {!track.clips.length && (
-              <div className="lane-empty">
-                {track.id === 'visual'
-                  ? '拖入素材，开始剪辑'
-                  : track.id === 'caption'
-                    ? '字幕会出现在这里'
-                    : ''}
-              </div>
+              )}
+            </div>
+            {curveClip && curveRowKey === track.key && (
+              <TimelineCurveLane
+                clip={curveClip}
+                sequenceId={sequenceId}
+                prop={curveProp}
+                totalFrames={totalFrames}
+                selectedFrame={curveSelectedFrame}
+                onSelectFrame={onSelectCurveFrame}
+                onSeek={onSeek}
+                onEndScrub={onEndScrub}
+                onEdit={onEdit}
+              />
             )}
-          </div>
+          </React.Fragment>
         );
       })}
     </>
@@ -464,6 +703,8 @@ export const Timeline = React.memo(function Timeline({
   onZoomChange,
   snap,
   toolMode = 'select',
+  curveClipId,
+  onToggleCurveClip,
 }: {
   project: Project;
   sequence: Sequence;
@@ -475,12 +716,14 @@ export const Timeline = React.memo(function Timeline({
   onSeek: (frame: number, options?: { scrubbing?: boolean }) => void;
   onEndScrub?: (frame: number) => void;
   onEdit: (name: string, operations: EditOperation[]) => void;
-  onAssetDrop: (id: string, frame: number) => void;
+  onAssetDrop: (id: string, frame: number, targetTrack?: { track: Track; trackId: string; layer: number }) => void;
   mediaOrigin: string;
   zoom: number;
   onZoomChange?: (nextZoom: number) => void;
   snap: boolean;
   toolMode?: 'select' | 'razor';
+  curveClipId?: string | null;
+  onToggleCurveClip?: (clipId: string | null) => void;
 }) {
   const cleanup = useRef<(() => void) | null>(null);
   const overflowRef = useRef<HTMLDivElement>(null);
@@ -490,6 +733,37 @@ export const Timeline = React.memo(function Timeline({
   if (!playheadClock) frameRef.current = frame;
   const [viewportWidth, setViewportWidth] = useState(960);
   const [razorPreview, setRazorPreview] = useState<{ frame: number; clipId: string } | null>(null);
+  const [localCurveClipId, setLocalCurveClipId] = useState<string | null>(null);
+  const [curveProp, setCurveProp] = useState<KeyframeProperty>('opacity');
+  const [curveSelectedFrame, setCurveSelectedFrame] = useState<number | null>(null);
+
+  const activeCurveClipId = curveClipId !== undefined ? curveClipId : localCurveClipId;
+  const setActiveCurveClipId = useCallback(
+    (next: string | null) => {
+      if (onToggleCurveClip) onToggleCurveClip(next);
+      else setLocalCurveClipId(next);
+    },
+    [onToggleCurveClip],
+  );
+
+  const curveClip = useMemo(
+    () => (activeCurveClipId ? sequence.clips.find((c) => c.id === activeCurveClipId) || null : null),
+    [activeCurveClipId, sequence.clips],
+  );
+
+  useEffect(() => {
+    if (!curveClip) return;
+    setCurveProp(defaultCurvePropertyForClip(curveClip));
+    setCurveSelectedFrame(null);
+  }, [curveClip?.id]);
+
+  const handleToggleCurveForClip = useCallback(
+    (clipId: string) => {
+      onSelect(clipId, false);
+      setActiveCurveClipId(activeCurveClipId === clipId ? null : clipId);
+    },
+    [activeCurveClipId, onSelect, setActiveCurveClipId],
+  );
 
   useEffect(() => {
     const el = overflowRef.current;
@@ -504,30 +778,52 @@ export const Timeline = React.memo(function Timeline({
     };
   }, []);
 
+  const allTracks = useMemo(() => resolveSequenceTracks(sequence), [sequence.tracks, sequence.clips]);
   const mutedSet = useMemo(() => new Set(sequence.mutedTracks || []), [sequence.mutedTracks]);
   const soloSet = useMemo(() => new Set(sequence.soloTracks || []), [sequence.soloTracks]);
+  const anySolo = useMemo(
+    () => soloSet.size > 0 || allTracks.some((t) => Boolean(t.solo)),
+    [soloSet, allTracks],
+  );
   const assetsById = useMemo(() => new Map(project.assets.map((a) => [a.id, a])), [project.assets]);
 
-  const rows: LaneRow[] = useMemo(
-    () =>
-      tracks.flatMap((track) => {
-        const lanes: Clip[][] = [[]];
-        const clips = sequence.clips.filter((c) => c.track === track.id).sort((a, b) => a.start - b.start);
-        for (const clip of clips) {
-          let lane = lanes.find(
-            (l) => !l.length || l[l.length - 1].start + l[l.length - 1].duration <= clip.start,
-          );
-          if (!lane) {
-            lane = [];
-            lanes.push(lane);
-          }
-          lane.push(clip);
+  const rows: LaneRow[] = useMemo(() => {
+    return allTracks.flatMap((trackDef) => {
+      const lanes: Clip[][] = [[]];
+      const clips = sequence.clips
+        .filter((c) => findTrackForClip(c, allTracks)?.id === trackDef.id)
+        .sort((a, b) => a.start - b.start);
+      for (const clip of clips) {
+        let lane = lanes.find(
+          (l) => !l.length || l[l.length - 1].start + l[l.length - 1].duration <= clip.start,
+        );
+        if (!lane) {
+          lane = [];
+          lanes.push(lane);
         }
-        return lanes.map((clips, index) => ({ ...track, clips, index, key: track.id + '-' + index }));
-      }),
-    [sequence.clips],
-  );
-  const overlayCount = useMemo(() => rows.filter((r) => r.id === 'overlay').length, [rows]);
+        lane.push(clip);
+      }
+      const code = formatTrackCode(trackDef, allTracks);
+      const icon = iconForTrack(trackDef.kind);
+      return lanes.map((laneClips, index) => ({
+        id: trackDef.kind,
+        trackId: trackDef.id,
+        trackDef,
+        code,
+        label: trackDef.name,
+        icon,
+        clips: laneClips,
+        index,
+        key: `${trackDef.id}-${index}`,
+      }));
+    });
+  }, [allTracks, sequence.clips]);
+
+  const curveRowKey = useMemo(() => {
+    if (!curveClip) return null;
+    const found = rows.find((r) => r.clips.some((c) => c.id === curveClip.id));
+    return found?.key || null;
+  }, [curveClip, rows]);
 
   const duration = useMemo(() => durationOf(sequence), [sequence]);
   const totalFrames = Math.max(duration + sequence.fps * 2, sequence.fps * 12);
@@ -584,6 +880,7 @@ export const Timeline = React.memo(function Timeline({
     duration: number;
     sourceIn: number;
     snapFrame?: number;
+    targetTrackId?: string;
   } | null>(null);
 
   const at = useCallback(
@@ -597,22 +894,68 @@ export const Timeline = React.memo(function Timeline({
     [totalFrames],
   );
 
-  const toggleTrackMuteOrVis = useCallback(
-    (trackId: Track) => {
-      const current = new Set(sequence.mutedTracks || []);
-      if (current.has(trackId)) current.delete(trackId);
-      else current.add(trackId);
-      const label =
-        trackId === 'audio'
-          ? current.has(trackId)
-            ? '静音音频轨'
-            : '取消音频轨静音'
-          : current.has(trackId)
-            ? '隐藏轨道画面'
-            : '显示轨道画面';
-      onEdit(label, [{ type: 'updateSequence', sequenceId: sequence.id, changes: { mutedTracks: [...current] } }]);
+  // Dynamic Multi-Track Mutations
+  const handleAddTrack = useCallback(
+    (group: 'video' | 'caption' | 'audio') => {
+      const nextDef = createNewTrackDef(allTracks, group);
+      const nextTracks = [...allTracks, nextDef];
+      onEdit(`新增轨道「${nextDef.name}」`, [
+        { type: 'updateSequence', sequenceId: sequence.id, changes: { tracks: nextTracks } },
+      ]);
     },
-    [sequence.mutedTracks, sequence.id, onEdit],
+    [allTracks, sequence.id, onEdit],
+  );
+
+  const handleRenameTrack = useCallback(
+    (trackId: string, nextName: string) => {
+      const nextTracks = allTracks.map((t) => (t.id === trackId ? { ...t, name: nextName } : t));
+      onEdit(`重命名轨道为「${nextName}」`, [
+        { type: 'updateSequence', sequenceId: sequence.id, changes: { tracks: nextTracks } },
+      ]);
+    },
+    [allTracks, sequence.id, onEdit],
+  );
+
+  const handleDeleteTrack = useCallback(
+    (trackId: string) => {
+      const target = allTracks.find((t) => t.id === trackId);
+      if (!target) return;
+      const trackClips = sequence.clips.filter((c) => findTrackForClip(c, allTracks)?.id === trackId);
+      if (trackClips.some((c) => c.locked)) return;
+      const remaining = allTracks.filter((t) => t.id !== trackId);
+      if (!remaining.some((t) => t.kind === 'visual')) return;
+      const ops: EditOperation[] = [
+        ...trackClips.map((c) => ({ type: 'deleteClip' as const, sequenceId: sequence.id, clipId: c.id })),
+        { type: 'updateSequence', sequenceId: sequence.id, changes: { tracks: remaining } },
+      ];
+      onEdit(`删除轨道「${target.name}」`, ops);
+    },
+    [allTracks, sequence.clips, sequence.id, onEdit],
+  );
+
+  const toggleTrackMuteOrVis = useCallback(
+    (trackDef: TimelineTrackDef) => {
+      const wasMuted = Boolean(trackDef.muted) || mutedSet.has(trackDef.kind);
+      const nextMuted = !wasMuted;
+      const nextTracks = allTracks.map((t) => (t.id === trackDef.id ? { ...t, muted: nextMuted } : t));
+      const nextLegacyMuted = (sequence.mutedTracks || []).filter((k) => k !== trackDef.kind);
+      const label =
+        trackDef.kind === 'audio'
+          ? nextMuted
+            ? `静音「${trackDef.name}」轨`
+            : `取消静音「${trackDef.name}」轨`
+          : nextMuted
+            ? `隐藏「${trackDef.name}」轨画面`
+            : `显示「${trackDef.name}」轨画面`;
+      onEdit(label, [
+        {
+          type: 'updateSequence',
+          sequenceId: sequence.id,
+          changes: { tracks: nextTracks, mutedTracks: nextLegacyMuted },
+        },
+      ]);
+    },
+    [allTracks, mutedSet, sequence.mutedTracks, sequence.id, onEdit],
   );
 
   const toggleVideoAudioMute = useCallback(() => {
@@ -623,15 +966,20 @@ export const Timeline = React.memo(function Timeline({
   }, [sequence.mutedVideoAudio, sequence.id, onEdit]);
 
   const toggleTrackSolo = useCallback(
-    (trackId: Track) => {
-      const current = new Set(sequence.soloTracks || []);
-      if (current.has(trackId)) current.delete(trackId);
-      else current.add(trackId);
-      onEdit(current.has(trackId) ? '开启轨道独奏' : '取消轨道独奏', [
-        { type: 'updateSequence', sequenceId: sequence.id, changes: { soloTracks: [...current] } },
+    (trackDef: TimelineTrackDef) => {
+      const wasSolo = Boolean(trackDef.solo) || soloSet.has(trackDef.kind);
+      const nextSolo = !wasSolo;
+      const nextTracks = allTracks.map((t) => (t.id === trackDef.id ? { ...t, solo: nextSolo } : t));
+      const nextLegacySolo = (sequence.soloTracks || []).filter((k) => k !== trackDef.kind);
+      onEdit(nextSolo ? `开启「${trackDef.name}」轨独奏` : `取消「${trackDef.name}」轨独奏`, [
+        {
+          type: 'updateSequence',
+          sequenceId: sequence.id,
+          changes: { tracks: nextTracks, soloTracks: nextLegacySolo },
+        },
       ]);
     },
-    [sequence.soloTracks, sequence.id, onEdit],
+    [allTracks, soloSet, sequence.soloTracks, sequence.id, onEdit],
   );
 
   const handleKeyframeDragStart = useCallback(
@@ -679,12 +1027,12 @@ export const Timeline = React.memo(function Timeline({
   );
 
   const toggleTrackLock = useCallback(
-    (trackId: Track) => {
-      const list = sequence.clips.filter((c) => c.track === trackId);
+    (trackDef: TimelineTrackDef) => {
+      const list = sequence.clips.filter((c) => findTrackForClip(c, allTracks)?.id === trackDef.id);
       if (!list.length) return;
       const allLocked = list.every((c) => c.locked);
       onEdit(
-        allLocked ? '解锁整条轨道' : '锁定整条轨道',
+        allLocked ? `解锁「${trackDef.name}」轨` : `锁定「${trackDef.name}」轨`,
         list.map((c) => ({
           type: 'updateClip',
           sequenceId: sequence.id,
@@ -693,7 +1041,7 @@ export const Timeline = React.memo(function Timeline({
         })),
       );
     },
-    [sequence.clips, sequence.id, onEdit],
+    [allTracks, sequence.clips, sequence.id, onEdit],
   );
 
   const applyTransitionToClip = useCallback(
@@ -744,12 +1092,14 @@ export const Timeline = React.memo(function Timeline({
       if (clip.locked || !lane) return;
       const width = Math.max(1, lane.getBoundingClientRect().width);
       const origin = e.clientX;
+      const origTrackDef = findTrackForClip(clip, allTracks);
       let current = {
         id: clip.id,
         start: clip.start,
         duration: clip.duration,
         sourceIn: clip.sourceIn,
         snapFrame: undefined as number | undefined,
+        targetTrackId: origTrackDef?.id,
       };
       const points = [
         0,
@@ -774,7 +1124,24 @@ export const Timeline = React.memo(function Timeline({
       const asset = assetsById.get(clip.assetId || '');
       const max = asset && asset.kind !== 'image' ? Math.floor(asset.duration * sequence.fps) : Infinity;
 
-      const move = (clientX: number) => {
+      const detectHoveredTrackId = (clientY: number): string | undefined => {
+        if (mode !== 'move' || !overflowRef.current) return origTrackDef?.id;
+        const laneEls = overflowRef.current.querySelectorAll<HTMLElement>('.lane[data-track-id]');
+        for (const el of laneEls) {
+          const r = el.getBoundingClientRect();
+          if (clientY >= r.top && clientY <= r.bottom) {
+            const tid = el.dataset.trackId;
+            const def = allTracks.find((t) => t.id === tid);
+            if (def && isTrackCompatibleWithClip(def, clip.kind)) {
+              return def.id;
+            }
+            break;
+          }
+        }
+        return origTrackDef?.id;
+      };
+
+      const move = (clientX: number, clientY: number) => {
         const delta = Math.round(((clientX - origin) / width) * totalFrames);
         let start = clip.start,
           dur = clip.duration,
@@ -821,31 +1188,52 @@ export const Timeline = React.memo(function Timeline({
           }
           dur = candidateDur;
         }
-        current = { id: clip.id, start, duration: dur, sourceIn, snapFrame };
+        const targetTrackId = detectHoveredTrackId(clientY);
+        current = { id: clip.id, start, duration: dur, sourceIn, snapFrame, targetTrackId };
         setDrag(current);
       };
 
       const up = () => {
         setDrag(null);
+        const targetDef = current.targetTrackId
+          ? allTracks.find((t) => t.id === current.targetTrackId)
+          : undefined;
+        const trackChanged = Boolean(targetDef && origTrackDef && targetDef.id !== origTrackDef.id);
         if (
           current.start !== clip.start ||
           current.duration !== clip.duration ||
-          current.sourceIn !== clip.sourceIn
-        )
-          onEdit(mode === 'move' ? '移动片段' : '调整入出点', [
-            {
-              type: 'updateClip',
-              sequenceId: sequence.id,
-              clipId: clip.id,
-              changes: { start: current.start, duration: current.duration, sourceIn: current.sourceIn },
-            },
-          ]);
+          current.sourceIn !== clip.sourceIn ||
+          trackChanged
+        ) {
+          onEdit(
+            trackChanged
+              ? `移动片段至「${targetDef!.name}」轨`
+              : mode === 'move'
+                ? '移动片段'
+                : '调整入出点',
+            [
+              {
+                type: 'updateClip',
+                sequenceId: sequence.id,
+                clipId: clip.id,
+                changes: {
+                  start: current.start,
+                  duration: current.duration,
+                  sourceIn: current.sourceIn,
+                  ...(trackChanged && targetDef
+                    ? { track: targetDef.kind, trackId: targetDef.id, layer: targetDef.layer }
+                    : {}),
+                },
+              },
+            ],
+          );
+        }
       };
 
       cleanup.current?.();
       cleanup.current = pointerDrag(e, move, up, mode === 'move' ? 'grabbing' : 'ew-resize');
     },
-    [toolMode, sequence, totalFrames, snap, assetsById, at, onSelect, onEdit],
+    [toolMode, sequence, allTracks, totalFrames, snap, assetsById, at, onSelect, onEdit],
   );
 
   const stepSec = useMemo(
@@ -894,8 +1282,12 @@ export const Timeline = React.memo(function Timeline({
   );
 
   const handleAssetDropAt = useCallback(
-    (id: string, target: HTMLDivElement, clientX: number) => {
-      onAssetDrop(id, at({ clientX }, target));
+    (id: string, target: HTMLDivElement, clientX: number, trackDef: TimelineTrackDef) => {
+      onAssetDrop(id, at({ clientX }, target), {
+        track: trackDef.kind,
+        trackId: trackDef.id,
+        layer: trackDef.layer,
+      });
     },
     [at, onAssetDrop],
   );
@@ -930,11 +1322,25 @@ export const Timeline = React.memo(function Timeline({
         labelsRef={labels}
         fps={sequence.fps}
         rows={rows}
-        overlayCount={overlayCount}
+        allTracks={allTracks}
         allClips={sequence.clips}
+        sequenceId={sequence.id}
         mutedSet={mutedSet}
         soloSet={soloSet}
+        anySolo={anySolo}
         mutedVideoAudio={Boolean(sequence.mutedVideoAudio)}
+        curveClip={curveClip}
+        curveRowKey={curveRowKey}
+        curveProp={curveProp}
+        curveSelectedFrame={curveSelectedFrame}
+        currentFrame={frameRef.current}
+        onChangeCurveProp={setCurveProp}
+        onSelectCurveFrame={setCurveSelectedFrame}
+        onCloseCurve={() => setActiveCurveClipId(null)}
+        onEdit={onEdit}
+        onAddTrack={handleAddTrack}
+        onRenameTrack={handleRenameTrack}
+        onDeleteTrack={handleDeleteTrack}
         onToggleLock={toggleTrackLock}
         onToggleSolo={toggleTrackSolo}
         onToggleVisMute={toggleTrackMuteOrVis}
@@ -966,7 +1372,9 @@ export const Timeline = React.memo(function Timeline({
             rows={rows}
             mutedSet={mutedSet}
             soloSet={soloSet}
+            anySolo={anySolo}
             assetsById={assetsById}
+            sequenceId={sequence.id}
             fps={sequence.fps}
             totalFrames={totalFrames}
             contentWidth={contentWidth}
@@ -975,6 +1383,15 @@ export const Timeline = React.memo(function Timeline({
             drag={drag}
             toolMode={toolMode}
             mediaOrigin={mediaOrigin}
+            curveClip={curveClip}
+            curveRowKey={curveRowKey}
+            curveProp={curveProp}
+            curveSelectedFrame={curveSelectedFrame}
+            onSelectCurveFrame={setCurveSelectedFrame}
+            onToggleCurveForClip={handleToggleCurveForClip}
+            onSeek={onSeek}
+            onEndScrub={onEndScrub}
+            onEdit={onEdit}
             onLaneClick={handleLaneClick}
             onAssetDropAt={handleAssetDropAt}
             onClipDragStart={begin}

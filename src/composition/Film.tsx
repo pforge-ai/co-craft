@@ -1,6 +1,7 @@
 import { PresetContent } from './Presets';
 import { getPreset, isLightHex, resolveProjectStyle } from '../core/presets';
 import { evaluateKeyframeTrack, resolveClipPropsAtFrame } from '../core/keyframes';
+import { getClipCompositingOrder, isClipTrackActive } from '../core/tracks';
 import { ThreeCanvas, TeardownStage } from './ThreeStage';
 import { SpatialStage } from './SpatialStage';
 import RoughPrimitives, { rough } from './RoughPrimitives';
@@ -853,10 +854,9 @@ export function Film({ project, sequenceId, mediaOrigin, paused, selectedClipId,
   const isTrackActive = (t: Clip['track']) => !muted.has(t) && (solo.size === 0 || solo.has(t));
   const a1TrackMuted = !isTrackActive('audio');
   const v1VideoAudioMuted = Boolean(sequence.mutedVideoAudio) || !isTrackActive('visual');
-  const layers = { visual: 0, audio: 1, overlay: 2, caption: 3 };
   const sortedClips = [...sequence.clips]
-    .filter((clip) => isTrackActive(clip.track))
-    .sort((a, b) => layers[a.track] - layers[b.track] || (a.layer ?? 0) - (b.layer ?? 0) || a.start - b.start);
+    .filter((clip) => isClipTrackActive(sequence, clip))
+    .sort((a, b) => getClipCompositingOrder(sequence, a) - getClipCompositingOrder(sequence, b) || a.start - b.start);
 
   return (
     <AbsoluteFill style={{ background: sequence.background }}>

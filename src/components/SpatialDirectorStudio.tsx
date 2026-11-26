@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { evaluateKeyframeTrack, removeClipKeyframe, upsertClipKeyframe } from '../core/keyframes';
 import { clone, newClip, timecode, uid } from '../core/project';
+import { pointerDrag } from '../lib/pointerDrag';
 import {
   DEFAULT_SPATIAL_BOOKMARKS,
   SPATIAL_ACTOR_ACTION_OPTIONS,
@@ -143,8 +144,35 @@ export function SpatialDirectorStudio({
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rightTab, setRightTab] = useState<'direct' | 'agent'>('direct');
+  const [rightWidth, setRightWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('cc-sds-right-width'));
+    return Number.isFinite(saved) && saved >= 280 && saved <= 720 ? Math.round(saved) : 360;
+  });
   const [frameGuide, setFrameGuide] = useState<FrameGuide>('thirds');
   const [previewDurationSec, setPreviewDurationSec] = useState(4);
+  const resizerCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => resizerCleanupRef.current?.(), []);
+
+  const handleRightResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = rightWidth;
+    let latestW = startW;
+    const maxW = Math.max(360, Math.min(720, window.innerWidth - 420));
+    resizerCleanupRef.current?.();
+    resizerCleanupRef.current = pointerDrag(
+      e,
+      (mx) => {
+        latestW = Math.max(280, Math.min(maxW, Math.round(startW - (mx - startX))));
+        setRightWidth(latestW);
+      },
+      () => {
+        resizerCleanupRef.current = null;
+        localStorage.setItem('cc-sds-right-width', String(latestW));
+      },
+      'col-resize',
+    );
+  };
   const [assetPropsLocal, setAssetPropsLocal] = useState<Record<string, unknown>>({
     cameraPreset: 'orbit',
     cameraLens: 35,
@@ -793,8 +821,8 @@ export function SpatialDirectorStudio({
         </div>
       </header>
 
-      {/* Main Studio Body: 75% Interactive 3D Viewport + 25% Director Inspector */}
-      <div className="sds-body">
+      {/* Main Studio Body: Interactive 3D Viewport + Resizable Director / Agent Sidebar */}
+      <div className="sds-body" style={{ gridTemplateColumns: `minmax(0, 1fr) ${rightWidth}px` }}>
         <div className="sds-viewport-col">
           <div
             className="sds-viewport-stage"
@@ -1024,8 +1052,31 @@ export function SpatialDirectorStudio({
           </footer>
         </div>
 
-        {/* Right Focused 3D Director Panel */}
+        {/* Right Resizable 3D Director / Native Agent Panel */}
         <aside className="sds-inspector">
+          <div
+            className="sds-resizer"
+            role="separator"
+            aria-label="调整导演棚右侧栏宽度"
+            aria-orientation="vertical"
+            tabIndex={0}
+            aria-valuenow={rightWidth}
+            title="拖动调整右侧面板宽度（双击恢复默认 360px）"
+            onPointerDown={handleRightResize}
+            onDoubleClick={() => {
+              setRightWidth(360);
+              localStorage.setItem('cc-sds-right-width', '360');
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                e.preventDefault();
+                const delta = e.key === 'ArrowLeft' ? 20 : -20;
+                const nextW = Math.max(280, Math.min(720, rightWidth + delta));
+                setRightWidth(nextW);
+                localStorage.setItem('cc-sds-right-width', String(nextW));
+              }
+            }}
+          />
           <div className="sds-tabs">
             <button
               type="button"

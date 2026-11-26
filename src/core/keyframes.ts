@@ -12,8 +12,84 @@ export const KEYFRAME_EASING_OPTIONS: { id: KeyframeEasing; label: string }[] = 
   { id: 'ease-out', label: '缓出收尾' },
   { id: 'ease-in', label: '缓入启动' },
   { id: 'linear', label: '匀速线性' },
+  { id: 'bezier', label: '自定义贝塞尔' },
   { id: 'hold', label: '定格跳变' },
 ];
+
+export const KEYFRAME_PROPERTY_RANGES: Record<
+  KeyframeProperty,
+  { min: number; max: number; step: number; unit: string; defaultVal: number }
+> = {
+  x: { min: -960, max: 960, step: 1, unit: 'px', defaultVal: 0 },
+  y: { min: -540, max: 540, step: 1, unit: 'px', defaultVal: 0 },
+  scale: { min: 0.1, max: 3, step: 0.01, unit: '×', defaultVal: 1 },
+  rotation: { min: -180, max: 180, step: 1, unit: '°', defaultVal: 0 },
+  opacity: { min: 0, max: 1, step: 0.01, unit: '', defaultVal: 1 },
+  volume: { min: 0, max: 2, step: 0.01, unit: '', defaultVal: 1 },
+  cameraYaw: { min: -180, max: 180, step: 1, unit: '°', defaultVal: 0 },
+  cameraPitch: { min: -75, max: 80, step: 1, unit: '°', defaultVal: 12 },
+  cameraDistance: { min: 1.5, max: 18, step: 0.1, unit: '', defaultVal: 5.4 },
+  cameraLens: { min: 18, max: 120, step: 1, unit: 'mm', defaultVal: 35 },
+  cameraPanX: { min: -5, max: 5, step: 0.05, unit: '', defaultVal: 0 },
+  cameraPanY: { min: -4, max: 4, step: 0.05, unit: '', defaultVal: 0 },
+  explode: { min: 0, max: 1, step: 0.01, unit: '', defaultVal: 0 },
+};
+
+export function easingToDefaultBezier(easing: KeyframeEasing = 'ease-in-out'): [number, number, number, number] {
+  switch (easing) {
+    case 'linear':
+      return [0.25, 0.25, 0.75, 0.75];
+    case 'ease-in':
+      return [0.42, 0, 1, 1];
+    case 'ease-out':
+      return [0, 0, 0.58, 1];
+    case 'ease-in-out':
+    case 'bezier':
+    default:
+      return [0.42, 0, 0.58, 1];
+  }
+}
+
+/**
+ * Deterministic CSS-standard cubic-bezier solver for [x1, y1, x2, y2].
+ * Solves X(u) = t via Newton-Raphson with bisection fallback, returning Y(u).
+ */
+export function solveCubicBezier(
+  t: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): number {
+  const clampedT = Math.max(0, Math.min(1, t));
+  if (clampedT <= 0) return 0;
+  if (clampedT >= 1) return 1;
+  const cx1 = Math.max(0, Math.min(1, x1));
+  const cx2 = Math.max(0, Math.min(1, x2));
+  const sampleX = (u: number) =>
+    3 * (1 - u) * (1 - u) * u * cx1 + 3 * (1 - u) * u * u * cx2 + u * u * u;
+  const sampleDX = (u: number) =>
+    3 * (1 - u) * (1 - u) * cx1 + 6 * (1 - u) * u * (cx2 - cx1) + 3 * u * u * (1 - cx2);
+  const sampleY = (u: number) =>
+    3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u * u * u;
+
+  let u = clampedT;
+  for (let i = 0; i < 8; i++) {
+    const err = sampleX(u) - clampedT;
+    if (Math.abs(err) < 1e-6) return sampleY(u);
+    const dx = sampleDX(u);
+    if (Math.abs(dx) < 1e-6) break;
+    u = Math.max(0, Math.min(1, u - err / dx));
+  }
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 16; i++) {
+    const mid = (lo + hi) * 0.5;
+    if (sampleX(mid) < clampedT) lo = mid;
+    else hi = mid;
+  }
+  return sampleY((lo + hi) * 0.5);
+}
 
 export const KEYFRAME_PROPERTY_LABELS: Record<KeyframeProperty, string> = {
   x: '水平位置 X',
@@ -31,7 +107,11 @@ export const KEYFRAME_PROPERTY_LABELS: Record<KeyframeProperty, string> = {
   explode: '3D 爆炸拆解',
 };
 
-export function applyKeyframeEasing(t: number, easing: KeyframeEasing = 'ease-in-out'): number {
+export function applyKeyframeEasing(
+  t: number,
+  easing: KeyframeEasing = 'ease-in-out',
+  bezier?: [number, number, number, number],
+): number {
   const clamped = Math.max(0, Math.min(1, t));
   switch (easing) {
     case 'linear':
@@ -42,6 +122,10 @@ export function applyKeyframeEasing(t: number, easing: KeyframeEasing = 'ease-in
       return clamped * clamped * clamped;
     case 'ease-out':
       return 1 - Math.pow(1 - clamped, 3);
+    case 'bezier': {
+      const [x1, y1, x2, y2] = bezier || [0.42, 0, 0.58, 1];
+      return solveCubicBezier(clamped, x1, y1, x2, y2);
+    }
     case 'ease-in-out':
     default:
       return clamped < 0.5
@@ -56,10 +140,22 @@ export function normalizeKeyframeTrack(points: readonly ClipKeyframe[] | undefin
   for (const pt of points) {
     if (!Number.isFinite(pt.frame) || !Number.isFinite(pt.value)) continue;
     const frame = Math.max(0, Math.round(pt.frame));
+    const validBezier =
+      Array.isArray(pt.bezier) &&
+      pt.bezier.length === 4 &&
+      pt.bezier.every((n) => Number.isFinite(n))
+        ? ([
+            Math.max(0, Math.min(1, pt.bezier[0])),
+            Math.max(-1.5, Math.min(2.5, pt.bezier[1])),
+            Math.max(0, Math.min(1, pt.bezier[2])),
+            Math.max(-1.5, Math.min(2.5, pt.bezier[3])),
+          ] as [number, number, number, number])
+        : undefined;
     byFrame.set(frame, {
       frame,
       value: pt.value,
       easing: pt.easing || 'ease-in-out',
+      ...(validBezier ? { bezier: validBezier } : {}),
     });
   }
   return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
@@ -90,7 +186,7 @@ export function evaluateKeyframeTrack(
     if (localFrame >= a.frame && localFrame <= b.frame) {
       if (b.frame <= a.frame) return b.value;
       const rawT = (localFrame - a.frame) / (b.frame - a.frame);
-      const eased = applyKeyframeEasing(rawT, a.easing || 'ease-in-out');
+      const eased = applyKeyframeEasing(rawT, a.easing || 'ease-in-out', a.bezier);
       return a.value + (b.value - a.value) * eased;
     }
   }
@@ -142,11 +238,12 @@ export function upsertClipKeyframe(
   frame: number,
   value: number,
   easing: KeyframeEasing = 'ease-in-out',
+  bezier?: [number, number, number, number],
 ): ClipKeyframes {
   const f = Math.max(0, Math.round(frame));
   const next: ClipKeyframes = { ...(keyframes || {}) };
   const existing = normalizeKeyframeTrack(next[prop]).filter((p) => p.frame !== f);
-  existing.push({ frame: f, value, easing });
+  existing.push({ frame: f, value, easing, ...(bezier ? { bezier } : {}) });
   existing.sort((a, b) => a.frame - b.frame);
   next[prop] = existing;
   return next;

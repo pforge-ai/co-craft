@@ -78,6 +78,7 @@ import {
   Crosshair,
   Camera,
   BookmarkPlus,
+  Diamond,
 } from 'lucide-react';
 import type {
   Asset,
@@ -202,6 +203,7 @@ export function App() {
     [personalLibrary, setPersonalLibrary] = useState<VaultItem[]>([]),
     [assetCategory, setAssetCategory] = useState<AssetCategory>('media'),
     [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select'),
+    [curveClipId, setCurveClipId] = useState<string | null>(null),
     [scriptQuery, setScriptQuery] = useState(''),
     [draggingFile, setDraggingFile] = useState(false),
     [timelineHeight, setTimelineHeight] = useState(Number(localStorage.getItem('cc-timeline-height')) || 278),
@@ -743,10 +745,19 @@ export function App() {
     setRight('inspector');
   }, []);
 
-  const addAsset = async (payload: string, atFrame = frameRef.current) => {
+  const addAsset = async (
+    payload: string,
+    atFrame = frameRef.current,
+    targetTrack?: { track: Clip['track']; trackId: string; layer: number },
+  ) => {
     if (!project || !sequence) return;
     if (payload.startsWith('preset:')) {
       const c = createPresetClip(payload.slice(7), atFrame, sequence.fps, {}, project);
+      if (targetTrack && (targetTrack.track === 'visual' || targetTrack.track === 'overlay')) {
+        c.track = targetTrack.track;
+        c.trackId = targetTrack.trackId;
+        c.layer = targetTrack.layer;
+      }
       await edit('拖入动态组件', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
       selectClip(c.id);
       return;
@@ -817,6 +828,17 @@ export function App() {
       duration: dur,
       ...(asset.kind === 'audio' ? { audioAttachMode: inferDefaultAudioAttachMode(asset, dur, sequence.fps) } : {}),
     };
+    if (targetTrack) {
+      const compat =
+        c.kind === 'audio'
+          ? targetTrack.track === 'audio'
+          : targetTrack.track === 'visual' || targetTrack.track === 'overlay';
+      if (compat) {
+        c.track = targetTrack.track;
+        c.trackId = targetTrack.trackId;
+        c.layer = targetTrack.layer;
+      }
+    }
     await edit('添加素材到时间线', [{ type: 'addClip', sequenceId: sequence.id, clip: c }]);
     selectClip(c.id);
   };
@@ -1816,7 +1838,11 @@ export function App() {
     [],
   );
   const addStudioCb = useCallback((studioId: string) => latestActionsRef.current.addStudioMedia(studioId), []);
-  const addAssetCb = useCallback((id: string, f: number) => void latestActionsRef.current.addAsset(id, f), []);
+  const addAssetCb = useCallback(
+    (id: string, f: number, targetTrack?: { track: Clip['track']; trackId: string; layer: number }) =>
+      void latestActionsRef.current.addAsset(id, f, targetTrack),
+    [],
+  );
   const referenceCb = useCallback(() => latestActionsRef.current.reference(), []);
   const saveSelectedClipsAsAssetCb = useCallback(
     () => void latestActionsRef.current.saveSelectedClipsAsAsset(),
@@ -3062,6 +3088,14 @@ export function App() {
                   >
                     <BookmarkPlus size={13} />
                   </IconButton>
+                  <IconButton
+                    label={curveClipId && clip && curveClipId === clip.id ? '收起关键帧曲线' : '展开关键帧曲线'}
+                    disabled={!clip}
+                    active={Boolean(curveClipId && clip && curveClipId === clip.id)}
+                    onClick={() => clip && setCurveClipId((prev) => (prev === clip.id ? null : clip.id))}
+                  >
+                    <Diamond size={13} />
+                  </IconButton>
                   <span className="toolbar-divider" />
                   <IconButton label="吸附" active={snap} onClick={() => setSnap((v) => !v)}>
                     <Magnet size={13} />
@@ -3109,6 +3143,8 @@ export function App() {
                   onZoomChange={setZoom}
                   snap={snap}
                   toolMode={timelineTool}
+                  curveClipId={curveClipId}
+                  onToggleCurveClip={setCurveClipId}
                 />
               )}
               {view === 'transcript' && (

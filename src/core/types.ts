@@ -386,7 +386,7 @@ export interface ClipTransition {
   durationFrames: number;
 }
 
-export type KeyframeEasing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold';
+export type KeyframeEasing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold' | 'bezier';
 
 export type KeyframeProperty =
   | 'x'
@@ -408,6 +408,21 @@ export interface ClipKeyframe {
   frame: number;
   value: number;
   easing?: KeyframeEasing;
+  /** Optional custom cubic-bezier control points [x1, y1, x2, y2] when easing === 'bezier' */
+  bezier?: [number, number, number, number];
+}
+
+export interface TimelineTrackDef {
+  id: string;
+  /** Base rendering category: visual / overlay / caption / audio */
+  kind: Track;
+  /** User-visible track name (e.g. "主镜", "叠加 1", "B-Roll", "旁白", "BGM") */
+  name: string;
+  /** Compositing order within the same kind (higher renders on top) */
+  layer: number;
+  muted?: boolean;
+  solo?: boolean;
+  locked?: boolean;
 }
 
 export type ClipKeyframes = Partial<Record<KeyframeProperty, ClipKeyframe[]>>;
@@ -417,6 +432,8 @@ export interface Clip {
   name: string;
   kind: ClipKind;
   track: Track;
+  /** Optional explicit track ID matching Sequence.tracks[] for named multi-track timelines */
+  trackId?: string;
   /** Compositing order within this track. Legacy snapshots use chronological order at layer zero. */
   layer?: number;
   start: number;
@@ -469,6 +486,8 @@ export interface Sequence {
   fps: number;
   clips: Clip[];
   background: string;
+  /** Optional dynamic named multi-track definitions (video/overlay, caption, audio). Backward-compatible when omitted. */
+  tracks?: TimelineTrackDef[];
   mutedTracks?: Track[];
   /** Soloed tracks: when non-empty, only listed tracks (unless muted) render in preview & export. */
   soloTracks?: Track[];
@@ -538,6 +557,18 @@ export interface SkillInfo {
   body?: string;
 }
 
+export interface ToolResultMediaBlock {
+  kind: 'image' | 'resource';
+  mimeType?: string;
+  /** Compact data URL for inline image preview in Agent chat */
+  dataUrl?: string;
+  /** Workspace-relative file path when the full artifact was saved to the task workspace */
+  savedPath?: string;
+  uri?: string;
+  title?: string;
+  textPreview?: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'system';
@@ -547,6 +578,7 @@ export interface Message {
   status?: string;
   thinking?: string;
   attachments?: Pick<ComposerAttachment, 'id' | 'name' | 'kind' | 'previewDataUrl'>[];
+  toolMedia?: ToolResultMediaBlock[];
   skillIds?: string[];
   refs?: string[];
 }
@@ -902,6 +934,7 @@ export interface AgentEvent {
   type: 'text' | 'thinking' | 'text-commit' | 'tool-start' | 'tool-end' | 'done' | 'error' | 'status';
   text?: string;
   tool?: string;
+  toolMedia?: ToolResultMediaBlock[];
   runId: string;
 }
 

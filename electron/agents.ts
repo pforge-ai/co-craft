@@ -15,6 +15,7 @@ import type {
   EditScope,
   ComposerAttachment,
   ThinkingLevelChoice,
+  ToolResultMediaBlock,
 } from '../src/core/types';
 import type { JobService } from './jobs';
 import type { GenerationService } from './generation';
@@ -39,6 +40,7 @@ interface Run {
   packEntries: Map<string, CodeComponent>;
   components: Map<string, CodeComponent>;
   componentAssets: Map<string, Asset[]>;
+  pendingToolMedia: Map<string, ToolResultMediaBlock[][]>;
   scope?: EditScope;
   closing?: Promise<void>;
 }
@@ -279,6 +281,7 @@ export class AgentHost {
       packEntries,
       components: new Map(),
       componentAssets: new Map(),
+      pendingToolMedia: new Map(),
       scope,
       supportsImages: settings.modelInput?.includes('image') ?? false,
     };
@@ -358,15 +361,26 @@ export class AgentHost {
         }
         if (data.type === 'text') run.text += data.text;
         if (data.type === 'thinking') run.thinking += data.text || '';
-        if (data.type === 'tool-start' || data.type === 'tool-end')
+        if (data.type === 'tool-start' || data.type === 'tool-end') {
+          let toolMedia: ToolResultMediaBlock[] | undefined;
+          if (data.type === 'tool-end' && typeof data.tool === 'string') {
+            const q = run.pendingToolMedia.get(data.tool);
+            if (q?.length) toolMedia = q.shift();
+          }
           task.messages.push({
             id: uid('msg'),
             role: 'tool',
             tool: data.tool,
             text: data.text || (data.type === 'tool-start' ? '' : '完成'),
             status: data.type,
+            ...(toolMedia?.length ? { toolMedia } : {}),
             createdAt: new Date().toISOString(),
           });
+          if (toolMedia?.length) {
+            await store.saveTask(task);
+            this.changed(store, await store.envelope());
+          }
+        }
         if (data.type === 'error') {
           task.status = 'error';
           task.messages.push({
@@ -502,12 +516,169 @@ export class AgentHost {
     const ids = [...this.runs.keys()];
     await Promise.allSettled(ids.map((id) => this.stop(id)));
   }
+  private async extractMcpToolMedia(
+    run: Run,
+    qualifiedName: string,
+    rawResult: any,
+  ): Promise<unknown> {
+    if (!rawResult || typeof rawResult !== 'object' || !Array.isArray(rawResult.content)) {
+      return rawResult;
+    }
+    const mediaBlocks: ToolResultMediaBlock[] = [];
+    const llmImages: { type: 'image'; data: string; mimeType: string }[] = [];
+    const sanitizedContent: unknown[] = [];
+    const artifactDir = join(run.workspace, '.mcp-artifacts');
+
+    const saveImageBytes = async (
+      b64: string,
+      mimeRaw: string,
+      hintName?: string,
+      uri?: string,
+    ): Promise<{ savedPath?: string; dataUrl?: string; bytes: number; mimeType: string }> => {
+      const mimeType = /^image\/(png|jpeg|jpg|webp|gif)$/i.test(mimeRaw) ? mimeRaw.toLowerCase() : 'image/png';
+      const buf = Buffer.from(b64, 'base64');
+      if (buf.length === 0 || buf.length > 20 * 1024 * 1024) {
+        return { bytes: buf.length, mimeType };
+      }
+      const ext =
+        mimeType === 'image/jpeg' || mimeType === 'image/jpg'
+          ? 'jpg'
+          : mimeType === 'image/webp'
+            ? 'webp'
+            : mimeType === 'image/gif'
+              ? 'gif'
+              : 'png';
+      await mkdir(artifactDir, { recursive: true });
+      const safeStem = String(hintName || rawResult.tool || 'mcp')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .slice(0, 32);
+      const fileName = `${safeStem}_${uid('img')}.${ext}`;
+      const absPath = join(artifactDir, fileName);
+      await writeFile(absPath, buf);
+      const relPath = `.mcp-artifacts/${fileName}`;
+
+      let dataUrl: string | undefined;
+      try {
+        const nImg = nativeImage.createFromBuffer(buf);
+        if (!nImg.isEmpty()) {
+          const sz = nImg.getSize();
+          const thumb = sz.width > 520 ? nImg.resize({ width: 520 }) : nImg;
+          const thumbBuf = thumb.toJPEG(82);
+          dataUrl = `data:image/jpeg;base64,${thumbBuf.toString('base64')}`;
+          if (run.supportsImages && llmImages.length < 4) {
+            const visionImg =
+              Math.max(sz.width, sz.height) > 1280
+                ? nImg.resize(sz.width >= sz.height ? { width: 1280 } : { height: 1280 })
+                : nImg;
+            llmImages.push({
+              type: 'image',
+              data: visionImg.toJPEG(84).toString('base64'),
+              mimeType: 'image/jpeg',
+            });
+          }
+        } else if (buf.length <= 260_000) {
+          dataUrl = `data:${mimeType};base64,${b64}`;
+        }
+      } catch {
+        if (buf.length <= 260_000) dataUrl = `data:${mimeType};base64,${b64}`;
+      }
+
+      mediaBlocks.push({
+        kind: 'image',
+        mimeType,
+        dataUrl,
+        savedPath: relPath,
+        uri,
+        title: hintName || fileName,
+      });
+      return { savedPath: relPath, dataUrl, bytes: buf.length, mimeType };
+    };
+
+    for (const item of rawResult.content) {
+      if (!item || typeof item !== 'object') {
+        sanitizedContent.push(item);
+        continue;
+      }
+      if (item.type === 'image' && typeof item.data === 'string' && item.data.length > 0) {
+        const saved = await saveImageBytes(item.data, String(item.mimeType || 'image/png'));
+        sanitizedContent.push({
+          type: 'image',
+          mimeType: saved.mimeType,
+          bytes: saved.bytes,
+          ...(saved.savedPath
+            ? {
+                savedPath: saved.savedPath,
+                note: 'Image saved to workspace; call import_asset(path) if you want to import it into CoCraft.',
+              }
+            : {}),
+        });
+        continue;
+      }
+      if (item.type === 'resource' && item.resource && typeof item.resource === 'object') {
+        const resObj = item.resource as Record<string, unknown>;
+        const uri = typeof resObj.uri === 'string' ? resObj.uri : undefined;
+        const mimeType = typeof resObj.mimeType === 'string' ? resObj.mimeType : undefined;
+        if (typeof resObj.blob === 'string' && mimeType?.toLowerCase().startsWith('image/')) {
+          const hint = uri ? basename(uri.split('?')[0]) : undefined;
+          const saved = await saveImageBytes(resObj.blob, mimeType, hint, uri);
+          sanitizedContent.push({
+            type: 'resource',
+            uri,
+            mimeType: saved.mimeType,
+            bytes: saved.bytes,
+            ...(saved.savedPath ? { savedPath: saved.savedPath } : {}),
+          });
+          continue;
+        }
+        const textVal = typeof resObj.text === 'string' ? resObj.text : undefined;
+        mediaBlocks.push({
+          kind: 'resource',
+          uri,
+          mimeType,
+          title: uri ? basename(uri.split('?')[0]) || uri : '资源',
+          textPreview: textVal ? textVal.slice(0, 280) : undefined,
+        });
+        sanitizedContent.push(
+          typeof resObj.blob === 'string'
+            ? { type: 'resource', uri, mimeType, bytes: Buffer.from(resObj.blob, 'base64').length }
+            : item,
+        );
+        continue;
+      }
+      if (item.type === 'resource_link' && typeof item.uri === 'string') {
+        mediaBlocks.push({
+          kind: 'resource',
+          uri: item.uri,
+          mimeType: typeof item.mimeType === 'string' ? item.mimeType : undefined,
+          title: typeof item.name === 'string' && item.name ? item.name : item.uri,
+          textPreview: typeof item.description === 'string' ? item.description.slice(0, 280) : undefined,
+        });
+        sanitizedContent.push(item);
+        continue;
+      }
+      sanitizedContent.push(item);
+    }
+
+    if (mediaBlocks.length > 0) {
+      const q = run.pendingToolMedia.get(qualifiedName) || [];
+      q.push(mediaBlocks);
+      run.pendingToolMedia.set(qualifiedName, q);
+    }
+
+    return {
+      ...rawResult,
+      content: sanitizedContent,
+      ...(llmImages.length ? { __llmImages: llmImages } : {}),
+    };
+  }
+
   private async request(run: Run, method: string, args: any): Promise<unknown> {
     if (method === '__mcp_call__') {
       if (!this.mcpClient) throw new Error('外部 MCP 客户端服务未启用');
       const qualifiedName = String(args?.qualifiedName || '');
       const toolArgs = args?.args && typeof args.args === 'object' ? args.args : {};
-      return this.mcpClient.callTool(qualifiedName, toolArgs, run.abort.signal);
+      const rawRes = await this.mcpClient.callTool(qualifiedName, toolArgs, run.abort.signal);
+      return this.extractMcpToolMedia(run, qualifiedName, rawRes);
     }
     const ctx: ToolExecutionContext = {
       source: 'agent',

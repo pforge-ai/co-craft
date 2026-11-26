@@ -2038,4 +2038,110 @@ assert.ok(
   assert.throws(() => parseMcpServersJson('not valid json'));
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client regression tests');
+// 51. Dynamic Multi-Track Timeline + Cubic-Bezier Keyframe Curves + MCP Tool Media Grouping
+{
+  const {
+    resolveSequenceTracks,
+    createNewTrackDef,
+    formatTrackCode,
+    findTrackForClip,
+    isClipTrackActive,
+    getClipCompositingOrder,
+    isTrackCompatibleWithClip,
+  } = await import('../src/core/tracks');
+  const {
+    solveCubicBezier,
+    evaluateKeyframeTrack,
+    upsertClipKeyframe,
+  } = await import('../src/core/keyframes');
+  const { groupMessagesIntoTurns } = await import('../src/components/AgentThread');
+
+  // 51a. Cubic-bezier solver accuracy (linear identity + fast ease-out + overshoot)
+  assert.ok(Math.abs(solveCubicBezier(0.5, 0.25, 0.25, 0.75, 0.75) - 0.5) < 1e-3);
+  assert.ok(solveCubicBezier(0.25, 0, 0.9, 0.2, 1) > 0.65, 'Fast ease-out rises early');
+  assert.ok(solveCubicBezier(0.5, 0.3, 1.4, 0.7, 1.4) > 1.0, 'Bezier overshoot supported');
+  const bezKf = upsertClipKeyframe(
+    upsertClipKeyframe(undefined, 'opacity', 0, 0, 'bezier', [0.1, 0.9, 0.2, 1]),
+    'opacity',
+    30,
+    1,
+    'ease-in-out',
+  );
+  const midOpacity = evaluateKeyframeTrack(bezKf.opacity, 15, 0);
+  assert.ok(midOpacity > 0.8 && midOpacity < 1, `Expected fast ease-out bezier opacity > 0.8, got ${midOpacity}`);
+
+  // 51b. Dynamic named multi-track creation, naming, compositing z-order, per-track mute/solo & validation
+  let pMulti = newProject('MultiTrackTest');
+  const seqMulti = pMulti.sequences[0];
+  const baseTracks = resolveSequenceTracks(seqMulti);
+  assert.equal(baseTracks.length, 4);
+  const v3 = createNewTrackDef(baseTracks, 'video', 'B-Roll 叠加');
+  const a2 = createNewTrackDef([...baseTracks, v3], 'audio', 'BGM 配乐');
+  const nextTracks = [...baseTracks, v3, a2];
+  assert.equal(formatTrackCode(v3, nextTracks), 'V3');
+  assert.equal(formatTrackCode(a2, nextTracks), 'A2');
+  assert.equal(isTrackCompatibleWithClip(v3, 'video'), true);
+  assert.equal(isTrackCompatibleWithClip(v3, 'audio'), false);
+  assert.equal(isTrackCompatibleWithClip(a2, 'audio'), true);
+
+  pMulti = applyOperations(pMulti, [
+    { type: 'updateSequence', sequenceId: seqMulti.id, changes: { tracks: nextTracks } },
+    {
+      type: 'addClip',
+      sequenceId: seqMulti.id,
+      clip: { ...newClip('title', 0), id: 'c_v1', track: 'visual', trackId: 'v1', layer: 0 },
+    },
+    {
+      type: 'addClip',
+      sequenceId: seqMulti.id,
+      clip: { ...newClip('title', 0), id: 'c_v3', track: 'overlay', trackId: v3.id, layer: v3.layer },
+    },
+  ]);
+  const updatedSeq = pMulti.sequences[0];
+  const cV1 = updatedSeq.clips.find((c) => c.id === 'c_v1')!;
+  const cV3 = updatedSeq.clips.find((c) => c.id === 'c_v3')!;
+  assert.equal(findTrackForClip(cV3, updatedSeq.tracks!)?.name, 'B-Roll 叠加');
+  assert.ok(
+    getClipCompositingOrder(updatedSeq, cV3) > getClipCompositingOrder(updatedSeq, cV1),
+    'V3 overlay composites strictly above V1 visual',
+  );
+  // Per-track mute/solo
+  const mutedSeq = {
+    ...updatedSeq,
+    tracks: updatedSeq.tracks!.map((t) => (t.id === v3.id ? { ...t, muted: true } : t)),
+  };
+  assert.equal(isClipTrackActive(mutedSeq, cV3), false);
+  assert.equal(isClipTrackActive(mutedSeq, cV1), true);
+  const soloSeq = {
+    ...updatedSeq,
+    tracks: updatedSeq.tracks!.map((t) => (t.id === v3.id ? { ...t, solo: true } : t)),
+  };
+  assert.equal(isClipTrackActive(soloSeq, cV3), true);
+  assert.equal(isClipTrackActive(soloSeq, cV1), false);
+
+  // 51c. MCP tool-end image & resource blocks attach cleanly onto grouped assistant turn steps
+  const turns = groupMessagesIntoTurns([
+    { id: 'm1', role: 'user', text: 'Render scene', createdAt: '' },
+    { id: 'm2', role: 'tool', tool: 'mcp__demo__render', status: 'tool-start', text: '{}', createdAt: '' },
+    {
+      id: 'm3',
+      role: 'tool',
+      tool: 'mcp__demo__render',
+      status: 'tool-end',
+      text: '完成',
+      toolMedia: [
+        { kind: 'image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AA==', savedPath: '.mcp-artifacts/demo.png', title: 'render.png' },
+        { kind: 'resource', uri: 'scene://main/meta', title: 'Scene Meta', mimeType: 'application/json', textPreview: '{"fps":30}' },
+      ],
+      createdAt: '',
+    },
+  ]);
+  const assistantTurn = turns.find((t) => t.kind === 'assistant');
+  assert.ok(assistantTurn && assistantTurn.kind === 'assistant');
+  assert.equal(assistantTurn.steps.length, 1);
+  assert.equal(assistantTurn.steps[0].media?.length, 2);
+  assert.equal(assistantTurn.steps[0].media?.[0].kind, 'image');
+  assert.equal(assistantTurn.steps[0].media?.[1].uri, 'scene://main/meta');
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client + Multi-Track & Curve Drawer regression tests');

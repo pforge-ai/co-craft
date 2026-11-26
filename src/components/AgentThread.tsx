@@ -8,12 +8,14 @@ import {
   FileText,
   Film,
   AudioLines,
+  Link2,
+  X,
 } from 'lucide-react';
 import { Markdown } from './Markdown';
 import { Mark, Spinner } from './ui';
 import { friendlySkillTitle } from '../core/taxonomy';
 import { formatMcpToolLabel } from '../core/mcp';
-import type { Message } from '../core/types';
+import type { Message, ToolResultMediaBlock } from '../core/types';
 
 export const TOOL_LABELS: Record<string, string> = {
   read: '读取工作区文件',
@@ -70,6 +72,7 @@ export interface ToolStepItem {
   summary: string;
   argsText: string;
   endText?: string;
+  media?: ToolResultMediaBlock[];
   failed: boolean;
   done: boolean;
 }
@@ -150,6 +153,7 @@ export function groupMessagesIntoTurns(messages: Message[]): ThreadEntry[] {
           target.done = true;
           target.endText = m.text;
           target.failed = m.text.includes('失败');
+          if (m.toolMedia?.length) target.media = m.toolMedia;
         }
       }
       continue;
@@ -168,12 +172,70 @@ export function groupMessagesIntoTurns(messages: Message[]): ThreadEntry[] {
   return entries;
 }
 
+function ToolMediaGallery({
+  items,
+  onInspectImage,
+}: {
+  items: { stepLabel: string; block: ToolResultMediaBlock; key: string }[];
+  onInspectImage: (img: { src: string; title: string; savedPath?: string }) => void;
+}) {
+  if (!items.length) return null;
+  const images = items.filter((it) => it.block.kind === 'image' && it.block.dataUrl);
+  const resources = items.filter((it) => it.block.kind === 'resource');
+  return (
+    <div className="tool-media-gallery" aria-label="工具返回的图像与资源预览">
+      {images.length > 0 && (
+        <div className="tool-media-images">
+          {images.map(({ key, stepLabel, block }) => (
+            <button
+              key={key}
+              type="button"
+              className="tool-media-img-card"
+              title={`${block.title || stepLabel}${block.savedPath ? ` · 已保存至 ${block.savedPath}` : ''}（点击放大预览）`}
+              onClick={() =>
+                onInspectImage({
+                  src: block.dataUrl!,
+                  title: block.title || stepLabel,
+                  savedPath: block.savedPath,
+                })
+              }
+            >
+              <img src={block.dataUrl} alt={block.title || stepLabel} />
+              <span className="tool-media-img-meta">
+                <b>{block.title || stepLabel}</b>
+                {block.savedPath && <small>工作区</small>}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {resources.length > 0 && (
+        <div className="tool-media-resources">
+          {resources.map(({ key, block }) => (
+            <div key={key} className="tool-media-res-card">
+              <div className="tool-media-res-head">
+                <Link2 size={11} />
+                <b>{block.title || block.uri || '外部资源'}</b>
+                {block.mimeType && <small>{block.mimeType}</small>}
+              </div>
+              {block.uri && <code className="tool-media-res-uri">{block.uri}</code>}
+              {block.textPreview && <p className="tool-media-res-preview">{block.textPreview}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolGroupCard({
   steps,
   streaming,
+  onInspectImage,
 }: {
   steps: ToolStepItem[];
   streaming?: boolean;
+  onInspectImage: (img: { src: string; title: string; savedPath?: string }) => void;
 }) {
   if (!steps.length) return null;
   const doneCount = steps.filter((s) => s.done).length;
@@ -185,36 +247,46 @@ function ToolGroupCard({
     : failedCount > 0
       ? `执行了 ${steps.length} 步操作（${failedCount} 项异常）`
       : `已完成 ${steps.length} 项创作步骤`;
+  const mediaItems = steps.flatMap((s) =>
+    (s.media || []).map((block, i) => ({
+      stepLabel: s.label,
+      block,
+      key: `${s.id}-m-${i}`,
+    })),
+  );
 
   return (
-    <details className="agent-tool-group" open={hasRunning}>
-      <summary>
-        {hasRunning ? (
-          <Spinner />
-        ) : (
-          <span className={`tool-group-badge ${failedCount ? 'err' : 'ok'}`}>
-            {failedCount ? '!' : <Check size={10} />}
-          </span>
-        )}
-        <span className="tool-group-title">{heading}</span>
-        <ChevronDown size={12} className="tool-group-chev" />
-      </summary>
-      <div className="agent-tool-steps">
-        {steps.map((s) => (
-          <details key={s.id} className={`agent-tool-step ${s.failed ? 'failed' : ''}`}>
-            <summary>
-              <span className={`tool-status-dot ${s.failed ? 'err' : s.done ? 'ok' : 'run'}`}>
-                {s.failed ? '!' : s.done ? '✓' : '·'}
-              </span>
-              <span className="tool-step-label">{s.label}</span>
-              {s.summary && <span className="tool-step-meta">{s.summary}</span>}
-              <ChevronRight size={10} />
-            </summary>
-            <pre>{s.endText ? `${s.argsText}\n→ ${s.endText}` : s.argsText}</pre>
-          </details>
-        ))}
-      </div>
-    </details>
+    <>
+      <details className="agent-tool-group" open={hasRunning}>
+        <summary>
+          {hasRunning ? (
+            <Spinner />
+          ) : (
+            <span className={`tool-group-badge ${failedCount ? 'err' : 'ok'}`}>
+              {failedCount ? '!' : <Check size={10} />}
+            </span>
+          )}
+          <span className="tool-group-title">{heading}</span>
+          <ChevronDown size={12} className="tool-group-chev" />
+        </summary>
+        <div className="agent-tool-steps">
+          {steps.map((s) => (
+            <details key={s.id} className={`agent-tool-step ${s.failed ? 'failed' : ''}`}>
+              <summary>
+                <span className={`tool-status-dot ${s.failed ? 'err' : s.done ? 'ok' : 'run'}`}>
+                  {s.failed ? '!' : s.done ? '✓' : '·'}
+                </span>
+                <span className="tool-step-label">{s.label}</span>
+                {s.summary && <span className="tool-step-meta">{s.summary}</span>}
+                <ChevronRight size={10} />
+              </summary>
+              <pre>{s.endText ? `${s.argsText}\n→ ${s.endText}` : s.argsText}</pre>
+            </details>
+          ))}
+        </div>
+      </details>
+      <ToolMediaGallery items={mediaItems} onInspectImage={onInspectImage} />
+    </>
   );
 }
 
@@ -273,6 +345,7 @@ export function AgentThread({
   onSeekTimecode?: (seconds: number) => void;
   dateLabel: (iso: string) => string;
 }) {
+  const [lightboxImg, setLightboxImg] = useState<{ src: string; title: string; savedPath?: string } | null>(null);
   const entries = groupMessagesIntoTurns(messages);
   const lastEntry = entries.at(-1);
   const mergeStreamIntoLast = Boolean(lastEntry?.kind === 'assistant' && isRunning);
@@ -340,7 +413,7 @@ export function AgentThread({
               text={combinedThinking}
               streaming={isLastRunning && Boolean(liveThinking) && !liveText}
             />
-            <ToolGroupCard steps={entry.steps} streaming={isLastRunning} />
+            <ToolGroupCard steps={entry.steps} streaming={isLastRunning} onInspectImage={setLightboxImg} />
             {entry.texts.map((t) => (
               <div className="message assistant" key={t.id}>
                 <Markdown text={t.text} onSeekTimecode={onSeekTimecode} />
@@ -366,6 +439,27 @@ export function AgentThread({
               <Markdown text={liveText} onSeekTimecode={onSeekTimecode} />
             </div>
           )}
+        </div>
+      )}
+      {lightboxImg && (
+        <div
+          className="tool-media-lightbox"
+          role="dialog"
+          aria-label="工具返回图像预览"
+          onClick={() => setLightboxImg(null)}
+        >
+          <div className="tool-media-lightbox-inner" onClick={(e) => e.stopPropagation()}>
+            <header>
+              <div>
+                <b>{lightboxImg.title}</b>
+                {lightboxImg.savedPath && <code>{lightboxImg.savedPath}</code>}
+              </div>
+              <button type="button" aria-label="关闭预览" onClick={() => setLightboxImg(null)}>
+                <X size={14} />
+              </button>
+            </header>
+            <img src={lightboxImg.src} alt={lightboxImg.title} />
+          </div>
         </div>
       )}
     </>
