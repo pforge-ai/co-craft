@@ -12,6 +12,7 @@ import {
 import { Markdown } from './Markdown';
 import { Mark, Spinner } from './ui';
 import { friendlySkillTitle } from '../core/taxonomy';
+import { formatMcpToolLabel } from '../core/mcp';
 import type { Message } from '../core/types';
 
 export const TOOL_LABELS: Record<string, string> = {
@@ -21,6 +22,7 @@ export const TOOL_LABELS: Record<string, string> = {
   bash: '执行工作区脚本',
   read_project: '读取工程结构',
   search_assets: '检索项目资产',
+  pull_vault_item: '引入个人库资产',
   list_models: '检查可用模型',
   list_presets: '检索动态母版',
   prepare_preset: '配置动态组件',
@@ -30,6 +32,11 @@ export const TOOL_LABELS: Record<string, string> = {
   publish_edit: '发布剪辑修改',
   compile_component: '编译画面组件',
   preview_frame: '渲染验证帧',
+  bake_spatial_video: '录制 3D 预演视频',
+  apply_keyframe_preset: '应用关键帧曲线',
+  detach_audio: '音画分离',
+  preflight_sequence: '导出预检',
+  export_sequence: '导出成片',
   generate_media: '调用多模态生成',
   transcribe_asset: '语音识别转字幕',
   inspect_media: '分析媒体画面',
@@ -126,7 +133,7 @@ export function groupMessagesIntoTurns(messages: Message[]): ThreadEntry[] {
         const step: ToolStepItem = {
           id: m.id,
           tool: tName,
-          label: TOOL_LABELS[tName] || tName,
+          label: TOOL_LABELS[tName] || formatMcpToolLabel(tName) || tName,
           summary: summarizeToolArgs(tName, m.text),
           argsText: m.text,
           failed: false,

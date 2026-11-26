@@ -23,6 +23,7 @@ import {
   RotateCcw,
   AtSign,
   BookmarkPlus,
+  Box,
   Camera,
   Clapperboard,
   Film,
@@ -412,6 +413,7 @@ export const Inspector = React.memo(function Inspector({
   onCaptureClipPair,
   onCaptureClipFrame,
   onDirectClipWithAgent,
+  onOpenSpatialDirector,
 }: {
   clip: Clip | undefined;
   selectedClipIds?: string[];
@@ -431,6 +433,7 @@ export const Inspector = React.memo(function Inspector({
   onCaptureClipPair?: (clip: Clip) => void;
   onCaptureClipFrame?: (clip: Clip) => void;
   onDirectClipWithAgent?: (clip: Clip) => void;
+  onOpenSpatialDirector?: (clip: Clip) => void;
 }) {
   const [textTab, setTextTab] = useState<'style' | 'motion'>('style');
   const [mediaTab, setMediaTab] = useState<'frame' | 'adjust' | 'audio'>('frame');
@@ -1877,6 +1880,17 @@ export const Inspector = React.memo(function Inspector({
           {isSpatialClip(clip, asset) && (
             <section className="ins-sec">
               <h4>空间摄影棚 · 导演机位</h4>
+              {onOpenSpatialDirector && (
+                <div className="ins-pill-row" style={{ marginBottom: 6 }}>
+                  <button
+                    type="button"
+                    className="ins-pill-btn active"
+                    onClick={() => onOpenSpatialDirector(clip)}
+                  >
+                    <Box size={11} /> 进入 3D 导演棚全屏调度
+                  </button>
+                </div>
+              )}
               <div className="ins-pill-row" role="group" aria-label="多机位书签">
                 {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => (
                   <button
@@ -2097,11 +2111,23 @@ export const Inspector = React.memo(function Inspector({
 
       {component && (
         <>
-          {(onBakeClipVideo || onCaptureClipPair || onCaptureClipFrame || onDirectClipWithAgent) && (
+          {(onOpenSpatialDirector || onBakeClipVideo || onCaptureClipPair || onCaptureClipFrame || onDirectClipWithAgent) && (
             <section className="ins-sec">
               <div className="ins-sec-head">
                 <h4>导演调度 · 3D / 动态出片</h4>
               </div>
+              {onOpenSpatialDirector && (
+                <div className="ins-pill-row" style={{ marginBottom: 4 }}>
+                  <button
+                    type="button"
+                    className="ins-pill-btn active"
+                    title="进入独立全屏「3D 导演棚」专注调度运镜、关键帧与出片"
+                    onClick={() => onOpenSpatialDirector(clip)}
+                  >
+                    <Box size={11} /> 进入 3D 导演棚全屏调度
+                  </button>
+                </div>
+              )}
               <div className="ins-pill-row">
                 {onBakeClipVideo && (
                   <button
@@ -2241,6 +2267,17 @@ export const Inspector = React.memo(function Inspector({
         <>
           <section className="ins-sec">
             <h4>{asset.subkind === 'splat-3d' ? '3DGS 空间世界 · 机位' : '三维模型舞台 · 导演控制'}</h4>
+            {onOpenSpatialDirector && (
+              <div className="ins-pill-row" style={{ marginBottom: 6 }}>
+                <button
+                  type="button"
+                  className="ins-pill-btn active"
+                  onClick={() => onOpenSpatialDirector(clip)}
+                >
+                  <Box size={11} /> 进入 3D 导演棚全屏调度
+                </button>
+              </div>
+            )}
             <div className="ins-pill-row" role="group" aria-label="多机位书签">
               {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => (
                 <button

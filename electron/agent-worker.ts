@@ -576,6 +576,38 @@ async function start(data: any) {
       }),
     );
   }
+  const mcpTools: Array<{
+    serverName: string;
+    serverSlug: string;
+    qualifiedName: string;
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+  }> = Array.isArray(data.mcpTools) ? data.mcpTools : [];
+  for (const mt of mcpTools) {
+    if (!mt?.qualifiedName || customTools.some((t) => t.name === mt.qualifiedName)) continue;
+    const rawSchema =
+      mt.inputSchema && typeof mt.inputSchema === 'object' && !Array.isArray(mt.inputSchema)
+        ? mt.inputSchema
+        : { type: 'object', properties: {} };
+    const safeSchema = {
+      type: 'object',
+      properties: {},
+      ...rawSchema,
+    };
+    customTools.push({
+      name: mt.qualifiedName,
+      label: `[${mt.serverName}] ${mt.name}`,
+      description: `[External MCP · ${mt.serverName}] ${mt.description || mt.name}`,
+      parameters: safeSchema as any,
+      execute: async (_id, args) =>
+        result(await request('__mcp_call__', { qualifiedName: mt.qualifiedName, args: args || {} })),
+    });
+  }
+  const connectedMcpServers = Array.from(new Set(mcpTools.map((t) => t.serverName)));
+  const mcpPromptNote = connectedMcpServers.length
+    ? ` External MCP servers connected via MCP Client: ${connectedMcpServers.join(', ')} (tools prefixed with mcp__). When using Blender or external 3D/design MCP tools, save or export .glb / PNG / MP4 artifacts into the task workspace (${cwd}) so you can call import_asset and bring them cleanly into CoCraft.`
+    : '';
   const runtime = await ModelRuntime.create({
     authPath: join(agentDir, 'unused-auth.json'),
     modelsPath: null,
@@ -647,7 +679,7 @@ async function start(data: any) {
     noThemes: true,
     noContextFiles: true,
     appendSystemPrompt: [
-      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion (including spatial-stage for 2.5D layered parallax, 3D choreographed camera/actorAction/actorPath/environmentPreset previs, 3D hardware screens, and .glb/.spz worlds). When building a custom 3D TSX CodeComponent, expose editable camera/scene props (e.g. cameraYaw, cameraPitch, cameraDistance, cameraSpeed, lightingMood) in component.props so the user can direct and keyframe the shot. Call bake_spatial_video (accepting spatial-stage clipId/vaultItemId/assetId OR custom 3D TSX componentId) to record any choreographed 3D scene into a real MP4 video asset that can drive downstream AI video generation via generate_media, apply_keyframe_preset for smooth Ken Burns / fade / BGM auto-ducking, detach_audio for J/L cut audio separation, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Call pull_vault_item to adopt assets from the personal library, preflight_sequence to verify export readiness, and export_sequence when the user asks to render MP4. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote} Current task context: ${data.context}`,
+      `You are CoCraft, a professional video editing and coding collaborator. Work in Chinese. Read the cocraft-editing Skill before editing. Read the latest project revision. Preserve locks and publish through publish_edit. Use list_presets and prepare_preset for editable motion (including spatial-stage for 2.5D layered parallax, 3D choreographed camera/actorAction/actorPath/environmentPreset previs, 3D hardware screens, and .glb/.spz worlds). When building a custom 3D TSX CodeComponent, expose editable camera/scene props (e.g. cameraYaw, cameraPitch, cameraDistance, cameraSpeed, lightingMood) in component.props so the user can direct and keyframe the shot. Call bake_spatial_video (accepting spatial-stage clipId/vaultItemId/assetId OR custom 3D TSX componentId) to record any choreographed 3D scene into a real MP4 video asset that can drive downstream AI video generation via generate_media, apply_keyframe_preset for smooth Ken Burns / fade / BGM auto-ducking, detach_audio for J/L cut audio separation, or develop a custom component in your staging workspace. Use list_models for available creative services. The dedicated media tools operate through the user's configured connections. Call inspect_media for a vision report and transcribe_asset for actual spoken words. Call pull_vault_item to adopt assets from the personal library, preflight_sequence to verify export readiness, and export_sequence when the user asks to render MP4. Only report completed tool results. ${settings.allowShell ? `Workspace shell is enabled. Script networking is ${settings.allowNetwork ? 'enabled' : 'disabled'}.` : 'The bash tool is unavailable. Use read, write, edit, compile_component, the media tools, and publish_edit to finish the request. Call only tools in the supplied tool list.'}${activeSkillsNote}${mcpPromptNote} Current task context: ${data.context}`,
     ],
   });
   await loader.reload();

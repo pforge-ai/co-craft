@@ -21,6 +21,7 @@ import type { GenerationService } from './generation';
 import { chatEndpoint } from './generation';
 import type { GlobalVault } from './vault';
 import { CoCraftToolService, type ToolExecutionContext } from './tool-service';
+import type { McpClientManager } from './mcp-client';
 interface Run {
   id: string;
   task: Task;
@@ -91,6 +92,7 @@ export class AgentHost {
     private _globalVault?: GlobalVault,
     private userSkillsPath?: string,
     private toolService?: CoCraftToolService,
+    private mcpClient?: McpClientManager,
   ) {}
 
   private resolveTools(store: ProjectStore): CoCraftToolService {
@@ -393,6 +395,10 @@ export class AgentHost {
         }
       });
       abort.signal.throwIfAborted();
+      const mcpDiscovery = this.mcpClient
+        ? await this.mcpClient.listEnabledTools().catch(() => ({ tools: [], statuses: [] }))
+        : { tools: [], statuses: [] };
+      abort.signal.throwIfAborted();
       worker.postMessage({
         type: 'start',
         cwd: workspace,
@@ -403,6 +409,7 @@ export class AgentHost {
         activeSkills,
         thinkingLevel: options?.thinkingLevel || 'off',
         images,
+        mcpTools: mcpDiscovery.tools,
         settings: {
           provider: settings.provider,
           protocol: settings.protocol || settings.provider,
@@ -496,6 +503,12 @@ export class AgentHost {
     await Promise.allSettled(ids.map((id) => this.stop(id)));
   }
   private async request(run: Run, method: string, args: any): Promise<unknown> {
+    if (method === '__mcp_call__') {
+      if (!this.mcpClient) throw new Error('外部 MCP 客户端服务未启用');
+      const qualifiedName = String(args?.qualifiedName || '');
+      const toolArgs = args?.args && typeof args.args === 'object' ? args.args : {};
+      return this.mcpClient.callTool(qualifiedName, toolArgs, run.abort.signal);
+    }
     const ctx: ToolExecutionContext = {
       source: 'agent',
       store: run.store,

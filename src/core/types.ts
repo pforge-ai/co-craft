@@ -733,6 +733,50 @@ export interface System1UsageStats {
   byFeature: { reframeBox: number; qualityGate: number; omnibarRouter: number; autoTag: number };
 }
 
+export type McpServerTransport = 'stdio' | 'http';
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  /** Write-only env vars submitted during save/test; stripped before returning to renderer */
+  env?: Record<string, string>;
+  /** Keys of encrypted env vars currently stored on disk */
+  envKeys?: string[];
+  url?: string;
+  /** Write-only HTTP headers submitted during save/test; stripped before returning to renderer */
+  headers?: Record<string, string>;
+  /** Keys of encrypted HTTP headers currently stored on disk */
+  headerKeys?: string[];
+  disabledTools?: string[];
+  preset?: string;
+}
+
+export interface McpRemoteToolInfo {
+  serverId: string;
+  serverName: string;
+  serverSlug: string;
+  qualifiedName: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface McpServerStatus {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+  connected: boolean;
+  error?: string;
+  tools: McpRemoteToolInfo[];
+  lastCheckedAt?: string;
+}
+
 export interface Settings {
   schemaVersion?: 2;
   providers: ProviderConnection[];
@@ -755,6 +799,8 @@ export interface Settings {
   allowShell: boolean;
   allowNetwork: boolean;
   mcpBridgeEnabled?: boolean;
+  /** External MCP servers that CoCraft's built-in Agent can call as an MCP Client */
+  mcpServers?: McpServerConfig[];
   /** Strictly optional, default-OFF 3-Tier System 1 decision engine settings */
   system1?: System1Settings;
 }

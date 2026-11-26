@@ -74,6 +74,7 @@ import { AudioWaveformPlayer } from './AudioWaveformPlayer';
 import { CanvasQuickLook } from './CanvasQuickLook';
 import { CodeComponentThumb } from './CodeComponentThumb';
 import { CanvasUtilityControls } from './CanvasUtilityControls';
+import type { SpatialDirectorTarget } from './SpatialDirectorStudio';
 import {
   CanvasWirePillsSvg,
   CanvasWiresSvg,
@@ -244,6 +245,7 @@ interface CreateCanvasProps {
     passes?: string[];
     placement?: Pt;
   }) => Promise<{ asset?: import('../core/types').Asset; captured?: { pass: string; asset: import('../core/types').Asset }[] } | undefined>;
+  onOpenSpatialDirector?: (target: SpatialDirectorTarget) => void;
 }
 
 export function CreateCanvas({
@@ -289,6 +291,7 @@ export function CreateCanvas({
   onBakeSpatialVideo,
   onCaptureSpatialPair,
   onCaptureSpatialReference,
+  onOpenSpatialDirector,
 }: CreateCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const omnibarInputRef = useRef<HTMLTextAreaElement>(null);
@@ -4051,6 +4054,16 @@ export function CreateCanvas({
                     <>
                       {ent.rig?.presetId === 'spatial-stage' || ent.rig?.presetId === 'teardown-3d' ? (
                         <>
+                          {onOpenSpatialDirector && (
+                            <button
+                              type="button"
+                              className="cc-tb-primary"
+                              title="进入独立全屏「3D 导演棚」自由鼠标运镜、调灯光走线与出片"
+                              onClick={() => onOpenSpatialDirector({ kind: 'vault', vaultItemId: ent.id })}
+                            >
+                              <Box size={12} /> 导演棚
+                            </button>
+                          )}
                           <button
                             type="button"
                             title="把当前 3D 摄像机运镜、人物动作、走线与环境直接录成真实 MP4 预演视频，并自动连入动作迁移/参考生视频工坊"
@@ -4987,6 +5000,16 @@ export function CreateCanvas({
                           <Tag size={11} /> {explicitRole ? ROLE_LABELS[explicitRole].slice(0, 2) : '标角色'} ▾
                         </button>
                       )}
+                      {a.kind === 'model-3d' && onOpenSpatialDirector && (
+                        <button
+                          type="button"
+                          className="cc-tb-primary"
+                          title="进入独立全屏「3D 导演棚」预览此 3D 模型/空间世界并运镜录片"
+                          onClick={() => onOpenSpatialDirector({ kind: 'asset', assetId: a.id })}
+                        >
+                          <Box size={11} /> 导演棚
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -5341,10 +5364,19 @@ export function CreateCanvas({
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={(e) => e.stopPropagation()}
                 >
-                  {onBakeSpatialVideo && (
+                  {onOpenSpatialDirector && (
                     <button
                       type="button"
                       className="cc-tb-primary"
+                      title="进入独立全屏「3D 导演棚」大屏预览、调参数、联动 Blender MCP 并一键录片"
+                      onClick={() => onOpenSpatialDirector({ kind: 'component', componentId: comp.id })}
+                    >
+                      <Box size={11} /> 导演棚
+                    </button>
+                  )}
+                  {onBakeSpatialVideo && (
+                    <button
+                      type="button"
                       title="把当前 3D / 动态组件直接录成真 MP4 视频并自动接入 AI 生视频工坊"
                       onClick={() =>
                         void bakeSpatialSourceToAiVideo(nodeKey, { x: pos.x + 286, y: pos.y })
@@ -5657,6 +5689,16 @@ export function CreateCanvas({
               onCaptureShotRefToAiImage={
                 onCaptureSpatialReference
                   ? (sh, p) => void captureSpatialRefToAiImage(`shot:${sh.id}`, { x: p.x + 312, y: p.y })
+                  : undefined
+              }
+              onOpenShotInDirector={
+                onOpenSpatialDirector
+                  ? (sh) =>
+                      onOpenSpatialDirector({
+                        kind: 'clip',
+                        sequenceId: sequence.id,
+                        clipId: sh.anchorClip.id,
+                      })
                   : undefined
               }
               onForkShotVariants={(sh, p) => {

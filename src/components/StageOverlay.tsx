@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Camera, Clapperboard, Crosshair, Film, Lock, Move, Plus, RotateCcw, Wand2 } from 'lucide-react';
+import { Box, Camera, Clapperboard, Crosshair, Film, Lock, Move, Plus, RotateCcw, Wand2 } from 'lucide-react';
 import { evaluateKeyframeTrack, upsertClipKeyframe } from '../core/keyframes';
 import {
   DEFAULT_SPATIAL_BOOKMARKS,
@@ -37,6 +37,7 @@ export interface StageOverlayProps {
   onCaptureSpatialPair?: (clip: Clip) => void;
   onDirectClipWithAgent?: (clip: Clip) => void;
   onSpawnCameraShot?: (clip: Clip) => void;
+  onOpenSpatialDirector?: (clip: Clip) => void;
 }
 
 interface StageBox {
@@ -150,6 +151,7 @@ export function StageOverlay({
   onCaptureSpatialPair,
   onDirectClipWithAgent,
   onSpawnCameraShot,
+  onOpenSpatialDirector,
 }: StageOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -695,6 +697,19 @@ export function StageOverlay({
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => e.stopPropagation()}
                 >
+                  {onOpenSpatialDirector && (
+                    <>
+                      <button
+                        type="button"
+                        className="stage-spatial-capture"
+                        title="进入专属全屏「3D 导演棚」自由运镜、打机位关键帧与联动 Blender MCP"
+                        onClick={() => onOpenSpatialDirector(selectedClip)}
+                      >
+                        <Box size={11} /> 导演棚
+                      </button>
+                      <span className="stage-spatial-sep" />
+                    </>
+                  )}
                   <div className="stage-spatial-group">
                     {DEFAULT_SPATIAL_BOOKMARKS.map((bm) => {
                       const activeBm = String(selectedClip.props.activeBookmarkId || '') === bm.id;
@@ -799,6 +814,19 @@ export function StageOverlay({
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => e.stopPropagation()}
                 >
+                  {onOpenSpatialDirector && (
+                    <>
+                      <button
+                        type="button"
+                        className="stage-spatial-capture"
+                        title="进入专属全屏「3D 导演棚」专注调度视角、参数与出片"
+                        onClick={() => onOpenSpatialDirector(selectedClip)}
+                      >
+                        <Box size={11} /> 导演棚
+                      </button>
+                      <span className="stage-spatial-sep" />
+                    </>
+                  )}
                   {onCaptureSpatialMultiPass && (
                     <button
                       type="button"

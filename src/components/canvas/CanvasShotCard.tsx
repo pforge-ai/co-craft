@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookmarkPlus,
+  Box,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -77,6 +78,7 @@ export interface CanvasShotCardProps {
   onBakeShotToAiVideo?: (shot: CompositeShot, pos: CanvasPt) => void;
   onCaptureShotPairToAiVideo?: (shot: CompositeShot, pos: CanvasPt) => void;
   onCaptureShotRefToAiImage?: (shot: CompositeShot, pos: CanvasPt) => void;
+  onOpenShotInDirector?: (shot: CompositeShot) => void;
   onForkShotVariants: (shot: CompositeShot, pos: CanvasPt) => void;
   onTweakShotWithAgent: (shot: CompositeShot, prompt: string) => void;
   onJumpToEdit: (clipId: string, startFrame: number) => void;
@@ -123,6 +125,7 @@ export const CanvasShotCard = React.memo(function CanvasShotCard({
   onBakeShotToAiVideo,
   onCaptureShotPairToAiVideo,
   onCaptureShotRefToAiImage,
+  onOpenShotInDirector,
   onForkShotVariants,
   onTweakShotWithAgent,
   onJumpToEdit,
@@ -280,10 +283,20 @@ export const CanvasShotCard = React.memo(function CanvasShotCard({
             <ArrowRight size={12} />
           </button>
           <span className="cc-tb-sep" />
-          {isDirectable3D && onBakeShotToAiVideo && (
+          {isDirectable3D && onOpenShotInDirector && (
             <button
               type="button"
               className="cc-tb-primary"
+              aria-label={`镜头 ${shot.index} 进入 3D 导演棚`}
+              title="进入专属全屏「3D 导演棚」自由运镜、打机位关键帧并直接出片回流"
+              onClick={() => onOpenShotInDirector(shot)}
+            >
+              <Box size={11} /> 导演棚
+            </button>
+          )}
+          {isDirectable3D && onBakeShotToAiVideo && (
+            <button
+              type="button"
               aria-label={`镜头 ${shot.index} 录 3D 视频并 AI 生片`}
               title="将本镜 3D / 动态运镜直接录成真 MP4 视频，并自动连入下游 AI 视频工坊（动作迁移 / 参考生视频）"
               onClick={() => onBakeShotToAiVideo(shot, pos)}

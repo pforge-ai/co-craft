@@ -6,6 +6,7 @@ import { ResourceLibrary } from './components/ResourceLibrary';
 import { GenerationDialog, type GenerationDraft } from './components/GenerationDialog';
 import { BrandMark } from './components/BrandMark';
 import { StageOverlay, type StageDomBox } from './components/StageOverlay';
+import { SpatialDirectorStudio, type SpatialDirectorTarget } from './components/SpatialDirectorStudio';
 import { AssetExplorer, type AssetCategory } from './components/AssetExplorer';
 import { CreateCanvas } from './components/CreateCanvas';
 import { StoryboardStudio } from './components/StoryboardStudio';
@@ -185,6 +186,7 @@ export function App() {
     [showBottom, setShowBottom] = useState(false),
     [showRight, setShowRight] = useState(false),
     [dialog, setDialog] = useState<Dialog>(null),
+    [spatialStudio, setSpatialStudio] = useState<SpatialDirectorTarget | null>(null),
     [jobsOpen, setJobsOpen] = useState(false),
     [jobsScope, setJobsScope] = useState<'project' | 'all'>('project'),
     [editingTimecode, setEditingTimecode] = useState(false),
@@ -2542,6 +2544,10 @@ export function App() {
                   });
                   return captured;
                 }}
+                onOpenSpatialDirector={(t) => {
+                  pause();
+                  setSpatialStudio(t);
+                }}
                 onAskAgentForShot={(shotClip, draftPrompt) => {
                   setScope(clone(shotClip));
                   setStrictScope(true);
@@ -2666,6 +2672,10 @@ export function App() {
                     setShowRight(true);
                     setPrompt(`请帮我调度「${targetClip.name}」的3D摄像机运镜、视角走线或光影氛围：`);
                     requestAnimationFrame(() => promptRef.current?.focus());
+                  }}
+                  onOpenSpatialDirector={(targetClip) => {
+                    pause();
+                    setSpatialStudio({ kind: 'clip', sequenceId: sequence.id, clipId: targetClip.id });
                   }}
                   onBakeSpatialVideo={(targetClip) =>
                     void work('录制 3D 预演视频', async () => {
@@ -3198,6 +3208,10 @@ export function App() {
                 setPrompt(`请帮我调度「${targetClip.name}」的3D摄像机运镜、视角走线或光影氛围：`);
                 requestAnimationFrame(() => promptRef.current?.focus());
               }}
+              onOpenSpatialDirector={(targetClip) => {
+                pause();
+                setSpatialStudio({ kind: 'clip', sequenceId: sequence.id, clipId: targetClip.id });
+              }}
             />
           ) : (
             <AgentPanel
@@ -3376,6 +3390,66 @@ export function App() {
           }
           onResumeJob={(jobId) => void work('继续查询', () => api('generation.resume', { id: jobId }))}
           onCancelJob={(jobId) => void api('jobs.cancel', { id: jobId })}
+        />
+      )}
+      {spatialStudio && (
+        <SpatialDirectorStudio
+          target={spatialStudio}
+          returnLabel={appMode === 'create' ? '返回画布' : '返回剪辑'}
+          project={project}
+          sequence={sequence}
+          settings={settings}
+          previewOrigin={boot.previewOrigin}
+          onClose={() => setSpatialStudio(null)}
+          onEdit={(n, ops) => edit(n, ops).then(() => {})}
+          onCaptureReference={async (opts) => {
+            await work('拍摄 3D 空间参考帧', async () => {
+              const res = await api<{ envelope: ProjectEnvelope; captured?: { pass: string; asset: Asset }[] }>(
+                'stage.captureReference',
+                { sequenceId: sequence.id, ...opts },
+              );
+              accept(res.envelope);
+              notify(`已拍摄 ${res.captured?.length || 1} 张参考图并送入「创造」画布`);
+            });
+          }}
+          onCapturePair={async (opts) => {
+            await work('拍摄 3D 首尾两帧', async () => {
+              const res = await api<{ envelope: ProjectEnvelope; startAsset: Asset; endAsset: Asset }>(
+                'stage.captureSpatialPair',
+                { sequenceId: sequence.id, ...opts },
+              );
+              accept(res.envelope);
+              notify('已拍摄首尾两帧并送入「创造」画布，可直接做首尾帧生视频');
+            });
+          }}
+          onBakeVideo={async (opts) => {
+            await work('录制 3D 预演视频', async () => {
+              const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>(
+                'stage.bakeSpatialVideo',
+                { sequenceId: sequence.id, ...opts },
+              );
+              accept(res.envelope);
+              notify(`已录制 3D 预演视频「${res.asset.name}」并送入「创造」画布`);
+            });
+          }}
+          onAskAgent={(instruction, scopeClip) => {
+            setSpatialStudio(null);
+            if (scopeClip) setScope(clone(scopeClip));
+            setRight('agent');
+            setShowRight(true);
+            void send(instruction, scopeClip);
+          }}
+          onOpenCodeEditor={(compId) => {
+            const comp = project.components.find((c) => c.id === compId);
+            if (!comp) return;
+            setSpatialStudio(null);
+            setCodeComponent(comp);
+            setDialog('code');
+          }}
+          onOpenMcpSettings={() => {
+            setSpatialStudio(null);
+            openSettings('mcp');
+          }}
         />
       )}
       {dialog === 'settings' && (

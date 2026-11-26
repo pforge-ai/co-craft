@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, ipcMain, dialog, Menu, shell, nativeTheme, nativeImage } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname, resolve, basename } from 'node:path';
-import { mkdir, readFile, writeFile, readdir, rm, stat, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, rm, stat, lstat, copyFile, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { Library, ProjectStore } from './store';
 import { SettingsStore } from './settings';
@@ -17,6 +17,7 @@ import { binary, importMedia, parseSilenceDetectLog, run } from './media';
 import { compileComponent } from './code';
 import { GlobalVault } from './vault';
 import { McpBridgeServer } from './mcp-bridge';
+import { McpClientManager } from './mcp-client';
 import { CoCraftToolService } from './tool-service';
 import { System1Service } from './system1';
 import {
@@ -68,6 +69,7 @@ let win: BrowserWindow,
   globalVault: GlobalVault,
   toolService: CoCraftToolService,
   mcpBridge: McpBridgeServer,
+  mcpClient: McpClientManager,
   system1: System1Service;
 
 const sanitizeFileName = (raw: string, fallback = 'export') =>
@@ -635,6 +637,7 @@ async function handle(method: string, arg: any = {}) {
       } else {
         await mcpBridge.stop().catch(() => {});
       }
+      await mcpClient.syncWithSettings().catch(() => {});
       emit('settings', s);
       return s;
     }
@@ -645,6 +648,12 @@ async function handle(method: string, arg: any = {}) {
       clipboard.writeText(json);
       return { copied: true, clientConfigJson: json };
     }
+    case 'mcp.client.status':
+      return mcpClient.getStatuses();
+    case 'mcp.client.refresh':
+      return mcpClient.listEnabledTools();
+    case 'mcp.client.test':
+      return mcpClient.testServer(arg.server);
     case 'export.preflight': {
       const p = await store.project();
       const missing = p.assets.filter((a) => a.path && !existsSync(a.path)).map((a) => a.id);
@@ -735,27 +744,73 @@ async function handle(method: string, arg: any = {}) {
       return listSkills();
     }
     case 'skills.import': {
+      const importKind: 'file' | 'folder' = arg.kind === 'folder' ? 'folder' : 'file';
+      const scope = arg.scope === 'user' ? 'user' : 'project';
+      const root = scope === 'user' ? join(app.getPath('userData'), 'skills') : join(store.path, 'skills');
       let sourcePath = arg.sourcePath ? String(arg.sourcePath) : '';
       if (!sourcePath) {
         const picked = await dialog.showOpenDialog(win, {
-          title: '导入 SKILL.md',
-          properties: ['openFile'],
-          filters: [{ name: 'Skill 文档', extensions: ['md'] }],
+          title: importKind === 'folder' ? '导入 Skill 目录（含 SKILL.md 与附属脚本）' : '导入 SKILL.md',
+          properties: importKind === 'folder' ? ['openDirectory'] : ['openFile'],
+          ...(importKind === 'file' ? { filters: [{ name: 'Skill 文档', extensions: ['md'] }] } : {}),
         });
         if (picked.canceled || !picked.filePaths[0]) return null;
         sourcePath = picked.filePaths[0];
       }
-      if (extname(sourcePath).toLowerCase() !== '.md') {
-        throw new Error('仅支持导入 .md 格式的 Skill 文档');
-      }
       const info = await stat(sourcePath);
+      if (info.isDirectory()) {
+        const skillMdPath = join(sourcePath, 'SKILL.md');
+        if (!existsSync(skillMdPath)) {
+          throw new Error('所选目录根部未找到 SKILL.md，请选择包含 SKILL.md 的 Skill 文件夹');
+        }
+        const mdStat = await stat(skillMdPath);
+        if (!mdStat.isFile() || mdStat.size > 512 * 1024) {
+          throw new Error('SKILL.md 无效或体积超过 512KB 上限');
+        }
+        const raw = await readFile(skillMdPath, 'utf8');
+        const parsed = parseSkillMarkdown(raw, basename(sourcePath));
+        const destDir = join(root, parsed.name);
+        await rm(destDir, { recursive: true, force: true }).catch(() => {});
+        await mkdir(destDir, { recursive: true });
+        let totalBytes = 0;
+        let fileCount = 0;
+        const copyTree = async (src: string, dst: string) => {
+          const entries = await readdir(src, { withFileTypes: true });
+          for (const entry of entries) {
+            if (['.git', 'node_modules', '.DS_Store', '__pycache__'].includes(entry.name)) continue;
+            const sPath = join(src, entry.name);
+            const dPath = join(dst, entry.name);
+            const st = await lstat(sPath);
+            if (st.isSymbolicLink()) continue;
+            if (st.isDirectory()) {
+              await mkdir(dPath, { recursive: true });
+              await copyTree(sPath, dPath);
+            } else if (st.isFile()) {
+              fileCount++;
+              totalBytes += st.size;
+              if (fileCount > 200 || totalBytes > 20 * 1024 * 1024) {
+                throw new Error('Skill 目录超出大小限制（最多 200 个文件 / 20MB）');
+              }
+              await copyFile(sPath, dPath);
+            }
+          }
+        };
+        await copyTree(sourcePath, destDir);
+        await writeFile(
+          join(destDir, 'SKILL.md'),
+          `---\nname: ${parsed.name}\ndescription: ${parsed.description || parsed.name}\n---\n\n${parsed.body}\n`,
+          'utf8',
+        );
+        return listSkills();
+      }
+      if (extname(sourcePath).toLowerCase() !== '.md') {
+        throw new Error('仅支持导入 .md 格式的 Skill 文档或含 SKILL.md 的目录');
+      }
       if (!info.isFile() || info.size > 512 * 1024) {
         throw new Error('Skill 文档无效或体积超过 512KB 上限');
       }
       const raw = await readFile(sourcePath, 'utf8');
       const parsed = parseSkillMarkdown(raw, basename(dirname(sourcePath)));
-      const scope = arg.scope === 'user' ? 'user' : 'project';
-      const root = scope === 'user' ? join(app.getPath('userData'), 'skills') : join(store.path, 'skills');
       const skillDir = join(root, parsed.name);
       await mkdir(skillDir, { recursive: true });
       await writeFile(
@@ -765,10 +820,12 @@ async function handle(method: string, arg: any = {}) {
       );
       return listSkills();
     }
-    case 'skills.open':
-      await mkdir(join(store.path, 'skills'), { recursive: true });
-      await shell.openPath(join(store.path, 'skills'));
+    case 'skills.open': {
+      const dir = arg?.scope === 'user' ? join(app.getPath('userData'), 'skills') : join(store.path, 'skills');
+      await mkdir(dir, { recursive: true });
+      await shell.openPath(dir);
       return true;
+    }
     case 'stock.search': {
       const pexelsKey = await settings.stockKey();
       if (!pexelsKey) throw new Error('在设置中填写 Pexels API Key，即可搜索视频素材。');
@@ -2035,6 +2092,7 @@ app
       getMcpStatus: () => mcpBridge.status(),
       runBuiltInAgent: (params) => runBuiltInAgentFromMcp(params),
     });
+    mcpClient = new McpClientManager(settings, app.getVersion());
     agents = new AgentHost(
       join(here, 'agent-worker.mjs'),
       join(resources, 'skills'),
@@ -2047,6 +2105,7 @@ app
       globalVault,
       join(root, 'skills'),
       toolService,
+      mcpClient,
     );
     const mcpScriptPath = app.isPackaged
       ? join(process.resourcesPath, 'mcp', 'cocraft-mcp.mjs')
@@ -2132,6 +2191,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   void Promise.allSettled([
     mcpBridge?.stop(),
+    mcpClient?.stopAll(),
     agents?.stopAll(),
     jobs?.shutdownWorkers(),
   ])

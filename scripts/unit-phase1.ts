@@ -1969,4 +1969,39 @@ assert.ok(
   assert.equal(pickedNoRef?.id, 'm_t2v');
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage regression tests');
+// 50. MCP Client helpers (parseMcpServersJson, namespace qualification, label formatting)
+{
+  const {
+    MCP_SERVER_PRESETS,
+    parseMcpServersJson,
+    qualifyMcpToolName,
+    parseMcpToolName,
+    formatMcpToolLabel,
+  } = await import('../src/core/mcp');
+  assert.ok(MCP_SERVER_PRESETS.some((p) => p.id === 'blender' && p.config.command === 'uvx'));
+
+  const parsed = parseMcpServersJson(
+    JSON.stringify({
+      mcpServers: {
+        blender: { command: 'uvx', args: ['blender-mcp'], env: { BLENDER_PORT: '9876' } },
+        remoteDesign: { url: 'http://127.0.0.1:8787/mcp', headers: { Authorization: 'Bearer tok' } },
+      },
+    }),
+  );
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].transport, 'stdio');
+  assert.equal(parsed[0].command, 'uvx');
+  assert.deepEqual(parsed[0].args, ['blender-mcp']);
+  assert.equal(parsed[0].preset, 'blender');
+  assert.equal(parsed[1].transport, 'http');
+  assert.equal(parsed[1].url, 'http://127.0.0.1:8787/mcp');
+  assert.deepEqual(parsed[1].headerKeys, ['Authorization']);
+
+  const q = qualifyMcpToolName('Blender Studio', 'execute_blender_code');
+  assert.equal(q, 'mcp__blender_studio__execute_blender_code');
+  assert.deepEqual(parseMcpToolName(q), { serverSlug: 'blender_studio', toolName: 'execute_blender_code' });
+  assert.equal(formatMcpToolLabel(q), 'MCP · blender_studio · execute_blender_code');
+  assert.throws(() => parseMcpServersJson('not valid json'));
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client regression tests');
