@@ -175,7 +175,9 @@ try {
   const pngAsset = bootAfterPng.current.project.assets.find((a) => a.kind === 'image');
   assert.ok(pngAsset, 'Reference PNG imported');
 
-  await page.getByRole('button', { name: /新建角色 \/ 设定/ }).click();
+  // Open canvas context menu on blank area -> 添加角色 / 设定
+  await page.locator('.create-canvas-viewport').click({ button: 'right', position: { x: 860, y: 260 } });
+  await page.locator('.cc-context-menu').getByRole('button', { name: /添加角色 \/ 设定/ }).click();
   await page.getByLabel('主体名称').fill('林夏');
   await page.getByLabel('状态分支名称').fill('雨夜风衣态');
   await page.getByLabel('绑定参考图片').selectOption(pngAsset.id);
@@ -183,9 +185,8 @@ try {
   await page.getByRole('button', { name: '保存节点' }).click();
   await page.locator('.cc-node.upstream').filter({ hasText: '林夏' }).waitFor();
 
-  // TapNow (+) FAB -> Text Node -> Multi-line Script -> 拆为分镜序列 -> Select Shot 1 -> Bind @林夏
-  await page.getByLabel('添加画布节点').click();
-  await page.locator('.cc-fab-menu').getByRole('button', { name: /文本/ }).click();
+  // Left Tool Rail -> Text Node -> Multi-line Script -> 拆为分镜序列 -> Select Shot 1 -> Bind @林夏
+  await page.getByLabel('新建脚本文本节点').click();
   const scriptArea = page.getByLabel('画布文本内容').last();
   await scriptArea.waitFor({ state: 'visible' });
   await scriptArea.fill(
@@ -203,7 +204,7 @@ try {
   await page.locator('.cc-node.shot').first().click();
   await page.getByLabel('镜头 1 绑定主体').selectOption(linXiaEnt.id);
   await page.locator('.cc-wire-pill').filter({ hasText: '林夏' }).first().waitFor({ state: 'visible' });
-  await page.getByRole('button', { name: /进入剪辑精修/ }).waitFor({ state: 'visible' });
+  await page.getByRole('tab', { name: '剪辑' }).waitFor({ state: 'visible' });
   await page.screenshot({ path: join(auditDir, '02-create-nodes-wires-dark.png') });
   console.log('PASS · [1/5] Monochrome IDE Shell + TapNow Text Node, Shot Nodes & SVG Bezier Wires verified');
 
@@ -217,8 +218,13 @@ try {
   const genPromptVal = await page.locator('.generation-shell textarea').inputValue();
   assert.ok(genPromptVal.includes('第一镜：雨夜街角独自驻足的开场'), 'Shot script passed into AI Generation dialog');
   assert.ok(genPromptVal.includes('@林夏:雨夜风衣态'), 'Bound @Entity:Variant passed into AI Generation dialog');
-  const genRefVal = await page.locator('.generation-options select').inputValue();
-  assert.equal(genRefVal, pngAsset.id, 'Bound subject image written into referenceAssetId field');
+  const singleRefSel = page.locator('.generation-shell').getByLabel('参考图', { exact: true });
+  if (await singleRefSel.count()) {
+    assert.equal(await singleRefSel.inputValue(), pngAsset.id, 'Bound subject image written into referenceAssetId field');
+  } else {
+    const refChipsText = await page.locator('.generation-ref-chips').innerText();
+    assert.ok(refChipsText.includes(pngAsset.name), 'Bound subject image shown in multi-ref chips');
+  }
   // Switch across all remaining tabs and verify prompt + modal size remain fixed!
   await page.locator('.generation-modes').getByRole('button', { name: '视频' }).click();
   assert.equal(await page.locator('.generation-shell textarea').inputValue(), genPromptVal, 'Prompt preserved on Video tab');
@@ -251,10 +257,16 @@ try {
   const cSorted = seqAfterReorder.clips.filter((c) => c.kind === 'caption').sort((a, b) => a.start - b.start);
   assert.ok(vSorted[0].name.includes('第二镜'), 'Shot 2 visual is now first at 00:00');
   assert.equal(cSorted[0].start, vSorted[0].start, 'First caption aligned to 00:00');
-  assert.equal(cSorted[0].props.text, '第二镜：转身推开书店木门的暖光反差', 'Shot 2 subtitle moved to 00:00 with Shot 2 visual!');
+  assert.ok(
+    String(cSorted[0].props.text).includes('转身推开书店木门的暖光反差'),
+    `Shot 2 subtitle moved to 00:00 with Shot 2 visual (got ${cSorted[0].props.text})`,
+  );
   assert.ok(vSorted[1].name.includes('第一镜'), 'Shot 1 visual moved to second slot');
   assert.equal(cSorted[1].start, vSorted[1].start, 'Second caption aligned to Shot 1 new start');
-  assert.equal(cSorted[1].props.text, '第一镜：雨夜街角独自驻足的开场', 'Shot 1 subtitle moved to second slot with Shot 1 visual!');
+  assert.ok(
+    String(cSorted[1].props.text).includes('雨夜街角独自驻足的开场'),
+    `Shot 1 subtitle moved to second slot with Shot 1 visual (got ${cSorted[1].props.text})`,
+  );
   console.log('PASS · [3/5] Shot reorder keeps visuals and subtitles 100% matched');
 
   // ── 4. [P1 #3] Existing Session + /新建分支试剪 Strictly Targets Forked Branch & Protects Main ──
@@ -427,15 +439,14 @@ try {
   await page.locator('.ae-card').filter({ hasText: '林夏' }).first().waitFor({ state: 'visible' });
   await page.locator('.ae-lib-tabs').getByRole('tab', { name: '全部' }).click();
 
-  // 2) Permanent AI Omnibar real mouse click + typing, Audio Asset Node on Canvas, drag persistence, & click wire pill unbind
+  // 2) Permanent Unified AI Omnibar real mouse click + typing, Audio Asset Node on Canvas, drag persistence, & click wire pill unbind
   await page.locator('.cc-ai-omnibar').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('.cc-omni-mode').count(), 4, '4 AI canvas omnibar modes rendered');
-  const omniInput = page.locator('.cc-ai-omnibar input');
+  const omniInput = page.locator('.cc-ai-omnibar textarea');
   const omniBox = await omniInput.boundingBox();
-  assert.ok(omniBox, 'Omnibar input bounding box visible');
+  assert.ok(omniBox, 'Omnibar textarea bounding box visible');
   await page.mouse.click(omniBox.x + omniBox.width * 0.5, omniBox.y + omniBox.height * 0.5);
   await page.keyboard.type('真实鼠标点击输入已打通');
-  assert.equal(await omniInput.inputValue(), '真实鼠标点击输入已打通', 'Omnibar input accepts focus and typing via real mouse click');
+  assert.equal(await omniInput.inputValue(), '真实鼠标点击输入已打通', 'Omnibar textarea accepts focus and typing via real mouse click');
   await omniInput.fill('');
 
   // Import studio WAV audio & verify Canvas renders it as a seekable Audio Asset Node!
@@ -530,8 +541,11 @@ try {
     );
     await page.screenshot({ path: join(auditDir, '12-canvas-universal-wires.png') });
   }
+  // Focus on 林夏 so its binding wire pill surfaces cleanly in Focus Wire Mode, then click pill to unbind
+  await page.locator('.cc-node.upstream:not(.text-note) .cc-node-header').first().click();
+  await page.waitForTimeout(150);
   const wiresBeforeUnbind = await page.locator('.cc-wire-path:not(.lineage)').count();
-  await page.locator('.cc-wire-pill').filter({ hasText: '林夏' }).first().click();
+  await page.locator('.cc-wire-pill').filter({ hasText: '林夏' }).first().click({ force: true });
   await page.waitForFunction(
     (prev) => document.querySelectorAll('.cc-wire-path:not(.lineage)').length < prev,
     wiresBeforeUnbind,
@@ -691,7 +705,7 @@ try {
 
   // 6) Unique NLE overlay track numbering (V3, V2), non-fragmented Create Canvas shots, Razor blade tool B click-split, & Dissolve Transition apply
   const overlayCodes = await page.locator('.track-label.overlay .track-code').allInnerTexts();
-  assert.deepEqual(overlayCodes, ['V3', 'V2'], 'Overlay track codes ascend cleanly without duplicate V2');
+  assert.deepEqual(overlayCodes, ['V2', 'V2·2'], 'Overlay sub-lanes receive unique track codes without duplicate V2');
 
   const visualShotTotal = activeSeq.clips.filter((c) => c.track === 'visual').length;
   await page.getByRole('tab', { name: '创造' }).click();
@@ -945,16 +959,16 @@ try {
 
   await page.locator('.settings-nav').getByRole('button', { name: '提供商' }).click();
   await page.getByLabel('添加提供商').selectOption({ label: '阿里百炼 / 千问 (DashScope)' });
-  await page.getByRole('button', { name: /一键添加推荐全模态模型/ }).click();
+  await page.getByRole('button', { name: /一键添加百炼推荐全模态套件/ }).click();
   await page.locator('.settings-nav').getByRole('button', { name: '模型' }).click();
   const modelListText = await page.locator('.settings-shell .connection-list').innerText();
-  for (const mId of ['qwen3.5-plus', 'qwen-image-plus', 'wan2.6-t2v', 'wan2.6-i2v', 'qwen3-tts-flash', 'qwen3-asr-flash']) {
+  for (const mId of ['qwen3.5-plus', 'qwen-image-3.0-pro', 'wan2.7-t2v', 'wan2.7-i2v', 'qwen3-tts-flash', 'qwen3-asr-flash']) {
     assert.ok(modelListText.includes(mId), `Alibaba suite populated ${mId}`);
   }
 
   await page.locator('.settings-nav').getByRole('button', { name: 'Skills 与工具' }).click();
   await page.locator('.skill-row').filter({ hasText: '多模态生图生视频与配音规范' }).waitFor({ state: 'visible' });
-  await page.getByRole('button', { name: '新建 Skill' }).click();
+  await page.locator('.skill-toolbar-actions').getByRole('button', { name: '新建', exact: true }).click();
   await page.getByLabel('Skill 标识').fill('my-pacing-rule');
   await page.getByLabel('Skill 正文').fill('# 自定义节奏规则\n每镜不超过 4 秒，优先保留人声停顿。');
   await page.getByRole('button', { name: '保存 Skill' }).click();

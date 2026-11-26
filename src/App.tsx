@@ -19,6 +19,9 @@ import { JobsPopover } from './components/JobsPopover';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { TranscriptPanel } from './components/TranscriptPanel';
 import { WorkbenchTitlebar } from './components/WorkbenchTitlebar';
+import { useWorkbenchLayout } from './hooks/useWorkbenchLayout';
+import { useAgentComposer } from './hooks/useAgentComposer';
+import { useWorkbenchDialogs, type WorkbenchDialog as Dialog } from './hooks/useWorkbenchDialogs';
 import {
   WORKSPACE_LAYOUT_PRESETS,
   dateLabel,
@@ -123,22 +126,6 @@ import { Inspector } from './components/Inspector';
 import { IconButton, Mark, Modal, Spinner } from './components/ui';
 import { SettingsDialog, ExportDialog, CodeDialog, StockDialog } from './components/Dialogs';
 
-type Dialog =
-  | 'settings'
-  | 'export'
-  | 'new-project'
-  | 'new-task'
-  | 'command'
-  | 'versions'
-  | 'templates'
-  | 'code'
-  | 'stock'
-  | 'generation'
-  | 'job-result'
-  | 'rename-task'
-  | 'sequence'
-  | null;
-
 const api = <T,>(method: string, payload?: unknown) => window.cocraft.call<T>(method, payload);
 
 const PlayheadTimecode = React.memo(function PlayheadTimecode({
@@ -157,87 +144,150 @@ const PlayheadTimecode = React.memo(function PlayheadTimecode({
 });
 
 export function App() {
-  const [boot, setBoot] = useState<BootData | null>(null),
-    [env, setEnv] = useState<ProjectEnvelope | null>(null),
-    [projects, setProjects] = useState<ProjectSummary[]>([]),
-    [settings, setSettings] = useState<Settings | null>(null),
-    [jobs, setJobs] = useState<Job[]>([]);
-  const [sequenceId, setSequenceId] = useState(''),
-    [taskId, setTaskId] = useState(''),
-    [connectingTask, setConnectingTask] = useState(''),
-    [selected, setSelected] = useState<string | null>(null),
-    [selectedIds, setSelectedIds] = useState<string[]>([]),
-    [frame, setFrame] = useState(0),
-    [isScrubbing, setIsScrubbing] = useState(false),
-    [playing, setPlaying] = useState(false),
-    [muted, setMuted] = useState(false),
-    [previewReady, setPreviewReady] = useState(false),
-    [previewProject, setPreviewProject] = useState<Project | null>(null),
-    [stageBoxes, setStageBoxes] = useState<Record<string, StageDomBox>>({});
-  const [appMode, setAppMode] = useState<'create' | 'edit'>('create'),
-    [showBrief, setShowBrief] = useState(false),
-    [mentionIndex, setMentionIndex] = useState(0),
-    [showStageFork, setShowStageFork] = useState(false),
-    [stageForkName, setStageForkName] = useState(''),
-    [stageForkAspect, setStageForkAspect] = useState<'original' | 'portrait' | 'square'>('original'),
-    [projectMenuOpen, setProjectMenuOpen] = useState(false),
-    [layoutMenuOpen, setLayoutMenuOpen] = useState(false),
-    [view, setView] = useState('timeline'),
-    [right, setRight] = useState('inspector'),
-    [showNav, setShowNav] = useState(false),
-    [showBottom, setShowBottom] = useState(false),
-    [showRight, setShowRight] = useState(false),
-    [dialog, setDialog] = useState<Dialog>(null),
-    [spatialStudio, setSpatialStudio] = useState<SpatialDirectorTarget | null>(null),
-    [jobsOpen, setJobsOpen] = useState(false),
-    [jobsScope, setJobsScope] = useState<'project' | 'all'>('project'),
-    [editingTimecode, setEditingTimecode] = useState(false),
-    [tcDraft, setTcDraft] = useState('');
-  const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null),
-    [fatal, setFatal] = useState(''),
-    [busy, setBusy] = useState(''),
-    [zoom, setZoom] = useState(100),
-    [snap, setSnap] = useState(true),
-    [pinMode, setPinMode] = useState(false),
-    [stagePin, setStagePin] = useState<{ x: number; y: number; frame: number } | undefined>(),
-    [strictScope, setStrictScope] = useState(false),
-    [personalLibrary, setPersonalLibrary] = useState<VaultItem[]>([]),
-    [assetCategory, setAssetCategory] = useState<AssetCategory>('media'),
-    [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select'),
-    [curveClipId, setCurveClipId] = useState<string | null>(null),
-    [scriptQuery, setScriptQuery] = useState(''),
-    [draggingFile, setDraggingFile] = useState(false),
-    [timelineHeight, setTimelineHeight] = useState(Number(localStorage.getItem('cc-timeline-height')) || 278),
-    [agentWidth, setAgentWidth] = useState(Number(localStorage.getItem('cc-agent-width')) || 316),
-    [navWidth, setNavWidth] = useState(Number(localStorage.getItem('cc-nav-width')) || 240);
-  const [prompt, setPrompt] = useState(''),
-    [scope, setScope] = useState<Clip | null>(null),
-    [chatRefs, setChatRefs] = useState<ChatContextRef[]>([]),
-    [stream, setStream] = useState<Record<string, string>>({}),
-    [thinkingStream, setThinkingStream] = useState<Record<string, string>>({}),
-    [toolState, setToolState] = useState<Record<string, string>>({}),
-    [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelChoice>(
-      () => (localStorage.getItem('cc-thinking-level') as ThinkingLevelChoice) || 'off',
-    ),
-    [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]),
-    [activeComposerSkills, setActiveComposerSkills] = useState<string[]>([]),
-    [openComposerMenu, setOpenComposerMenu] = useState<'session' | 'model' | 'thinking' | null>(null),
-    [briefDraft, setBriefDraft] = useState(''),
-    [formName, setFormName] = useState(''),
-    [command, setCommand] = useState(''),
-    [cmdIndex, setCmdIndex] = useState(0),
-    [codeComponent, setCodeComponent] = useState<CodeComponent | undefined>(),
-    [generationDraft, setGenerationDraft] = useState<GenerationDraft>({ use: 'image' }),
-    [settingsTab, setSettingsTab] = useState<string | undefined>(),
-    [returnToStudio, setReturnToStudio] = useState(false),
-    [modelOverride, setModelOverride] = useState(''),
-    [resultJob, setResultJob] = useState<Job | undefined>(),
-    [resultClip, setResultClip] = useState(''),
-    [seqFormat, setSeqFormat] = useState('9:16');
+  // Domain 1: Core Project, Playback & Selection State
+  const [boot, setBoot] = useState<BootData | null>(null);
+  const [env, setEnv] = useState<ProjectEnvelope | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [sequenceId, setSequenceId] = useState('');
+  const [selected, setSelected] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [frame, setFrame] = useState(0);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [previewReady, setPreviewReady] = useState(false);
+  const [previewProject, setPreviewProject] = useState<Project | null>(null);
+  const [stageBoxes, setStageBoxes] = useState<Record<string, StageDomBox>>({});
+  const [editingTimecode, setEditingTimecode] = useState(false);
+  const [tcDraft, setTcDraft] = useState('');
+  const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null);
+  const [fatal, setFatal] = useState('');
+  const [busy, setBusy] = useState('');
+  const [zoom, setZoom] = useState(100);
+  const [snap, setSnap] = useState(true);
+  const [pinMode, setPinMode] = useState(false);
+  const [personalLibrary, setPersonalLibrary] = useState<VaultItem[]>([]);
+  const [timelineTool, setTimelineTool] = useState<'select' | 'razor'>('select');
+  const [curveClipId, setCurveClipId] = useState<string | null>(null);
+  const [scriptQuery, setScriptQuery] = useState('');
 
-  const sending = useRef(false);
+  // Domain 2: Workspace Layout & Panel Chrome
+  const {
+    appMode,
+    setAppMode,
+    showBrief,
+    setShowBrief,
+    briefDraft,
+    setBriefDraft,
+    showStageFork,
+    setShowStageFork,
+    stageForkName,
+    setStageForkName,
+    stageForkAspect,
+    setStageForkAspect,
+    projectMenuOpen,
+    setProjectMenuOpen,
+    layoutMenuOpen,
+    setLayoutMenuOpen,
+    view,
+    setView,
+    right,
+    setRight,
+    showNav,
+    setShowNav,
+    showBottom,
+    setShowBottom,
+    showRight,
+    setShowRight,
+    jobsOpen,
+    setJobsOpen,
+    jobsScope,
+    setJobsScope,
+    assetCategory,
+    setAssetCategory,
+    draggingFile,
+    setDraggingFile,
+    timelineHeight,
+    setTimelineHeight,
+    agentWidth,
+    setAgentWidth,
+    navWidth,
+    setNavWidth,
+    savedPanesRef,
+  } = useWorkbenchLayout();
+
+  // Domain 3: Agent Session, Streaming & Composer
+  const {
+    taskId,
+    setTaskId,
+    connectingTask,
+    setConnectingTask,
+    prompt,
+    setPrompt,
+    scope,
+    setScope,
+    strictScope,
+    setStrictScope,
+    stagePin,
+    setStagePin,
+    chatRefs,
+    setChatRefs,
+    stream,
+    setStream,
+    thinkingStream,
+    setThinkingStream,
+    toolState,
+    setToolState,
+    thinkingLevel,
+    setThinkingLevel,
+    composerAttachments,
+    setComposerAttachments,
+    activeComposerSkills,
+    setActiveComposerSkills,
+    openComposerMenu,
+    setOpenComposerMenu,
+    mentionIndex,
+    setMentionIndex,
+    modelOverride,
+    setModelOverride,
+    sending,
+    promptRef,
+    messagesEnd,
+  } = useAgentComposer();
+
+  // Domain 4: Modals, Forms & Full-Focus Director Studio
+  const {
+    dialog,
+    setDialog,
+    spatialStudio,
+    setSpatialStudio,
+    formName,
+    setFormName,
+    command,
+    setCommand,
+    cmdIndex,
+    setCmdIndex,
+    codeComponent,
+    setCodeComponent,
+    generationDraft,
+    setGenerationDraft,
+    settingsTab,
+    setSettingsTab,
+    returnToStudio,
+    setReturnToStudio,
+    resultJob,
+    setResultJob,
+    resultClip,
+    setResultClip,
+    seqFormat,
+    setSeqFormat,
+    openSettings,
+    openStudio,
+  } = useWorkbenchDialogs();
+
   const clipboardClip = useRef<Clip | null>(null);
-  const savedPanesRef = useRef({ nav: true, right: true, bottom: true });
   const appRef = useRef<HTMLDivElement>(null);
   const dragCleanup = useRef<(() => void) | null>(null);
   const playheadClockRef = useRef<PlayheadClock | null>(null);
@@ -272,8 +322,6 @@ export function App() {
     queue = useRef(Promise.resolve()),
     playRef = useRef(false),
     frameRef = useRef(0),
-    promptRef = useRef<HTMLTextAreaElement>(null),
-    messagesEnd = useRef<HTMLDivElement>(null),
     notifyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const notify = useCallback((text: string, error = false) => {
@@ -464,24 +512,6 @@ export function App() {
     void api<BootData['skills']>('skills.list').then((skills) => setBoot((b) => (b ? { ...b, skills } : b)));
   };
 
-  const openSettings = (tab?: string, fromStudio = false) => {
-    setSettingsTab(tab);
-    setReturnToStudio(fromStudio);
-    setDialog('settings');
-  };
-
-  const openStudio = (
-    useOrDraft: GenerationDraft['use'] | GenerationDraft = 'image',
-    assetId?: string,
-  ) => {
-    if (typeof useOrDraft === 'string') {
-      setGenerationDraft({ use: useOrDraft, assetId });
-    } else {
-      setGenerationDraft(useOrDraft);
-    }
-    setDialog('generation');
-  };
-
   const openDialog = (name: Dialog) => {
     if (name === 'new-task') {
       setDialog(null);
@@ -502,16 +532,6 @@ export function App() {
     setCmdIndex(0);
     setDialog(name);
   };
-
-  useEffect(() => {
-    const reset = () => {
-      setNavWidth(240);
-      setAgentWidth(350);
-      setTimelineHeight(278);
-    };
-    window.addEventListener('cocraft:reset-layout', reset);
-    return () => window.removeEventListener('cocraft:reset-layout', reset);
-  }, []);
 
   const refreshSettings = async (s: Partial<Settings>) => {
     const next = await api<Settings>('settings.save', s);

@@ -61,10 +61,28 @@
     "appId": "studio.cocraft.desktop",
     "productName": "CoCraft",
     "asar": true,
+    "afterPack": "scripts/after-pack.mjs",
     "files": [
       "dist/**/*",
       "package.json",
-      "!dist/render-bundle/**/*"
+      "!dist/render-bundle/**/*",
+      "!dist/**/*.map",
+      "!node_modules/lucide-react/**/*",
+      "!node_modules/three/**/*",
+      "!node_modules/react-markdown/**/*",
+      "!node_modules/remark-gfm/**/*",
+      "!node_modules/roughjs/**/*",
+      "!node_modules/@remotion/player/**/*",
+      "!node_modules/@remotion/media/**/*",
+      "!node_modules/**/*.map",
+      "!node_modules/**/*.d.ts",
+      "!node_modules/**/*.d.cts",
+      "!node_modules/**/*.d.mts",
+      "!node_modules/**/README*",
+      "!node_modules/**/CHANGELOG*",
+      "!node_modules/**/__tests__/**",
+      "!node_modules/**/test/**",
+      "!node_modules/**/tests/**"
     ],
     "extraResources": [
       {
@@ -79,24 +97,17 @@
       },
       {
         "from": "dist/render-bundle",
-        "to": "render-bundle"
+        "to": "render-bundle",
+        "filter": [
+          "**/*",
+          "!**/*.map"
+        ]
       },
       {
         "from": "scripts",
         "to": "mcp",
         "filter": [
           "cocraft-mcp.mjs"
-        ]
-      },
-      {
-        "from": "node_modules/@remotion/compositor-darwin-arm64",
-        "to": "media-tools",
-        "filter": [
-          "ffmpeg",
-          "ffprobe",
-          "remotion",
-          "*.dylib",
-          "LICENSE.md"
         ]
       }
     ],

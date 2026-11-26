@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { copyFile, mkdir, rename, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { dir as compositorDir } from '@remotion/compositor-darwin-arm64';
 import { atomicJSON, readJSON } from './store';
 import type { Project, Job, EditOperation } from '../src/core/types';
 import { uid, clone, newClip } from '../src/core/project';
@@ -430,15 +431,19 @@ export class JobService {
       }
     });
     const hasBundle = existsSync(join(this.renderDir, 'index.html'));
+    const unpackedCompositorDir = compositorDir.replace('app.asar/', 'app.asar.unpacked/');
+    const binariesDirectory = existsSync(join(process.resourcesPath || '', 'media-tools', 'ffmpeg'))
+      ? join(process.resourcesPath, 'media-tools')
+      : existsSync(join(unpackedCompositorDir, 'ffmpeg'))
+        ? unpackedCompositorDir
+        : undefined;
     worker.postMessage({
       type: 'render',
       serveUrl: hasBundle ? this.media.origin + '/render/index.html' : undefined,
       entryPoint: hasBundle ? undefined : this.devRoot ? join(this.devRoot, 'src/composition/register.tsx') : undefined,
       publicDir: this.devRoot ? join(this.devRoot, 'resources/public') : undefined,
       props: { project, sequenceId, mediaOrigin: this.media.origin },
-      binariesDirectory: existsSync(join(process.resourcesPath || '', 'media-tools', 'ffmpeg'))
-        ? join(process.resourcesPath, 'media-tools')
-        : undefined,
+      binariesDirectory,
       output,
       ...options,
     });
