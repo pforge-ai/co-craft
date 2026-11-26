@@ -7507,6 +7507,443 @@ input[type='checkbox']:not(.switch) {
   box-sizing: border-box;
 }
 
+/* Scene -> Shots -> Assets 3D Director Studio Layout */
+.sds-icon-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--muted);
+  cursor: pointer;
+}
+.sds-icon-toggle.active,
+.sds-icon-toggle:hover {
+  color: var(--text);
+  background: var(--raised);
+  border-color: var(--line-strong);
+}
+.sds-out-btn.active-opt {
+  border-color: rgba(52, 211, 153, 0.48);
+  background: rgba(52, 211, 153, 0.14);
+  color: #a7f3d0;
+}
+.sds-shots-col {
+  border-right: 1px solid var(--line);
+  background: #111318;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.sds-shots-head {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex-shrink: 0;
+}
+.sds-shots-head b {
+  font-size: 11px;
+  color: var(--dim);
+  font-weight: 600;
+}
+.sds-shots-add-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.sds-shots-add-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 25px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--text);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.sds-shots-add-row button:hover {
+  border-color: rgba(52, 211, 153, 0.45);
+  background: var(--raised);
+}
+.sds-shots-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sds-shot-card {
+  position: relative;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: #161920;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.sds-shot-card:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.sds-shot-card.active {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(52, 211, 153, 0.08);
+}
+.sds-shot-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.sds-shot-key {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  flex-shrink: 0;
+}
+.sds-shot-card.active .sds-shot-key {
+  background: #34d399;
+  color: #09110e;
+}
+.sds-shot-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sds-shot-del {
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.sds-shot-card:hover .sds-shot-del {
+  opacity: 1;
+}
+.sds-shot-del:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.14);
+}
+.sds-shot-rename {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+.sds-shot-rename input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  background: var(--well);
+  color: var(--text);
+  font-size: 11px;
+}
+.sds-shot-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.sds-shot-mode {
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--dim);
+}
+.sds-shot-mode.motion {
+  border-color: rgba(56, 189, 248, 0.4);
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+}
+.sds-shot-mode.still {
+  border-color: rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.08);
+  color: #cbd5e1;
+}
+.sds-shot-lens {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sds-shot-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0a0c10;
+}
+.sds-shot-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.sds-shot-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.sds-shot-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+}
+.sds-shot-status.idle {
+  color: var(--muted);
+}
+.sds-shot-status.fresh {
+  color: #6ee7b7;
+}
+.sds-shot-status.stale {
+  color: #fbbf24;
+}
+.sds-shot-reshoot-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.14);
+  color: #fde68a;
+  font-size: 9.5px;
+  cursor: pointer;
+}
+.sds-shots-foot {
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.sds-reshoot-all-btn {
+  width: 100%;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.14);
+  color: #fde68a;
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.sds-still-bar {
+  height: 36px;
+  padding: 0 14px;
+  border-top: 1px solid var(--line);
+  background: #121419;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.sds-still-bar > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sds-still-bar b {
+  color: var(--text);
+}
+.sds-switch-motion-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.1);
+  color: #7dd3fc;
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sds-switch-motion-btn:hover {
+  background: rgba(56, 189, 248, 0.2);
+}
+
+/* 1:1 Pixel-Aligned Precision Motion Ruler (matches .sds-curve-drawer 164px | 1fr grid!) */
+.sds-ruler-grid {
+  display: grid;
+  grid-template-columns: 164px minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #0d0f14;
+  overflow: hidden;
+}
+.sds-ruler-head {
+  padding: 0 10px;
+  height: 32px;
+  border-right: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.sds-ruler-head small {
+  font-size: 9.5px;
+  color: #6ee7b7;
+}
+.sds-ruler-track {
+  position: relative;
+  height: 32px;
+  cursor: ew-resize;
+  user-select: none;
+  overflow: hidden;
+}
+.sds-ruler-tick {
+  position: absolute;
+  top: 0;
+  height: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+}
+.sds-ruler-tick i {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-style: normal;
+  font-size: 8.5px;
+  color: rgba(255, 255, 255, 0.36);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sds-ruler-rail-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 20px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  pointer-events: none;
+}
+.sds-ruler-progress {
+  position: absolute;
+  left: 0;
+  top: 20px;
+  height: 2px;
+  background: rgba(52, 211, 153, 0.6);
+  pointer-events: none;
+}
+.sds-ruler-track .sds-kf-diamond {
+  top: 16px;
+  width: 9px;
+  height: 9px;
+  z-index: 3;
+}
+.sds-ruler-needle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background: #34d399;
+  pointer-events: none;
+  z-index: 4;
+}
+.sds-ruler-needle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -4px;
+  border-left: 4.5px solid transparent;
+  border-right: 4.5px solid transparent;
+  border-top: 6px solid #34d399;
+}
+.sds-scene-scope-banner {
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(52, 211, 153, 0.24);
+  background: rgba(52, 211, 153, 0.08);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #a7f3d0;
+}
+.sds-mode-info-box {
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.08);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #bae6fd;
+}
+.sds-output-lineage-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(52, 211, 153, 0.32);
+  background: rgba(52, 211, 153, 0.08);
+}
+.sds-output-lineage-card.stale {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.1);
+}
+.sds-output-lineage-card > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sds-output-lineage-card b {
+  font-size: 11px;
+  color: var(--text);
+}
+.sds-output-lineage-card small {
+  font-size: 10px;
+  color: var(--muted);
+}
+
 /* Settings Skills Workbench (v0.5.3) */
 .skill-toolbar-actions {
   display: flex;

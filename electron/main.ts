@@ -32,8 +32,11 @@ import {
 import { friendlySkillTitle } from '../src/core/taxonomy';
 import {
   DEFAULT_SPATIAL_BOOKMARKS,
+  computeStageSceneSignature,
   normalizeCameraBookmarks,
+  normalizeStageShots,
   type SpatialCameraBookmark,
+  type SpatialDirectorShot,
 } from '../src/core/spatialStage';
 import type {
   Asset,
@@ -1531,6 +1534,416 @@ async function handle(method: string, arg: any = {}) {
       });
       await changed(target, envelope);
       return { envelope, assets: createdAssets, shotClipIds };
+    }
+    case 'stage.shootDirectorShots': {
+      const target = store;
+      const p = await target.project();
+      const baseSeq = p.sequences.find((s) => s.id === arg.sequenceId) || p.sequences[0];
+      const fps = baseSeq.fps || 30;
+      const srcClip = arg.clipId ? baseSeq.clips.find((c) => c.id === arg.clipId) : undefined;
+      const srcVault = arg.vaultItemId ? (p.vault || []).find((v) => v.id === arg.vaultItemId) : undefined;
+      const srcAsset = arg.assetId ? p.assets.find((a) => a.id === arg.assetId) : undefined;
+      const srcComp = arg.componentId
+        ? p.components.find((c) => c.id === arg.componentId)
+        : srcClip?.componentId
+          ? p.components.find((c) => c.id === srcClip.componentId)
+          : undefined;
+      const isCodeStage = Boolean(srcComp || srcClip?.kind === 'code');
+
+      const baseProps: Record<string, unknown> = isCodeStage
+        ? { ...(srcComp?.props || {}), ...(srcClip?.props || {}), ...(arg.propsOverride || {}) }
+        : srcClip
+          ? { ...srcClip.props, ...(arg.propsOverride || {}) }
+          : srcVault?.rig?.presetId
+            ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId, ...(arg.propsOverride || {}) }
+            : { presetId: 'spatial-stage', sceneType: 'previs-blocking', ...(arg.propsOverride || {}) };
+
+      const allShotsRaw = Array.isArray(arg.allShots) && arg.allShots.length > 0
+        ? arg.allShots
+        : baseProps.stageShots ??
+          (typeof baseProps.stageShotsJson === 'string'
+            ? (() => {
+                try {
+                  return JSON.parse(baseProps.stageShotsJson);
+                } catch {
+                  return undefined;
+                }
+              })()
+            : undefined);
+      const allShots: SpatialDirectorShot[] = normalizeStageShots(allShotsRaw, baseProps.cameraBookmarks);
+      const shotIdsToRun: string[] =
+        Array.isArray(arg.shotIds) && arg.shotIds.length > 0
+          ? arg.shotIds.map(String)
+          : allShots.map((s) => s.id);
+      const shotsToRun = allShots.filter((s) => shotIdsToRun.includes(s.id));
+      if (!shotsToRun.length) throw new Error('没有可拍摄的镜头');
+
+      const includeDepthNormal = Boolean(arg.includeDepthNormal);
+      const motionOutput: 'video' | 'pair' | 'live-3d' =
+        arg.motionOutput === 'pair' || arg.motionOutput === 'live-3d' ? arg.motionOutput : 'video';
+      const addToTimeline = arg.addToTimeline !== false;
+      const sceneSignature =
+        typeof arg.sceneSignature === 'string' && arg.sceneSignature
+          ? arg.sceneSignature
+          : computeStageSceneSignature(baseProps);
+      const srcName = srcClip?.name || srcComp?.name || srcVault?.name || srcAsset?.name || '3D 导演片场';
+
+      const assetsDir = join(target.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+
+      const ops: EditOperation[] = [];
+      const createdAssets: Asset[] = [];
+      const createdClipIds: string[] = [];
+      const nextLayout: Record<string, { x: number; y: number }> = { ...(p.canvasLayout || {}) };
+
+      // Position shot outputs neatly to the right of the source 3D node on Create Canvas
+      const sourceLayoutKey = srcVault
+        ? `vault:${srcVault.id}`
+        : srcComp
+          ? `comp:${srcComp.id}`
+          : srcAsset
+            ? `asset:${srcAsset.id}`
+            : undefined;
+      const srcCoord = sourceLayoutKey ? nextLayout[sourceLayoutKey] : undefined;
+      const existingCoords = Object.values(nextLayout);
+      const baseX = srcCoord
+        ? srcCoord.x + 300
+        : existingCoords.length
+          ? Math.max(...existingCoords.map((c) => c.x)) + 280
+          : 120;
+      const baseY = srcCoord
+        ? srcCoord.y
+        : existingCoords.length
+          ? Math.min(...existingCoords.map((c) => c.y))
+          : 120;
+
+      let timelineTail = baseSeq.clips.length
+        ? Math.max(...baseSeq.clips.map((c) => c.start + c.duration))
+        : 0;
+
+      const updatedOutputMap = new Map<string, SpatialDirectorShot['output']>();
+
+      const buildCleanPropsForShot = (
+        shot: SpatialDirectorShot,
+        passOverride: 'beauty' | 'clay' | 'depth' | 'normal' | 'wireframe',
+      ): Record<string, unknown> => {
+        const hasManualKf = Boolean(
+          shot.mode === 'motion' &&
+            shot.keyframes &&
+            Object.values(shot.keyframes).some((arr) => Array.isArray(arr) && arr.length > 0),
+        );
+        return {
+          ...baseProps,
+          cameraPreset: shot.mode === 'still' || hasManualKf ? 'static' : shot.camera.cameraPreset || 'dolly-in',
+          cameraLens: shot.camera.cameraLens,
+          cameraYaw: shot.camera.cameraYaw,
+          cameraPitch: shot.camera.cameraPitch,
+          cameraDistance: shot.camera.cameraDistance,
+          cameraPanX: shot.camera.cameraPanX ?? 0,
+          cameraPanY: shot.camera.cameraPanY ?? 0,
+          ...(shot.actorAction ? { actorAction: shot.actorAction } : {}),
+          ...(shot.actorPath ? { actorPath: shot.actorPath } : {}),
+          renderPass: passOverride,
+          showHud: false,
+          _studioInteractive: false,
+          _showCameraPath: false,
+          _selectedObjectId: null,
+        };
+      };
+
+      for (let i = 0; i < shotsToRun.length; i++) {
+        const shot = shotsToRun[i];
+        const shotDurFrames = Math.max(fps, Math.round((shot.durationSec || (shot.mode === 'motion' ? 4 : 3)) * fps));
+        const shotAssetIds: string[] = [];
+        let primaryAssetId: string | undefined;
+        let outClipId: string | undefined;
+        let outKind: NonNullable<SpatialDirectorShot['output']>['kind'] = 'still';
+
+        if (shot.mode === 'still') {
+          const passes: ('beauty' | 'clay' | 'depth' | 'normal' | 'wireframe')[] = includeDepthNormal
+            ? ['beauty', 'depth', 'normal']
+            : [shot.renderPass || 'beauty'];
+          outKind = passes.length > 1 ? 'multipass' : 'still';
+          for (let pIdx = 0; pIdx < passes.length; pIdx++) {
+            const pass = passes[pIdx];
+            const cloned = structuredClone(p);
+            const tempSeqId = uid('seq_shot');
+            const tempClip: Clip = {
+              id: uid('clip_shot'),
+              name: `${shot.shortKey} · ${shot.name}`,
+              kind: isCodeStage ? 'code' : srcClip ? srcClip.kind : 'shape',
+              track: 'visual',
+              layer: 0,
+              start: 0,
+              duration: Math.max(30, fps * 2),
+              sourceIn: srcClip?.sourceIn || 0,
+              assetId: isCodeStage ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+              componentId: isCodeStage ? (srcComp?.id || srcClip?.componentId) : undefined,
+              locked: false,
+              props: buildCleanPropsForShot(shot, pass),
+            };
+            cloned.sequences.push({ ...baseSeq, id: tempSeqId, name: tempClip.name, clips: [tempClip] });
+            const outPath = join(assetsDir, `shot-${shot.shortKey.toLowerCase()}-${pass}-${uid('f')}.png`);
+            const job = await jobs.render(cloned, tempSeqId, outPath, {
+              still: true,
+              frame: 0,
+              scale: 1,
+              silent: true,
+            });
+            await jobs.wait(job.id);
+            const asset = await importMedia(outPath, target.path);
+            const passTag =
+              pass === 'depth' ? '深度 Depth' : pass === 'normal' ? '法线 Normal' : pass === 'clay' ? '白模' : '';
+            asset.name = passTag
+              ? `${shot.shortKey} · ${shot.name} (${passTag})`
+              : `${shot.shortKey} · ${shot.name} (${Math.round(shot.camera.cameraLens)}mm)`;
+            asset.role = 'environment';
+            asset.tags = passTag ? ['3D镜头素材', shot.shortKey, passTag] : ['3D镜头素材', shot.shortKey, '定机位'];
+            asset.category = 'subject';
+            asset.subkind = 'environment';
+            asset.derivedFrom = [
+              {
+                ...(srcVault ? { vaultItemId: srcVault.id } : {}),
+                ...(srcAsset ? { assetId: srcAsset.id } : {}),
+                via: pass === 'depth' ? 'capture-depth' : pass === 'normal' ? 'capture-normal' : 'capture-3d',
+                note: `拍自片场「${srcName}」· ${shot.shortKey} ${shot.name} (${shot.id})`,
+              },
+            ];
+            createdAssets.push(asset);
+            shotAssetIds.push(asset.id);
+            if (pIdx === 0) primaryAssetId = asset.id;
+            ops.push({ type: 'addAsset', asset });
+            nextLayout[`asset:${asset.id}`] = {
+              x: Math.round(baseX + i * 265),
+              y: Math.round(baseY + pIdx * 196),
+            };
+
+            if (addToTimeline && pIdx === 0) {
+              const imgClip: Clip = {
+                id: uid('clip'),
+                name: `${shot.shortKey} · ${shot.name}`,
+                kind: 'image',
+                track: 'visual',
+                layer: 0,
+                start: timelineTail,
+                duration: Math.round(fps * 3),
+                sourceIn: 0,
+                assetId: asset.id,
+                locked: false,
+                props: { fit: 'cover', opacity: 1, scale: 1 },
+              };
+              timelineTail += imgClip.duration;
+              outClipId = imgClip.id;
+              createdClipIds.push(imgClip.id);
+              ops.push({ type: 'addClip', sequenceId: baseSeq.id, clip: imgClip });
+            }
+          }
+        } else if (motionOutput === 'live-3d') {
+          outKind = 'live-3d';
+          const liveClip: Clip = {
+            id: uid('clip'),
+            name: `${shot.shortKey} · ${shot.name}`,
+            kind: isCodeStage ? 'code' : srcClip ? srcClip.kind : 'shape',
+            track: 'visual',
+            layer: 0,
+            start: timelineTail,
+            duration: shotDurFrames,
+            sourceIn: 0,
+            assetId: isCodeStage ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+            componentId: isCodeStage ? (srcComp?.id || srcClip?.componentId) : undefined,
+            locked: false,
+            keyframes: shot.keyframes ? structuredClone(shot.keyframes) : undefined,
+            props: buildCleanPropsForShot(shot, shot.renderPass || 'beauty'),
+          };
+          timelineTail += shotDurFrames;
+          outClipId = liveClip.id;
+          createdClipIds.push(liveClip.id);
+          ops.push({ type: 'addClip', sequenceId: baseSeq.id, clip: liveClip });
+        } else if (motionOutput === 'pair') {
+          outKind = 'pair';
+          const pairFrames = [0, Math.max(1, shotDurFrames - 1)];
+          for (let fIdx = 0; fIdx < pairFrames.length; fIdx++) {
+            const fNum = pairFrames[fIdx];
+            const cloned = structuredClone(p);
+            const tempSeqId = uid('seq_mpair');
+            const tempClip: Clip = {
+              id: uid('clip_mpair'),
+              name: `${shot.shortKey} · ${fIdx === 0 ? '首帧' : '尾帧'}`,
+              kind: isCodeStage ? 'code' : srcClip ? srcClip.kind : 'shape',
+              track: 'visual',
+              layer: 0,
+              start: 0,
+              duration: shotDurFrames,
+              sourceIn: 0,
+              assetId: isCodeStage ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+              componentId: isCodeStage ? (srcComp?.id || srcClip?.componentId) : undefined,
+              locked: false,
+              keyframes: shot.keyframes ? structuredClone(shot.keyframes) : undefined,
+              props: buildCleanPropsForShot(shot, shot.renderPass || 'beauty'),
+            };
+            cloned.sequences.push({ ...baseSeq, id: tempSeqId, name: tempClip.name, clips: [tempClip] });
+            const outPath = join(assetsDir, `shot-${shot.shortKey.toLowerCase()}-${fIdx === 0 ? 'start' : 'end'}-${uid('f')}.png`);
+            const job = await jobs.render(cloned, tempSeqId, outPath, {
+              still: true,
+              frame: fNum,
+              scale: 1,
+              silent: true,
+            });
+            await jobs.wait(job.id);
+            const asset = await importMedia(outPath, target.path);
+            asset.name = `${shot.shortKey} · ${shot.name} (${fIdx === 0 ? '首帧' : '尾帧'})`;
+            asset.role = 'environment';
+            asset.tags = ['3D镜头素材', shot.shortKey, fIdx === 0 ? '首帧' : '尾帧'];
+            asset.derivedFrom = [
+              {
+                ...(srcVault ? { vaultItemId: srcVault.id } : {}),
+                ...(srcAsset ? { assetId: srcAsset.id } : {}),
+                via: 'capture-3d',
+                note: `拍自片场「${srcName}」· ${shot.shortKey} ${shot.name} ${fIdx === 0 ? '起镜首帧' : '落镜尾帧'}`,
+              },
+            ];
+            createdAssets.push(asset);
+            shotAssetIds.push(asset.id);
+            if (fIdx === 0) primaryAssetId = asset.id;
+            ops.push({ type: 'addAsset', asset });
+            nextLayout[`asset:${asset.id}`] = {
+              x: Math.round(baseX + i * 265),
+              y: Math.round(baseY + fIdx * 196),
+            };
+          }
+        } else {
+          // Default motion output: bake real Metal GPU MP4 video!
+          outKind = 'video';
+          const cloned = structuredClone(p);
+          const tempSeqId = uid('seq_mvid');
+          const bakeW = Math.max(320, Math.round((baseSeq.width * (2 / 3)) / 2) * 2);
+          const bakeH = Math.max(320, Math.round((baseSeq.height * (2 / 3)) / 2) * 2);
+          const tempClip: Clip = {
+            id: uid('clip_mvid'),
+            name: `${shot.shortKey} · ${shot.name}`,
+            kind: isCodeStage ? 'code' : srcClip ? srcClip.kind : 'shape',
+            track: 'visual',
+            layer: 0,
+            start: 0,
+            duration: shotDurFrames,
+            sourceIn: 0,
+            assetId: isCodeStage ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+            componentId: isCodeStage ? (srcComp?.id || srcClip?.componentId) : undefined,
+            locked: false,
+            keyframes: shot.keyframes ? structuredClone(shot.keyframes) : undefined,
+            props: buildCleanPropsForShot(shot, shot.renderPass || 'beauty'),
+          };
+          cloned.sequences.push({
+            ...baseSeq,
+            id: tempSeqId,
+            name: tempClip.name,
+            width: bakeW,
+            height: bakeH,
+            clips: [tempClip],
+          });
+          const outPath = join(assetsDir, `shot-${shot.shortKey.toLowerCase()}-${uid('vid')}.mp4`);
+          const job = await jobs.render(cloned, tempSeqId, outPath, {
+            scale: 1,
+            preferOffscreenVideo: true,
+            projectPath: target.path,
+          });
+          await jobs.wait(job.id);
+          const asset = await importMedia(outPath, target.path);
+          asset.name = `${shot.shortKey} · ${shot.name} (${shot.durationSec}s 预演视频)`;
+          asset.role = 'footage';
+          asset.tags = ['3D镜头素材', '3D预演视频', shot.shortKey];
+          asset.derivedFrom = [
+            {
+              ...(srcVault ? { vaultItemId: srcVault.id } : {}),
+              ...(srcAsset ? { assetId: srcAsset.id } : {}),
+              via: 'bake-3d-video',
+              note: `录自片场「${srcName}」· ${shot.shortKey} ${shot.name} (${shot.durationSec}s)`,
+            },
+          ];
+          createdAssets.push(asset);
+          shotAssetIds.push(asset.id);
+          primaryAssetId = asset.id;
+          ops.push({ type: 'addAsset', asset });
+          nextLayout[`asset:${asset.id}`] = {
+            x: Math.round(baseX + i * 265),
+            y: Math.round(baseY),
+          };
+          if (addToTimeline) {
+            const vidClip: Clip = {
+              id: uid('clip'),
+              name: `${shot.shortKey} · ${shot.name}`,
+              kind: 'video',
+              track: 'visual',
+              layer: 0,
+              start: timelineTail,
+              duration: shotDurFrames,
+              sourceIn: 0,
+              assetId: asset.id,
+              locked: false,
+              props: { fit: 'cover', opacity: 1, scale: 1 },
+            };
+            timelineTail += shotDurFrames;
+            outClipId = vidClip.id;
+            createdClipIds.push(vidClip.id);
+            ops.push({ type: 'addClip', sequenceId: baseSeq.id, clip: vidClip });
+          }
+        }
+
+        updatedOutputMap.set(shot.id, {
+          assetIds: shotAssetIds,
+          primaryAssetId,
+          clipId: outClipId,
+          kind: outKind,
+          shotAt: new Date().toISOString(),
+          sceneSignature,
+        });
+      }
+
+      // Persist updated stageShots output records back onto the source 3D scene atomically!
+      const nextAllShots = allShots.map((s) =>
+        updatedOutputMap.has(s.id) ? { ...s, output: updatedOutputMap.get(s.id) } : s,
+      );
+      if (srcClip) {
+        ops.push({
+          type: 'updateClip',
+          sequenceId: baseSeq.id,
+          clipId: srcClip.id,
+          changes: { props: { stageShots: nextAllShots } },
+        });
+      } else if (srcVault) {
+        ops.push({
+          type: 'putVaultItem',
+          item: {
+            ...srcVault,
+            rig: {
+              ...(srcVault.rig || { presetId: 'spatial-stage' }),
+              props: { ...(srcVault.rig?.props || {}), stageShots: nextAllShots },
+            },
+            updatedAt: new Date().toISOString(),
+          },
+        });
+      } else if (srcComp) {
+        ops.push({
+          type: 'putComponent',
+          component: {
+            ...srcComp,
+            props: { ...(srcComp.props || {}), stageShotsJson: JSON.stringify(nextAllShots) },
+          },
+        });
+      }
+
+      ops.push({ type: 'updateProject', changes: { canvasLayout: nextLayout } });
+      const latest = await target.project();
+      const envelope = await target.edit({
+        baseRevision: latest.revision,
+        name:
+          shotsToRun.length === 1
+            ? `拍摄 3D 镜头「${shotsToRun[0].shortKey} · ${shotsToRun[0].name}」`
+            : `批量拍摄本场 ${shotsToRun.length} 个 3D 镜头`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, assets: createdAssets, clipIds: createdClipIds, stageShots: nextAllShots };
     }
     case 'stage.componentPoster': {
       const p = await store.project();

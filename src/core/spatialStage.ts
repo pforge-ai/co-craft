@@ -1,4 +1,4 @@
-import type { Asset, Clip } from './types';
+import type { Asset, Clip, ClipKeyframes } from './types';
 
 export type SpatialSceneMode =
   | 'parallax-25d'
@@ -200,6 +200,340 @@ export function normalizeCameraBookmarks(raw: unknown): SpatialCameraBookmark[] 
     });
   }
   return clean.length > 0 ? clean : DEFAULT_SPATIAL_BOOKMARKS.map((b) => ({ ...b }));
+}
+
+export type SpatialShotMode = 'still' | 'motion';
+
+export interface SpatialCameraPoseSpec {
+  cameraPreset: SpatialCameraPreset;
+  cameraLens: number;
+  cameraYaw: number;
+  cameraPitch: number;
+  cameraDistance: number;
+  cameraPanX?: number;
+  cameraPanY?: number;
+}
+
+export interface SpatialShotOutputRecord {
+  assetIds: string[];
+  primaryAssetId?: string;
+  clipId?: string;
+  kind: 'still' | 'multipass' | 'pair' | 'video' | 'live-3d';
+  shotAt: string;
+  /** Deterministic signature of the Scene/Set layer when this shot was last captured */
+  sceneSignature: string;
+}
+
+export interface SpatialDirectorShot {
+  id: string;
+  shortKey: string;
+  name: string;
+  mode: SpatialShotMode;
+  camera: SpatialCameraPoseSpec;
+  endCamera?: SpatialCameraPoseSpec;
+  durationSec: number;
+  renderPass?: SpatialRenderPass;
+  keyframes?: ClipKeyframes;
+  actorAction?: SpatialActorAction;
+  actorPath?: SpatialActorPath;
+  output?: SpatialShotOutputRecord;
+}
+
+function normalizeShotDistance(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 1.0;
+  const scaled = n > 3.2 ? n / 5.4 : n;
+  return Number(Math.max(0.35, Math.min(3.0, scaled)).toFixed(2));
+}
+
+export function buildMotionShotKeyframes(
+  startCam: SpatialCameraPoseSpec,
+  endCam: SpatialCameraPoseSpec,
+  durationFrames: number,
+): ClipKeyframes {
+  const endF = Math.max(1, Math.round(durationFrames) - 1);
+  return {
+    cameraYaw: [
+      { frame: 0, value: Number(startCam.cameraYaw || 0), easing: 'ease-in-out' },
+      { frame: endF, value: Number(endCam.cameraYaw || 0), easing: 'ease-in-out' },
+    ],
+    cameraPitch: [
+      { frame: 0, value: Number(startCam.cameraPitch || 0), easing: 'ease-in-out' },
+      { frame: endF, value: Number(endCam.cameraPitch || 0), easing: 'ease-in-out' },
+    ],
+    cameraDistance: [
+      { frame: 0, value: normalizeShotDistance(startCam.cameraDistance), easing: 'ease-in-out' },
+      { frame: endF, value: normalizeShotDistance(endCam.cameraDistance), easing: 'ease-in-out' },
+    ],
+    cameraLens: [
+      { frame: 0, value: Math.max(16, Math.min(135, Number(startCam.cameraLens || 35))), easing: 'ease-in-out' },
+      { frame: endF, value: Math.max(16, Math.min(135, Number(endCam.cameraLens || 35))), easing: 'ease-in-out' },
+    ],
+    cameraPanX: [
+      { frame: 0, value: Number(startCam.cameraPanX || 0), easing: 'ease-in-out' },
+      { frame: endF, value: Number(endCam.cameraPanX || 0), easing: 'ease-in-out' },
+    ],
+    cameraPanY: [
+      { frame: 0, value: Number(startCam.cameraPanY || 0), easing: 'ease-in-out' },
+      { frame: endF, value: Number(endCam.cameraPanY || 0), easing: 'ease-in-out' },
+    ],
+  };
+}
+
+export const DEFAULT_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
+  {
+    id: 'shot-1',
+    shortKey: 'S1',
+    name: '主镜建立',
+    mode: 'still',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 35,
+      cameraYaw: 0,
+      cameraPitch: -2,
+      cameraDistance: 1.0,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    durationSec: 3,
+    renderPass: 'beauty',
+  },
+  {
+    id: 'shot-2',
+    shortKey: 'S2',
+    name: '过肩反打',
+    mode: 'still',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 85,
+      cameraYaw: -28,
+      cameraPitch: 4,
+      cameraDistance: 0.92,
+      cameraPanX: 0.12,
+      cameraPanY: 0.04,
+    },
+    durationSec: 3,
+    renderPass: 'beauty',
+  },
+  {
+    id: 'shot-3',
+    shortKey: 'S3',
+    name: '推轨运镜',
+    mode: 'motion',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 35,
+      cameraYaw: -18,
+      cameraPitch: 2,
+      cameraDistance: 1.15,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    endCamera: {
+      cameraPreset: 'static',
+      cameraLens: 50,
+      cameraYaw: 16,
+      cameraPitch: -8,
+      cameraDistance: 0.82,
+      cameraPanX: 0,
+      cameraPanY: -0.05,
+    },
+    durationSec: 4,
+    renderPass: 'beauty',
+    keyframes: buildMotionShotKeyframes(
+      { cameraPreset: 'static', cameraLens: 35, cameraYaw: -18, cameraPitch: 2, cameraDistance: 1.15, cameraPanX: 0, cameraPanY: 0 },
+      { cameraPreset: 'static', cameraLens: 50, cameraYaw: 16, cameraPitch: -8, cameraDistance: 0.82, cameraPanX: 0, cameraPanY: -0.05 },
+      120,
+    ),
+  },
+  {
+    id: 'shot-4',
+    shortKey: 'S4',
+    name: '俯瞰调度',
+    mode: 'still',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 24,
+      cameraYaw: 12,
+      cameraPitch: 32,
+      cameraDistance: 1.2,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    durationSec: 3,
+    renderPass: 'beauty',
+  },
+];
+
+/**
+ * Deterministic lightweight signature of the Scene / Set layer (shared environment, lighting, props, cast).
+ * Camera framing / active shot selection intentionally excluded so editing Shot 2 does not mark Shot 1 stale!
+ */
+export function computeStageSceneSignature(props: Record<string, unknown>): string {
+  const payload = {
+    sceneType: props.sceneType ?? '',
+    environmentPreset: props.environmentPreset ?? '',
+    lookPreset: props.lookPreset ?? '',
+    lightingPreset: props.lightingPreset ?? '',
+    keyLightYaw: Math.round(Number(props.keyLightYaw ?? 38)),
+    keyLightTemp: Math.round(Number(props.keyLightTemp ?? 5600)),
+    particles3D: props.particles3D ?? 'none',
+    deviceType: props.deviceType ?? '',
+    explode: Number(Number(props.explode ?? 0).toFixed(2)),
+    depthStrength: Number(Number(props.depthStrength ?? 0.65).toFixed(2)),
+    bloomStrength: Math.round(Number(props.bloomStrength ?? 22)),
+    blockingPose: props.blockingPose ?? '',
+    actorStartX: props.actorStartX ?? null,
+    actorStartZ: props.actorStartZ ?? null,
+    actorEndX: props.actorEndX ?? null,
+    actorEndZ: props.actorEndZ ?? null,
+    stageObjects: Array.isArray(props.stageObjects) ? props.stageObjects : [],
+    layerAssetIds: Array.isArray(props.layerAssetIds) ? props.layerAssetIds : [],
+    screenAssetId: props.screenAssetId ?? '',
+  };
+  const str = JSON.stringify(payload);
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `sc_${(h >>> 0).toString(16)}`;
+}
+
+export function normalizeStageShots(rawShots: unknown, fallbackBookmarks?: unknown): SpatialDirectorShot[] {
+  if (Array.isArray(rawShots) && rawShots.length > 0) {
+    const clean: SpatialDirectorShot[] = [];
+    for (let i = 0; i < rawShots.length; i++) {
+      const s = rawShots[i] as Partial<SpatialDirectorShot> | null;
+      if (!s || typeof s !== 'object') continue;
+      const cam = (s.camera || {}) as Partial<SpatialCameraPoseSpec>;
+      const mode: SpatialShotMode = s.mode === 'motion' ? 'motion' : 'still';
+      const dur = Math.max(1, Math.min(12, Math.round(Number(s.durationSec ?? (mode === 'motion' ? 4 : 3)))));
+      const normCam: SpatialCameraPoseSpec = {
+        cameraPreset: (typeof cam.cameraPreset === 'string' ? cam.cameraPreset : 'static') as SpatialCameraPreset,
+        cameraLens: Math.max(16, Math.min(135, Number(cam.cameraLens ?? 35))),
+        cameraYaw: Number.isFinite(Number(cam.cameraYaw)) ? Number(cam.cameraYaw) : 0,
+        cameraPitch: Number.isFinite(Number(cam.cameraPitch)) ? Number(cam.cameraPitch) : 0,
+        cameraDistance: normalizeShotDistance(cam.cameraDistance),
+        cameraPanX: Number.isFinite(Number(cam.cameraPanX)) ? Number(cam.cameraPanX) : 0,
+        cameraPanY: Number.isFinite(Number(cam.cameraPanY)) ? Number(cam.cameraPanY) : 0,
+      };
+      const endCamRaw = s.endCamera as Partial<SpatialCameraPoseSpec> | undefined;
+      const endCamera: SpatialCameraPoseSpec | undefined = endCamRaw
+        ? {
+            cameraPreset: (typeof endCamRaw.cameraPreset === 'string' ? endCamRaw.cameraPreset : 'static') as SpatialCameraPreset,
+            cameraLens: Math.max(16, Math.min(135, Number(endCamRaw.cameraLens ?? normCam.cameraLens))),
+            cameraYaw: Number.isFinite(Number(endCamRaw.cameraYaw)) ? Number(endCamRaw.cameraYaw) : normCam.cameraYaw,
+            cameraPitch: Number.isFinite(Number(endCamRaw.cameraPitch)) ? Number(endCamRaw.cameraPitch) : normCam.cameraPitch,
+            cameraDistance: normalizeShotDistance(endCamRaw.cameraDistance ?? normCam.cameraDistance),
+            cameraPanX: Number.isFinite(Number(endCamRaw.cameraPanX)) ? Number(endCamRaw.cameraPanX) : 0,
+            cameraPanY: Number.isFinite(Number(endCamRaw.cameraPanY)) ? Number(endCamRaw.cameraPanY) : 0,
+          }
+        : undefined;
+      clean.push({
+        id: typeof s.id === 'string' && s.id ? s.id : `shot-${i + 1}`,
+        shortKey: typeof s.shortKey === 'string' && s.shortKey ? s.shortKey : `S${i + 1}`,
+        name: typeof s.name === 'string' && s.name ? s.name : `镜头 ${i + 1}`,
+        mode,
+        camera: normCam,
+        endCamera,
+        durationSec: dur,
+        renderPass:
+          s.renderPass === 'clay' ||
+          s.renderPass === 'depth' ||
+          s.renderPass === 'normal' ||
+          s.renderPass === 'wireframe'
+            ? s.renderPass
+            : 'beauty',
+        keyframes: s.keyframes && typeof s.keyframes === 'object' ? s.keyframes : undefined,
+        actorAction: s.actorAction,
+        actorPath: s.actorPath,
+        output: s.output,
+      });
+    }
+    if (clean.length > 0) return clean;
+  }
+  if (Array.isArray(fallbackBookmarks) && fallbackBookmarks.length > 0) {
+    const bms = normalizeCameraBookmarks(fallbackBookmarks);
+    return bms.map((bm, idx) => ({
+      id: bm.id || `shot-${idx + 1}`,
+      shortKey: `S${idx + 1}`,
+      name: bm.label.replace(/^[A-Z]\s*机?\s*[·•-]?\s*/, '') || `机位 ${idx + 1}`,
+      mode: 'still' as const,
+      camera: {
+        cameraPreset: 'static' as SpatialCameraPreset,
+        cameraLens: bm.cameraLens,
+        cameraYaw: bm.cameraYaw,
+        cameraPitch: bm.cameraPitch,
+        cameraDistance: bm.cameraDistance,
+        cameraPanX: bm.cameraPanX ?? 0,
+        cameraPanY: bm.cameraPanY ?? 0,
+      },
+      durationSec: 3,
+      renderPass: 'beauty' as SpatialRenderPass,
+    }));
+  }
+  return DEFAULT_DIRECTOR_SHOTS.map((s) => ({
+    ...s,
+    camera: { ...s.camera },
+    endCamera: s.endCamera ? { ...s.endCamera } : undefined,
+    keyframes: s.keyframes ? JSON.parse(JSON.stringify(s.keyframes)) : undefined,
+  }));
+}
+
+export function createDirectorShot(
+  mode: SpatialShotMode,
+  existing: SpatialDirectorShot[],
+  baseCamera?: Partial<SpatialCameraPoseSpec>,
+  fps = 30,
+): SpatialDirectorShot {
+  const num = existing.length + 1;
+  const startCam: SpatialCameraPoseSpec = {
+    cameraPreset: 'static',
+    cameraLens: Math.max(16, Math.min(135, Number(baseCamera?.cameraLens ?? 35))),
+    cameraYaw: Number.isFinite(Number(baseCamera?.cameraYaw)) ? Number(baseCamera?.cameraYaw) : 0,
+    cameraPitch: Number.isFinite(Number(baseCamera?.cameraPitch)) ? Number(baseCamera?.cameraPitch) : 0,
+    cameraDistance: normalizeShotDistance(baseCamera?.cameraDistance ?? 1.0),
+    cameraPanX: Number.isFinite(Number(baseCamera?.cameraPanX)) ? Number(baseCamera?.cameraPanX) : 0,
+    cameraPanY: Number.isFinite(Number(baseCamera?.cameraPanY)) ? Number(baseCamera?.cameraPanY) : 0,
+  };
+  const endCam: SpatialCameraPoseSpec | undefined =
+    mode === 'motion'
+      ? {
+          ...startCam,
+          cameraYaw: Number((startCam.cameraYaw + 24).toFixed(0)),
+          cameraDistance: Number(Math.max(0.45, startCam.cameraDistance * 0.84).toFixed(2)),
+        }
+      : undefined;
+  return {
+    id: `shot_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+    shortKey: `S${num}`,
+    name: mode === 'motion' ? `运镜镜头 ${num}` : `定机位 ${num}`,
+    mode,
+    camera: startCam,
+    endCamera: endCam,
+    durationSec: mode === 'motion' ? 4 : 3,
+    renderPass: 'beauty',
+    keyframes: mode === 'motion' && endCam ? buildMotionShotKeyframes(startCam, endCam, 4 * fps) : undefined,
+  };
+}
+
+/**
+ * Projects a Shot List onto SpatialCameraBookmark[] for 2D StageRadarOverlay and 3D frustum trajectory guides.
+ */
+export function shotsToCameraBookmarks(shots: SpatialDirectorShot[]): SpatialCameraBookmark[] {
+  return shots.map((s) => ({
+    id: s.id,
+    shortKey: s.shortKey,
+    label: `${s.shortKey} · ${s.name}`,
+    cameraPreset: s.camera.cameraPreset,
+    cameraLens: s.camera.cameraLens,
+    cameraYaw: s.camera.cameraYaw,
+    cameraPitch: s.camera.cameraPitch,
+    cameraDistance: s.camera.cameraDistance,
+    cameraPanX: s.camera.cameraPanX ?? 0,
+    cameraPanY: s.camera.cameraPanY ?? 0,
+  }));
 }
 
 export const SPATIAL_ACTOR_ACTION_OPTIONS: { id: SpatialActorAction; label: string }[] = [

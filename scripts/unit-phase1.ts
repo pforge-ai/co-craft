@@ -32,19 +32,25 @@ import {
   upsertClipKeyframe,
 } from '../src/core/keyframes';
 import {
+  DEFAULT_DIRECTOR_SHOTS,
   DEFAULT_SPATIAL_BOOKMARKS,
+  buildMotionShotKeyframes,
   buildSpatialStageProps,
   computeActorPathState,
   computeDirectorCameraOverride,
   computeParallaxLayerLayout,
   computeParallaxPlaneScale,
   computeSpatialCameraPose,
+  computeStageSceneSignature,
+  createDirectorShot,
   createStageObject,
   isSpatialClip,
   isSplatAssetPath,
   kelvinToHex,
   lensMmToFov,
   normalizeCameraBookmarks,
+  normalizeStageShots,
+  shotsToCameraBookmarks,
 } from '../src/core/spatialStage';
 import { ProjectStore } from '../electron/store';
 import type { Asset, CodeComponent } from '../src/core/types';
@@ -2217,4 +2223,49 @@ assert.ok(
   assert.ok(Array.isArray(stageDefaults.stageObjects));
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client + Multi-Track & Curve Drawer + Full 3D Director Studio regression tests');
+// 53. Scene -> Shots (Still vs Motion) -> Assets Production Model & Staleness Signature
+{
+  const defaultShots = normalizeStageShots(undefined);
+  assert.equal(defaultShots.length, DEFAULT_DIRECTOR_SHOTS.length);
+  assert.equal(defaultShots.filter((s) => s.mode === 'still').length, 3);
+  assert.equal(defaultShots.filter((s) => s.mode === 'motion').length, 1);
+  const motionStarter = defaultShots.find((s) => s.mode === 'motion')!;
+  assert.ok(motionStarter.keyframes?.cameraYaw?.length === 2, 'Starter motion shot ships with Start->End keyframes');
+
+  // Legacy bookmark migration cleanly produces static shots
+  const migrated = normalizeStageShots(undefined, DEFAULT_SPATIAL_BOOKMARKS);
+  assert.equal(migrated.length, DEFAULT_SPATIAL_BOOKMARKS.length);
+  assert.ok(migrated.every((s) => s.mode === 'still' && s.camera.cameraPreset === 'static'));
+
+  // Scene signature changes on Set edits (lighting / objects) and ignores Camera framing edits!
+  const baseProps = buildSpatialStageProps({ sceneMode: 'previs-blocking' });
+  const sigA = computeStageSceneSignature(baseProps);
+  const sigCamChanged = computeStageSceneSignature({ ...baseProps, cameraYaw: 72, cameraLens: 85, activeShotId: 'shot-2' });
+  assert.equal(sigA, sigCamChanged, 'Camera-only changes must NOT mark shot outputs stale');
+  const sigLightChanged = computeStageSceneSignature({ ...baseProps, keyLightTemp: 2800 });
+  assert.notEqual(sigA, sigLightChanged, 'Scene lighting change MUST change sceneSignature to flag stale shots');
+  const sigObjChanged = computeStageSceneSignature({
+    ...baseProps,
+    stageObjects: [createStageObject('prop-arch', [])],
+  });
+  assert.notEqual(sigA, sigObjChanged, 'Adding a scene object MUST change sceneSignature');
+
+  // Shot creation + radar projection + motion keyframes helper
+  const addedMotion = createDirectorShot('motion', defaultShots, { cameraYaw: 15, cameraLens: 50 }, 30);
+  assert.equal(addedMotion.mode, 'motion');
+  assert.equal(addedMotion.shortKey, 'S5');
+  assert.equal(addedMotion.keyframes?.cameraYaw?.[0].frame, 0);
+  assert.equal(addedMotion.keyframes?.cameraYaw?.[1].frame, 119);
+  const kfBuilt = buildMotionShotKeyframes(
+    { cameraPreset: 'static', cameraLens: 24, cameraYaw: -30, cameraPitch: 0, cameraDistance: 1.2 },
+    { cameraPreset: 'static', cameraLens: 85, cameraYaw: 30, cameraPitch: -10, cameraDistance: 0.7 },
+    90,
+  );
+  assert.equal(kfBuilt.cameraLens?.[1].frame, 89);
+  assert.equal(kfBuilt.cameraLens?.[1].value, 85);
+  const radarBms = shotsToCameraBookmarks([...defaultShots, addedMotion]);
+  assert.equal(radarBms.length, 5);
+  assert.equal(radarBms[4].shortKey, 'S5');
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client + Multi-Track & Curve Drawer + Full 3D Director Studio (Scene->Shots->Assets) regression tests');

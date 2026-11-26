@@ -3475,6 +3475,20 @@ export function App() {
               );
             });
           }}
+          onShootDirectorShots={async (opts) => {
+            await work(opts.shotIds.length === 1 ? '拍摄当前 3D 镜头' : `批量拍摄 ${opts.shotIds.length} 个 3D 镜头`, async () => {
+              const res = await api<{
+                envelope: ProjectEnvelope;
+                assets: Asset[];
+                clipIds: string[];
+              }>('stage.shootDirectorShots', { sequenceId: sequence.id, ...opts });
+              accept(res.envelope);
+              const parts: string[] = [];
+              if (res.assets.length > 0) parts.push(`生成 ${res.assets.length} 份素材落入画布`);
+              if (res.clipIds.length > 0) parts.push(`串联 ${res.clipIds.length} 段至主序列`);
+              notify(`开机拍摄完成：${parts.join('，') || '已更新镜头单'}`);
+            });
+          }}
           onBakeVideo={async (opts) => {
             await work('录制 3D 预演视频', async () => {
               const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>(
