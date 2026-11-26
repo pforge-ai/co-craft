@@ -6535,12 +6535,13 @@ input[type='checkbox']:not(.switch) {
   color: var(--text);
 }
 .sds-topbar {
-  height: 44px;
-  padding: 0 14px 0 82px;
+  min-height: 44px;
+  padding: 5px 12px 5px 80px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
   border-bottom: 1px solid var(--line);
   background: rgba(16, 17, 20, 0.96);
   -webkit-app-region: drag;
@@ -6555,8 +6556,9 @@ input[type='checkbox']:not(.switch) {
 .sds-top-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 .sds-back-btn {
   display: inline-flex;
@@ -6993,6 +6995,9 @@ input[type='checkbox']:not(.switch) {
   padding: 6px;
   gap: 4px;
 }
+.sds-tabs.three-col {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .sds-tabs button {
   display: inline-flex;
   align-items: center;
@@ -7159,6 +7164,347 @@ input[type='checkbox']:not(.switch) {
 }
 .sds-empty-note p {
   margin: 0;
+}
+
+/* Full-Version 3D Director Studio: Tool Modes, Stage Radar, Multi-Cam Rig, Outliner, Inline Bezier Curve */
+.sds-vp-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 12;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(12, 14, 19, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.sds-vp-toolbar .sds-seg {
+  border-color: transparent;
+  background: transparent;
+  padding: 0;
+}
+.sds-viewport-stage.tool-block {
+  cursor: crosshair;
+}
+.sds-viewport-stage.tool-path {
+  cursor: cell;
+}
+.sds-live-mode-msg {
+  color: #7dd3fc;
+  font-weight: 500;
+}
+.sds-radar-card {
+  position: absolute;
+  right: 14px;
+  bottom: 48px;
+  width: 232px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(12, 14, 19, 0.88);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  z-index: 12;
+  user-select: none;
+}
+.sds-radar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 10.5px;
+  color: var(--text);
+}
+.sds-radar-head > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sds-radar-head > small,
+.sds-radar-head > code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+  color: var(--muted);
+  text-align: right;
+}
+.sds-radar-head > code {
+  color: #7dd3fc;
+}
+.sds-radar-head > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.sds-radar-head > button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+.sds-radar-svg {
+  display: block;
+  width: 100%;
+  height: 178px;
+  background: radial-gradient(circle at 50% 50%, rgba(30, 41, 59, 0.45), rgba(9, 11, 16, 0.8));
+}
+.sds-curve-drawer {
+  display: grid;
+  grid-template-columns: 164px minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d0f14;
+}
+.sds-curve-lane-wrap {
+  min-width: 0;
+  overflow: hidden;
+}
+.sds-bm-list {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+.sds-bm-chip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.sds-bm-chip-wrap .sds-bm-del {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #1f2430;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+}
+.sds-bm-chip-wrap:hover .sds-bm-del {
+  display: inline-flex;
+}
+.sds-bm-chip-wrap .sds-bm-del:hover {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.45);
+}
+.sds-bm-rename {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 4px;
+  border-radius: 6px;
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  background: var(--well);
+}
+.sds-bm-rename input {
+  width: 96px;
+  height: 20px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 10.5px;
+  outline: none;
+}
+.sds-bm-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.sds-bm-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sds-bm-action-btn:hover {
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.24);
+  color: var(--text);
+  background: var(--well);
+}
+.sds-temp-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sds-temp-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.sds-custom-path-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  font-size: 10px;
+  color: #bae6fd;
+}
+.sds-custom-path-row button {
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: var(--well);
+  color: var(--text);
+  font-size: 10px;
+  cursor: pointer;
+}
+.sds-obj-add-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.sds-obj-add-grid button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--text);
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sds-obj-add-grid button:hover {
+  border-color: rgba(52, 211, 153, 0.45);
+  background: var(--raised);
+}
+.sds-obj-asset-row {
+  display: flex;
+  gap: 5px;
+}
+.sds-obj-asset-row select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--text);
+  font-size: 10.5px;
+}
+.sds-obj-asset-row button {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sds-obj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sds-obj-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: var(--well);
+  cursor: pointer;
+}
+.sds-obj-item:hover {
+  border-color: var(--line);
+}
+.sds-obj-item.active {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.1);
+}
+.sds-obj-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.sds-obj-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sds-obj-meta b {
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sds-obj-meta small {
+  font-size: 9.5px;
+  color: var(--muted);
+}
+.sds-obj-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.sds-obj-del:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+}
+.sds-xyz-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.sds-xyz-row input {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 /* Settings Skills Workbench (v0.5.3) */

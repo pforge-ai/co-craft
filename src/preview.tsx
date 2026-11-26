@@ -288,6 +288,9 @@ function Preview() {
         mutedRef.current = Boolean(msg.muted);
         mutedRef.current ? ref.current?.mute() : ref.current?.unmute();
       }
+      if (msg.type === 'stage-pointer') {
+        window.dispatchEvent(new CustomEvent('cocraft-stage-pointer', { detail: msg }));
+      }
     };
     const receive = (e: MessageEvent) => {
       if (e.source !== parent || e.data?.source !== 'cocraft-workbench') return;
@@ -321,10 +324,17 @@ function Preview() {
         });
       }
     };
+    const forwardStageEvent = (e: Event) => {
+      const detail = (e as CustomEvent<Record<string, unknown>>).detail;
+      if (detail && typeof detail === 'object') {
+        notify('stage-event', detail);
+      }
+    };
     const ro = hostRef.current ? new ResizeObserver(() => scheduleMeasure()) : null;
     if (ro && hostRef.current) ro.observe(hostRef.current);
     window.addEventListener('message', receive);
     window.addEventListener('keydown', forwardKey);
+    window.addEventListener('cocraft-stage-event', forwardStageEvent);
     // Announce readiness on window so parent can transfer the private MessagePort.
     parent.postMessage({ source: 'cocraft-preview', event: 'ready' }, '*');
     return () => {
@@ -332,6 +342,7 @@ function Preview() {
       ro?.disconnect();
       window.removeEventListener('message', receive);
       window.removeEventListener('keydown', forwardKey);
+      window.removeEventListener('cocraft-stage-event', forwardStageEvent);
       if (privatePort) {
         privatePort.onmessage = null;
         privatePort.close();

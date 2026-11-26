@@ -1,8 +1,10 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AbsoluteFill, continueRender, delayRender, useCurrentFrame, useVideoConfig } from 'remotion';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { computeDirectorCameraOverride, type SpatialRenderPass } from '../core/spatialStage';
+import { DirectorStageContext, createPassOverrideMaterial } from './DirectorContext';
 
 export type CameraPreset = 'orbit' | 'isometric' | 'dolly-in' | 'top-down' | 'hero-low';
 export type LightingPreset = 'studio' | 'dramatic' | 'soft';
@@ -18,6 +20,8 @@ export interface ThreeCanvasProps {
   children?: React.ReactNode;
   /** Optional key that triggers rebuilding scene geometry on the existing live WebGL context when changed. */
   setupKey?: string | number;
+  /** Opt out of automatic Director Studio spherical camera overrides if component implements its own camera rig */
+  ignoreDirectorCamera?: boolean;
   onFrame?: (ctx: {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
@@ -78,6 +82,117 @@ function disposeObject3D(root: THREE.Object3D) {
   });
 }
 
+function applyDirectorOverridesToThree(
+  scene: THREE.Scene,
+  camera: THREE.PerspectiveCamera,
+  renderer: THREE.WebGLRenderer,
+  director: {
+    active: boolean;
+    applyCameraOverride: boolean;
+    cameraYaw: number;
+    cameraPitch: number;
+    cameraDistance: number;
+    cameraPanX: number;
+    cameraPanY: number;
+    cameraLens?: number;
+    renderPass: SpatialRenderPass;
+  },
+  ignoreDirectorCamera: boolean,
+  passCache: {
+    pass: SpatialRenderPass;
+    material: THREE.Material | null;
+    savedBg: THREE.Scene['background'];
+    savedFog: THREE.Scene['fog'];
+    savedToneMapping: THREE.ToneMapping;
+    overriddenPass: boolean;
+  },
+) {
+  if (!director.active) return;
+
+  // 1. Spherical Director Camera Override (orbit / pitch / distance / pan / lens FOV)
+  if (director.applyCameraOverride && !ignoreDirectorCamera) {
+    camera.updateMatrixWorld();
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+    const pos = camera.position;
+    const distToOrigin = -(pos.x * fwd.x + pos.y * fwd.y + pos.z * fwd.z);
+    const pivotDist = distToOrigin > 0.05 ? distToOrigin : Math.max(1, pos.length());
+    const baseTarget: [number, number, number] =
+      distToOrigin > 0.05
+        ? [pos.x + fwd.x * pivotDist, pos.y + fwd.y * pivotDist, pos.z + fwd.z * pivotDist]
+        : [0, 0, 0];
+    const overridden = computeDirectorCameraOverride(
+      [pos.x, pos.y, pos.z],
+      baseTarget,
+      camera.fov,
+      {
+        yaw: director.cameraYaw,
+        pitch: director.cameraPitch,
+        distance: director.cameraDistance,
+        panX: director.cameraPanX,
+        panY: director.cameraPanY,
+        lensMm: director.cameraLens,
+      },
+    );
+    if (overridden.changed) {
+      camera.fov = overridden.fov;
+      camera.position.set(overridden.position[0], overridden.position[1], overridden.position[2]);
+      camera.lookAt(overridden.target[0], overridden.target[1], overridden.target[2]);
+      camera.updateProjectionMatrix();
+    }
+  }
+
+  // 2. Multi-Pass Director Render Override (beauty / clay / depth / normal / wireframe)
+  const targetPass = director.renderPass || 'beauty';
+  const camDist = Math.max(1.5, camera.position.length());
+  const adaptiveNear = Math.max(0.15, camDist * 0.24);
+  const adaptiveFar = Math.max(adaptiveNear + 2.5, camDist * 2.15);
+
+  if (targetPass === 'beauty') {
+    if (passCache.overriddenPass) {
+      scene.overrideMaterial = null;
+      scene.background = passCache.savedBg;
+      scene.fog = passCache.savedFog;
+      renderer.toneMapping = passCache.savedToneMapping;
+      passCache.overriddenPass = false;
+    }
+    if (passCache.material) {
+      passCache.material.dispose();
+      passCache.material = null;
+    }
+    passCache.pass = 'beauty';
+    return;
+  }
+
+  if (!passCache.overriddenPass) {
+    passCache.savedBg = scene.background;
+    passCache.savedFog = scene.fog;
+    passCache.savedToneMapping = renderer.toneMapping;
+    passCache.overriddenPass = true;
+  }
+
+  if (passCache.pass !== targetPass || !passCache.material) {
+    passCache.material?.dispose();
+    passCache.material = createPassOverrideMaterial(targetPass, adaptiveNear, adaptiveFar);
+    passCache.pass = targetPass;
+  } else if (targetPass === 'depth' && passCache.material instanceof THREE.ShaderMaterial) {
+    passCache.material.uniforms.uNear.value = adaptiveNear;
+    passCache.material.uniforms.uFar.value = adaptiveFar;
+  }
+
+  scene.overrideMaterial = passCache.material;
+  scene.fog = null;
+  renderer.toneMapping = THREE.NoToneMapping;
+  scene.background = new THREE.Color(
+    targetPass === 'depth'
+      ? '#000000'
+      : targetPass === 'normal'
+        ? '#8080ff'
+        : targetPass === 'clay'
+          ? '#1e2430'
+          : '#050811',
+  );
+}
+
 function StandaloneThreeCanvas({
   width,
   height,
@@ -87,9 +202,11 @@ function StandaloneThreeCanvas({
   camera: camCfg,
   style,
   setupKey,
+  ignoreDirectorCamera = false,
   setup,
   onFrame,
 }: Required<Pick<ThreeCanvasProps, 'width' | 'height' | 'frame' | 'fps'>> & ThreeCanvasProps) {
+  const director = useContext(DirectorStageContext);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [staticThumbUrl, setStaticThumbUrl] = useState<string | null>(null);
   const isSmallStaticThumb = width <= 420 && height <= 300;
@@ -97,10 +214,12 @@ function StandaloneThreeCanvas({
   const onFrameRef = useRef(onFrame);
   const camCfgRef = useRef(camCfg);
   const lightingRef = useRef(lightingPreset);
+  const directorRef = useRef(director);
   setupRef.current = setup;
   onFrameRef.current = onFrame;
   camCfgRef.current = camCfg;
   lightingRef.current = lightingPreset;
+  directorRef.current = director;
 
   const ctxRef = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -110,6 +229,15 @@ function StandaloneThreeCanvas({
     hasSetup: boolean;
     cleanup?: () => void;
     disposeEnv?: () => void;
+    savedCam?: { pos: THREE.Vector3; quat: THREE.Quaternion; fov: number };
+    passCache: {
+      pass: SpatialRenderPass;
+      material: THREE.Material | null;
+      savedBg: THREE.Scene['background'];
+      savedFog: THREE.Scene['fog'];
+      savedToneMapping: THREE.ToneMapping;
+      overriddenPass: boolean;
+    };
   } | null>(null);
 
   // For small card thumbnails, render one deterministic snapshot and immediately release the WebGL context
@@ -148,16 +276,43 @@ function StandaloneThreeCanvas({
 
     const cleanup = setupRef.current ? setupRef.current(scene, camera) || undefined : undefined;
     onFrameRef.current?.({ scene, camera, renderer, frame, fps, time: frame / fps });
+    const thumbPassCache = {
+      pass: 'beauty' as SpatialRenderPass,
+      material: null as THREE.Material | null,
+      savedBg: scene.background,
+      savedFog: scene.fog,
+      savedToneMapping: renderer.toneMapping,
+      overriddenPass: false,
+    };
+    applyDirectorOverridesToThree(scene, camera, renderer, directorRef.current, ignoreDirectorCamera, thumbPassCache);
     renderer.render(scene, camera);
     try {
       setStaticThumbUrl(offscreen.toDataURL('image/png'));
     } catch {}
+    thumbPassCache.material?.dispose();
+    scene.overrideMaterial = null;
     cleanup?.();
     disposeObject3D(scene);
     disposeEnv();
     renderer.dispose();
     renderer.forceContextLoss();
-  }, [isSmallStaticThumb, width, height, frame, fps, lightingPreset, setupKey]);
+  }, [
+    isSmallStaticThumb,
+    width,
+    height,
+    frame,
+    fps,
+    lightingPreset,
+    setupKey,
+    ignoreDirectorCamera,
+    director.cameraYaw,
+    director.cameraPitch,
+    director.cameraDistance,
+    director.cameraPanX,
+    director.cameraPanY,
+    director.cameraLens,
+    director.renderPass,
+  ]);
 
   // Mount WebGLRenderer ONCE per component lifetime so inline `setup` / `onFrame` closures on custom TSX
   // components NEVER trigger forceContextLoss() on Frame 1 during playback!
@@ -197,12 +352,22 @@ function StandaloneThreeCanvas({
       lightingPreset: initialLighting,
       hasSetup: false,
       disposeEnv,
+      passCache: {
+        pass: 'beauty',
+        material: null,
+        savedBg: scene.background,
+        savedFog: scene.fog,
+        savedToneMapping: renderer.toneMapping,
+        overriddenPass: false,
+      },
     };
 
     return () => {
       const ctx = ctxRef.current;
       ctxRef.current = null;
       if (!ctx) return;
+      ctx.passCache.material?.dispose();
+      ctx.scene.overrideMaterial = null;
       ctx.cleanup?.();
       disposeObject3D(ctx.scene);
       ctx.disposeEnv?.();
@@ -227,6 +392,12 @@ function StandaloneThreeCanvas({
     const ctx = ctxRef.current;
     if (!ctx) return;
     if (ctx.hasSetup) {
+      ctx.passCache.material?.dispose();
+      ctx.passCache.material = null;
+      ctx.passCache.overriddenPass = false;
+      ctx.passCache.pass = 'beauty';
+      ctx.scene.overrideMaterial = null;
+      ctx.savedCam = undefined;
       ctx.cleanup?.();
       ctx.cleanup = undefined;
       disposeObject3D(ctx.scene);
@@ -250,6 +421,20 @@ function StandaloneThreeCanvas({
     if (canvas.width !== width || canvas.height !== height) {
       ctx.renderer.setSize(width, height, false);
     }
+    // Restore base camera before onFrame so static-setup scenes never accumulate double-rotation
+    if (ctx.savedCam) {
+      ctx.camera.position.copy(ctx.savedCam.pos);
+      ctx.camera.quaternion.copy(ctx.savedCam.quat);
+      ctx.camera.fov = ctx.savedCam.fov;
+    }
+    // Restore scene background/fog before onFrame so custom TSX scripts always see their own beauty scene
+    if (ctx.passCache.overriddenPass) {
+      ctx.scene.overrideMaterial = null;
+      ctx.scene.background = ctx.passCache.savedBg;
+      ctx.scene.fog = ctx.passCache.savedFog;
+      ctx.renderer.toneMapping = ctx.passCache.savedToneMapping;
+      ctx.passCache.overriddenPass = false;
+    }
     ctx.camera.aspect = width / height;
     ctx.camera.updateProjectionMatrix();
     onFrameRef.current?.({
@@ -260,8 +445,40 @@ function StandaloneThreeCanvas({
       fps,
       time: frame / fps,
     });
+    // Snapshot frame's native camera pose before applying Director Studio spherical & multi-pass overrides
+    ctx.savedCam = {
+      pos: ctx.camera.position.clone(),
+      quat: ctx.camera.quaternion.clone(),
+      fov: ctx.camera.fov,
+    };
+    applyDirectorOverridesToThree(
+      ctx.scene,
+      ctx.camera,
+      ctx.renderer,
+      directorRef.current,
+      ignoreDirectorCamera,
+      ctx.passCache,
+    );
     ctx.renderer.render(ctx.scene, ctx.camera);
-  }, [isSmallStaticThumb, frame, fps, width, height, lightingPreset, setupKey]);
+  }, [
+    isSmallStaticThumb,
+    frame,
+    fps,
+    width,
+    height,
+    lightingPreset,
+    setupKey,
+    ignoreDirectorCamera,
+    director.active,
+    director.applyCameraOverride,
+    director.cameraYaw,
+    director.cameraPitch,
+    director.cameraDistance,
+    director.cameraPanX,
+    director.cameraPanY,
+    director.cameraLens,
+    director.renderPass,
+  ]);
 
   if (isSmallStaticThumb) {
     return staticThumbUrl ? (

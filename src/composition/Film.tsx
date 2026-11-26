@@ -4,6 +4,8 @@ import { evaluateKeyframeTrack, resolveClipPropsAtFrame } from '../core/keyframe
 import { getClipCompositingOrder, isClipTrackActive } from '../core/tracks';
 import { ThreeCanvas, TeardownStage } from './ThreeStage';
 import { SpatialStage } from './SpatialStage';
+import { DirectorStageProvider, useDirectorStage } from './DirectorContext';
+import type { SpatialRenderPass } from '../core/spatialStage';
 import RoughPrimitives, { rough } from './RoughPrimitives';
 import React, { useMemo } from 'react';
 import * as Remotion from 'remotion';
@@ -486,7 +488,8 @@ function loadComponent(c: CodeComponent) {
       name === 'three/addons/loaders/GLTFLoader.js'
     )
       return { GLTFLoader };
-    if (name === '@remotion/three') return { ThreeCanvas, TeardownStage, SpatialStage };
+    if (name === '@remotion/three') return { ThreeCanvas, TeardownStage, SpatialStage, useDirectorStage };
+    if (name === 'cocraft/director') return { useDirectorStage };
     if (name === 'roughjs') return rough;
     if (name === 'cocraft/rough') return RoughPrimitives;
     throw new Error(`组件不能加载 ${name}`);
@@ -566,18 +569,63 @@ function Code({
   const scale = clip.props.scale !== undefined ? Number(clip.props.scale) : 1;
   const opacity = Number(clip.props.opacity ?? 1);
   const hasTransform = x !== 0 || y !== 0 || scale !== 1 || opacity !== 1 || rotation !== 0 || Boolean(filterCss);
+  const rawPass = String(clip.props.renderPass || 'beauty');
+  const resolvedPass: SpatialRenderPass =
+    rawPass === 'clay' || rawPass === 'depth' || rawPass === 'normal' || rawPass === 'wireframe'
+      ? rawPass
+      : 'beauty';
+  const compHandlesOwnCamera =
+    component.props !== undefined &&
+    ('cameraYaw' in component.props || 'cameraPitch' in component.props || 'cameraDistance' in component.props);
+  const directorState = useMemo(
+    () => ({
+      active: true,
+      applyCameraOverride: !compHandlesOwnCamera,
+      cameraYaw: Number(clip.props.cameraYaw ?? 0),
+      cameraPitch: Number(clip.props.cameraPitch ?? 0),
+      cameraDistance: clip.props.cameraDistance !== undefined ? Number(clip.props.cameraDistance) : 1,
+      cameraPanX: Number(clip.props.cameraPanX ?? 0),
+      cameraPanY: Number(clip.props.cameraPanY ?? 0),
+      cameraLens:
+        clip.props.cameraLens !== undefined && Number(clip.props.cameraLens) > 0
+          ? Number(clip.props.cameraLens)
+          : undefined,
+      renderPass: resolvedPass,
+      keyLightYaw: clip.props.keyLightYaw !== undefined ? Number(clip.props.keyLightYaw) : undefined,
+      keyLightTemp: clip.props.keyLightTemp !== undefined ? Number(clip.props.keyLightTemp) : undefined,
+      showStudioGuides: Boolean(clip.props._studioInteractive),
+      selectedObjectId:
+        typeof clip.props._selectedObjectId === 'string' ? clip.props._selectedObjectId : null,
+    }),
+    [
+      compHandlesOwnCamera,
+      clip.props.cameraYaw,
+      clip.props.cameraPitch,
+      clip.props.cameraDistance,
+      clip.props.cameraPanX,
+      clip.props.cameraPanY,
+      clip.props.cameraLens,
+      resolvedPass,
+      clip.props.keyLightYaw,
+      clip.props.keyLightTemp,
+      clip.props._studioInteractive,
+      clip.props._selectedObjectId,
+    ],
+  );
   const node = (
-    <Component
-      {...component.props}
-      {...clip.props}
-      assetUrl={(id: string) => mediaUrl(mediaOrigin, id)}
-      assets={project.assets.map((a) => ({
-        id: a.id,
-        name: a.name,
-        kind: a.kind,
-        url: mediaUrl(mediaOrigin, a.id),
-      }))}
-    />
+    <DirectorStageProvider value={directorState}>
+      <Component
+        {...component.props}
+        {...clip.props}
+        assetUrl={(id: string) => mediaUrl(mediaOrigin, id)}
+        assets={project.assets.map((a) => ({
+          id: a.id,
+          name: a.name,
+          kind: a.kind,
+          url: mediaUrl(mediaOrigin, a.id),
+        }))}
+      />
+    </DirectorStageProvider>
   );
   if (!hasTransform) return node;
   return (

@@ -46,6 +46,162 @@ export type SpatialEnvironmentPreset =
 
 export type SpatialDeviceType = 'phone' | 'laptop' | 'cinema-display';
 
+export type SpatialStageObjectKind =
+  | 'actor'
+  | 'prop-box'
+  | 'prop-pillar'
+  | 'prop-arch'
+  | 'glb'
+  | 'card-25d'
+  | 'light';
+
+export interface SpatialStageObject {
+  id: string;
+  name: string;
+  kind: SpatialStageObjectKind;
+  assetId?: string;
+  position: [number, number, number];
+  rotationY: number;
+  scale: number;
+  color?: string;
+  action?: SpatialActorAction;
+  endPosition?: [number, number, number];
+  intensity?: number;
+  temperature?: number;
+}
+
+export const SPATIAL_SCENE_MODE_OPTIONS: { id: SpatialSceneMode; label: string }[] = [
+  { id: 'previs-blocking', label: '导演白模预演棚' },
+  { id: 'parallax-25d', label: '2.5D 立体视差舞台' },
+  { id: 'device-showcase', label: '3D 硬件屏幕演示' },
+  { id: 'turbine', label: '机械涡轮拆解' },
+  { id: 'chip-stack', label: '芯片架构堆栈' },
+  { id: 'factory-flow', label: '空间产线流' },
+];
+
+export const SPATIAL_LOOK_PRESET_OPTIONS: { id: SpatialLookPreset; label: string }[] = [
+  { id: 'cinema', label: '电影质感' },
+  { id: 'clean-studio', label: '干净棚拍' },
+  { id: 'noir-dramatic', label: '黑色电影' },
+  { id: 'anime-npr', label: '二次元风格化' },
+];
+
+export const SPATIAL_DEVICE_OPTIONS: { id: SpatialDeviceType; label: string }[] = [
+  { id: 'phone', label: '智能手机' },
+  { id: 'laptop', label: '笔记本电脑' },
+  { id: 'cinema-display', label: '专业监视器' },
+];
+
+export const SPATIAL_STAGE_OBJECT_LABELS: Record<SpatialStageObjectKind, string> = {
+  actor: '演员人偶',
+  'prop-box': '体块道具',
+  'prop-pillar': '建筑立柱',
+  'prop-arch': '场景拱门',
+  glb: '3D 模型',
+  'card-25d': '2D 立体立牌',
+  light: '舞台灯光',
+};
+
+/**
+ * Deterministic color temperature (Kelvin 2000K..10000K) to hex string converter.
+ * 2600K = warm tungsten, 5600K = daylight neutral, 8500K = cool moonlight.
+ */
+export function kelvinToHex(kelvin: number): string {
+  const k = Math.max(2000, Math.min(10000, Number.isFinite(kelvin) ? kelvin : 5600)) / 100;
+  let r: number;
+  let g: number;
+  let b: number;
+  if (k <= 66) {
+    r = 255;
+    g = 99.4708025861 * Math.log(k) - 161.1195681661;
+    b = k <= 19 ? 0 : 138.5177312231 * Math.log(k - 10) - 305.0447927307;
+  } else {
+    r = 329.698727446 * Math.pow(k - 60, -0.1332047592);
+    g = 288.1221695283 * Math.pow(k - 60, 0.0755148492);
+    b = 255;
+  }
+  const toByte = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${toByte(r)}${toByte(g)}${toByte(b)}`;
+}
+
+export function createStageObject(
+  kind: SpatialStageObjectKind,
+  existing: SpatialStageObject[] = [],
+  opts?: { name?: string; assetId?: string; color?: string; position?: [number, number, number] },
+): SpatialStageObject {
+  const countOfKind = existing.filter((o) => o.kind === kind).length + 1;
+  const spread = ((existing.length % 5) - 2) * 0.95;
+  const depthOffset = -0.4 + Math.floor(existing.length / 5) * 0.8;
+  const defaultPos: [number, number, number] =
+    opts?.position ||
+    (kind === 'light'
+      ? [spread || 1.8, 2.4, depthOffset + 1.2]
+      : kind === 'card-25d'
+        ? [spread, 0, depthOffset - 0.6]
+        : [spread, 0, depthOffset]);
+  const id = `obj_${kind.replace(/[^a-z0-9]/g, '')}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const base: SpatialStageObject = {
+    id,
+    name: opts?.name || `${SPATIAL_STAGE_OBJECT_LABELS[kind]} ${countOfKind}`,
+    kind,
+    assetId: opts?.assetId,
+    position: [
+      Number(defaultPos[0].toFixed(2)),
+      Number(defaultPos[1].toFixed(2)),
+      Number(defaultPos[2].toFixed(2)),
+    ],
+    rotationY: 0,
+    scale: 1,
+    color:
+      opts?.color ||
+      (kind === 'actor'
+        ? '#60a5fa'
+        : kind === 'light'
+          ? '#ffd8a8'
+          : kind === 'prop-arch'
+            ? '#475569'
+            : '#64748b'),
+  };
+  if (kind === 'actor') {
+    base.action = 'walk';
+    base.endPosition = [Number((base.position[0] + 0.8).toFixed(2)), 0, Number((base.position[2] + 1.2).toFixed(2))];
+  } else if (kind === 'light') {
+    base.intensity = 2.6;
+    base.temperature = 3800;
+  }
+  return base;
+}
+
+export function normalizeCameraBookmarks(raw: unknown): SpatialCameraBookmark[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return DEFAULT_SPATIAL_BOOKMARKS.map((b) => ({ ...b }));
+  }
+  const clean: SpatialCameraBookmark[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i] as Partial<SpatialCameraBookmark> | null;
+    if (!item || typeof item !== 'object') continue;
+    const rawDist = Number(item.cameraDistance ?? 1);
+    const normDist = Number.isFinite(rawDist)
+      ? rawDist > 3.2
+        ? Math.max(0.35, Math.min(3.0, Number((rawDist / 5.4).toFixed(2))))
+        : Math.max(0.35, Math.min(3.0, rawDist))
+      : 1.0;
+    clean.push({
+      id: typeof item.id === 'string' && item.id ? item.id : `cam-${i + 1}`,
+      shortKey: typeof item.shortKey === 'string' && item.shortKey ? item.shortKey : String.fromCharCode(65 + (i % 26)),
+      label: typeof item.label === 'string' && item.label ? item.label : `机位 ${i + 1}`,
+      cameraPreset: (typeof item.cameraPreset === 'string' ? item.cameraPreset : 'static') as SpatialCameraPreset,
+      cameraLens: Math.max(16, Math.min(135, Number(item.cameraLens ?? 35))),
+      cameraYaw: Number.isFinite(Number(item.cameraYaw)) ? Number(item.cameraYaw) : 0,
+      cameraPitch: Number.isFinite(Number(item.cameraPitch)) ? Number(item.cameraPitch) : 0,
+      cameraDistance: normDist,
+      cameraPanX: Number.isFinite(Number(item.cameraPanX)) ? Number(item.cameraPanX) : 0,
+      cameraPanY: Number.isFinite(Number(item.cameraPanY)) ? Number(item.cameraPanY) : 0,
+    });
+  }
+  return clean.length > 0 ? clean : DEFAULT_SPATIAL_BOOKMARKS.map((b) => ({ ...b }));
+}
+
 export const SPATIAL_ACTOR_ACTION_OPTIONS: { id: SpatialActorAction; label: string }[] = [
   { id: 'walk', label: '迈步行走 (Walk)' },
   { id: 'run', label: '前倾疾跑 (Run)' },
@@ -206,7 +362,10 @@ export function computeSpatialCameraPose(input: SpatialCameraPoseInput): Spatial
   const isPortrait = Boolean(input.isPortrait);
   const is25D = Boolean(input.is25D);
   const baseLens = Math.max(16, Math.min(135, Number.isFinite(input.lensMm) ? Number(input.lensMm) : 35));
-  const distMul = Math.max(0.45, Math.min(2.6, Number.isFinite(input.distance) ? Number(input.distance) : 1));
+  const rawDist = Number.isFinite(input.distance) ? Number(input.distance) : 1;
+  // Support canonical multiplier (0.35..3.0); seamlessly remap legacy absolute distances (> 3.2, e.g. 5.4 -> 1.0)
+  const normalizedDist = rawDist > 3.2 ? rawDist / 5.4 : rawDist;
+  const distMul = Math.max(0.35, Math.min(3.0, normalizedDist));
   const panX = Number.isFinite(input.panX) ? Number(input.panX) : 0;
   const panY = Number.isFinite(input.panY) ? Number(input.panY) : 0;
   const yawDeg = Number.isFinite(input.yaw) ? Number(input.yaw) : 0;
@@ -353,6 +512,83 @@ export function computeSpatialCameraPose(input: SpatialCameraPoseInput): Spatial
     ],
     target,
     fov: Number(fov.toFixed(2)),
+  };
+}
+
+export interface DirectorCameraOverrideInput {
+  yaw?: number;
+  pitch?: number;
+  distance?: number;
+  panX?: number;
+  panY?: number;
+  lensMm?: number;
+}
+
+/**
+ * Pure deterministic spherical director-camera override for arbitrary Three.js scenes (including custom TSX 3D components).
+ * At neutral defaults (yaw=0, pitch=0, distance=1, panX=0, panY=0, lensMm=undefined) this is an exact identity transform.
+ */
+export function computeDirectorCameraOverride(
+  basePos: [number, number, number],
+  baseTarget: [number, number, number],
+  baseFov: number,
+  override: DirectorCameraOverrideInput,
+): { position: [number, number, number]; target: [number, number, number]; fov: number; changed: boolean } {
+  const yawDeg = Number.isFinite(override.yaw) ? Number(override.yaw) : 0;
+  const pitchDeg = Number.isFinite(override.pitch) ? Number(override.pitch) : 0;
+  const rawDist = Number.isFinite(override.distance) ? Number(override.distance) : 1;
+  const distMul = Math.max(0.35, Math.min(3.0, rawDist > 3.2 ? rawDist / 5.4 : rawDist));
+  const panX = Number.isFinite(override.panX) ? Number(override.panX) : 0;
+  const panY = Number.isFinite(override.panY) ? Number(override.panY) : 0;
+  const hasLens = override.lensMm !== undefined && Number.isFinite(override.lensMm) && Number(override.lensMm) > 0;
+  const fov = hasLens ? lensMmToFov(Number(override.lensMm)) : baseFov;
+
+  const isIdentityPose =
+    Math.abs(yawDeg) < 1e-4 &&
+    Math.abs(pitchDeg) < 1e-4 &&
+    Math.abs(distMul - 1) < 1e-4 &&
+    Math.abs(panX) < 1e-4 &&
+    Math.abs(panY) < 1e-4;
+
+  if (isIdentityPose && !hasLens) {
+    return {
+      position: [...basePos],
+      target: [...baseTarget],
+      fov: baseFov,
+      changed: false,
+    };
+  }
+
+  let ox = basePos[0] - baseTarget[0];
+  let oy = basePos[1] - baseTarget[1];
+  let oz = basePos[2] - baseTarget[2];
+  const baseRadius = Math.max(0.25, Math.hypot(ox, oy, oz));
+
+  if (!isIdentityPose) {
+    const r = baseRadius * distMul;
+    let theta = Math.atan2(ox, oz);
+    let phi = Math.acos(Math.max(-1, Math.min(1, oy / baseRadius)));
+    theta += (yawDeg * Math.PI) / 180;
+    phi = Math.max(0.08, Math.min(Math.PI - 0.08, phi + (pitchDeg * Math.PI) / 180));
+    ox = r * Math.sin(phi) * Math.sin(theta);
+    oy = r * Math.cos(phi);
+    oz = r * Math.sin(phi) * Math.cos(theta);
+  }
+
+  // Pan along camera's horizontal right axis and world Y, scaled proportionally to scene radius
+  const panScale = baseRadius * 0.24;
+  const horizLen = Math.hypot(ox, oz);
+  const rightX = horizLen > 1e-4 ? oz / horizLen : 1;
+  const rightZ = horizLen > 1e-4 ? -ox / horizLen : 0;
+  const tx = baseTarget[0] + rightX * panX * panScale;
+  const ty = baseTarget[1] + panY * panScale;
+  const tz = baseTarget[2] + rightZ * panX * panScale;
+
+  return {
+    position: [Number((tx + ox).toFixed(4)), Number((ty + oy).toFixed(4)), Number((tz + oz).toFixed(4))],
+    target: [Number(tx.toFixed(4)), Number(ty.toFixed(4)), Number(tz.toFixed(4))],
+    fov: Number(fov.toFixed(2)),
+    changed: true,
   };
 }
 
@@ -538,6 +774,8 @@ export function buildSpatialStageProps(opts: {
     cameraPanX: 0,
     cameraPanY: 0,
     lightingPreset: mode === 'device-showcase' ? 'studio' : mode === 'previs-blocking' ? 'dramatic' : 'studio',
+    keyLightYaw: 38,
+    keyLightTemp: 5600,
     lookPreset: opts.lookPreset ?? (mode === 'device-showcase' ? 'clean-studio' : 'cinema'),
     renderPass: 'beauty',
     particles3D: opts.particles3D ?? (is25D ? 'dust' : mode === 'previs-blocking' ? 'rain' : 'none'),
@@ -561,6 +799,7 @@ export function buildSpatialStageProps(opts: {
     surface: 'dark',
     layerAssetIds: opts.layerAssetIds?.length ? opts.layerAssetIds.slice(0, 4) : undefined,
     screenAssetId: opts.screenAssetId || undefined,
+    stageObjects: [] as SpatialStageObject[],
     cameraBookmarks: DEFAULT_SPATIAL_BOOKMARKS,
     activeBookmarkId: 'cam-a',
   };

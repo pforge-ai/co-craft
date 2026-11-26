@@ -1509,12 +1509,35 @@ export function PresetFrame({
       resolvedScreenUrl = assetUrl;
     }
     const isLegacyTeardown = presetId === 'teardown-3d';
+    const rawStageObjects = Array.isArray(p.stageObjects) ? (p.stageObjects as Record<string, unknown>[]) : [];
+    const resolvedStageObjects = rawStageObjects
+      .filter((o) => o && typeof o === 'object' && typeof o.id === 'string' && typeof o.kind === 'string')
+      .map((o) => {
+        const aid = typeof o.assetId === 'string' && o.assetId ? o.assetId : undefined;
+        let objAssetUrl: string | undefined;
+        if (aid && mediaOrigin) {
+          const a = project?.assets.find((item) => item.id === aid);
+          objAssetUrl =
+            a?.kind === 'video'
+              ? `${mediaOrigin}/media/${encodeURIComponent(aid)}?frame=${standalone ? 0 : Math.max(0, Math.round(frame))}&fps=${fps}`
+              : `${mediaOrigin}/media/${encodeURIComponent(aid)}`;
+        }
+        return {
+          ...(o as unknown as import('../core/spatialStage').SpatialStageObject),
+          assetUrl: objAssetUrl,
+        };
+      });
+    const rawBookmarks = Array.isArray(p.cameraBookmarks)
+      ? (p.cameraBookmarks as import('../core/spatialStage').SpatialCameraBookmark[])
+      : undefined;
     content = (
       <SpatialStage
         title={text}
         subtitle={subtitle}
         sceneType={textOf(p, 'sceneType', isLegacyTeardown ? 'turbine' : 'parallax-25d')}
         lightingPreset={textOf(p, 'lightingPreset', 'studio')}
+        keyLightYaw={p.keyLightYaw !== undefined ? Number(p.keyLightYaw) : 38}
+        keyLightTemp={p.keyLightTemp !== undefined ? Number(p.keyLightTemp) : 5600}
         lookPreset={textOf(p, 'lookPreset', 'cinema')}
         renderPass={textOf(p, 'renderPass', 'beauty')}
         cameraPreset={textOf(p, 'cameraPreset', isLegacyTeardown ? 'orbit' : 'dolly-in')}
@@ -1552,6 +1575,11 @@ export function PresetFrame({
         modelFilename={assetKind === 'model-3d' ? assetFilename : undefined}
         layerUrls={resolvedLayerUrls}
         screenUrl={resolvedScreenUrl}
+        stageObjects={resolvedStageObjects}
+        cameraBookmarks={rawBookmarks}
+        studioInteractive={Boolean(p._studioInteractive)}
+        selectedObjectId={typeof p._selectedObjectId === 'string' ? p._selectedObjectId : null}
+        showCameraPath={Boolean(p._showCameraPath)}
         frame={frame}
         fps={fps}
         width={w}

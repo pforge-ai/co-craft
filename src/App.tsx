@@ -3462,6 +3462,19 @@ export function App() {
               notify('已拍摄首尾两帧并送入「创造」画布，可直接做首尾帧生视频');
             });
           }}
+          onCaptureMultiCam={async (opts) => {
+            await work('多机位批量出分镜', async () => {
+              const res = await api<{
+                envelope: ProjectEnvelope;
+                assets: Asset[];
+                shotClipIds: string[];
+              }>('stage.captureMultiCamStoryboard', { sequenceId: sequence.id, ...opts });
+              accept(res.envelope);
+              notify(
+                `已批量拍摄 ${res.assets.length} 张空间一致分镜图${res.shotClipIds.length ? `并串联 ${res.shotClipIds.length} 段分镜到主序列` : ''}`,
+              );
+            });
+          }}
           onBakeVideo={async (opts) => {
             await work('录制 3D 预演视频', async () => {
               const res = await api<{ envelope: ProjectEnvelope; asset: Asset }>(

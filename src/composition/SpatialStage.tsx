@@ -17,22 +17,30 @@ import {
   computeParallaxLayerLayout,
   computeSpatialCameraPose,
   isSplatAssetPath,
+  kelvinToHex,
   type SpatialActorAction,
   type SpatialActorPath,
   type SpatialBlockingPose,
+  type SpatialCameraBookmark,
   type SpatialDeviceType,
   type SpatialEnvironmentPreset,
   type SpatialLookPreset,
   type SpatialParticles3D,
   type SpatialRenderPass,
+  type SpatialStageObject,
 } from '../core/spatialStage';
+import { createDepthPassMaterial } from './DirectorContext';
 import { buildProceduralScene, type LightingPreset } from './ThreeStage';
+
+export type ResolvedSpatialStageObject = SpatialStageObject & { assetUrl?: string };
 
 export interface SpatialStageProps {
   title?: string;
   subtitle?: string;
   sceneType?: string;
   lightingPreset?: string;
+  keyLightYaw?: number;
+  keyLightTemp?: number;
   lookPreset?: string;
   renderPass?: string;
   cameraPreset?: string;
@@ -74,6 +82,14 @@ export interface SpatialStageProps {
   layerUrls?: string[];
   /** Optional screen texture URL for 3D device-showcase mode */
   screenUrl?: string;
+  /** Composable multi-object 3D scene graph (actors, props, 2D standees, GLBs, lights) */
+  stageObjects?: ResolvedSpatialStageObject[];
+  /** Saved camera bookmarks (visualized as frustums when studioInteractive && showCameraPath) */
+  cameraBookmarks?: SpatialCameraBookmark[];
+  /** Interactive studio preview only (enables raycast picking & gizmos; NEVER set in capture/export) */
+  studioInteractive?: boolean;
+  selectedObjectId?: string | null;
+  showCameraPath?: boolean;
   frame?: number;
   fps?: number;
   width?: number;
@@ -232,37 +248,6 @@ function attachPbrEnvironment(
     envScene.dispose();
     pmrem.dispose();
   };
-}
-
-/**
- * Creates a normalized linear camera-space depth material following ControlNet Depth convention:
- * White (1.0) = closest to camera, Black (0.0) = farthest from camera.
- */
-function createDepthPassMaterial(nearDepth = 1.6, farDepth = 12.5): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      uNear: { value: nearDepth },
-      uFar: { value: farDepth },
-    },
-    vertexShader: /* glsl */ `
-      varying float vViewZ;
-      void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vViewZ = -mv.z;
-        gl_Position = projectionMatrix * mv;
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      uniform float uNear;
-      uniform float uFar;
-      varying float vViewZ;
-      void main() {
-        float d = 1.0 - clamp((vViewZ - uNear) / max(0.001, uFar - uNear), 0.0, 1.0);
-        gl_FragColor = vec4(vec3(d), 1.0);
-      }
-    `,
-    side: THREE.DoubleSide,
-  });
 }
 
 function renderPassToInt(pass: SpatialRenderPass): number {
@@ -878,10 +863,12 @@ function buildPrevisBlockingScene(
 
   heroRig.root.position.set(heroRig.baseX, heroRig.baseY, heroRig.baseZ);
   heroRig.root.rotation.y = heroRig.baseYaw;
+  heroRig.root.userData.stageObjectId = '__hero__';
   group.add(heroRig.root);
   if (rivalRig) {
     rivalRig.root.position.set(rivalRig.baseX, rivalRig.baseY, rivalRig.baseZ);
     rivalRig.root.rotation.y = rivalRig.baseYaw;
+    rivalRig.root.userData.stageObjectId = '__rival__';
     group.add(rivalRig.root);
   }
 
@@ -1333,11 +1320,273 @@ function sortWebGL2SplatsBackToFront(handle: WebGL2SplatHandle | null, camera: T
   handle.scaleAttr.needsUpdate = true;
 }
 
+const STAGE_FLOOR_Y = -1.2;
+
+function buildStageObjectsGroup(
+  objects: ResolvedSpatialStageObject[],
+  opts: {
+    accent: string;
+    secondary: string;
+    renderPass: SpatialRenderPass;
+    studioInteractive: boolean;
+    objTextures: Record<string, THREE.Texture>;
+    objGlbs: Record<string, THREE.Group>;
+  },
+): {
+  group: THREE.Group;
+  extraActors: Array<{ obj: ResolvedSpatialStageObject; rig: MannequinRig }>;
+  selectableRoots: Map<string, THREE.Object3D>;
+} {
+  const group = new THREE.Group();
+  const extraActors: Array<{ obj: ResolvedSpatialStageObject; rig: MannequinRig }> = [];
+  const selectableRoots = new Map<string, THREE.Object3D>();
+  const accentCol = new THREE.Color(opts.accent || '#3b82f6');
+  const secCol = new THREE.Color(opts.secondary || '#14b8a6');
+
+  for (const obj of objects) {
+    const px = Number.isFinite(obj.position?.[0]) ? obj.position[0] : 0;
+    const py = Number.isFinite(obj.position?.[1]) ? obj.position[1] : 0;
+    const pz = Number.isFinite(obj.position?.[2]) ? obj.position[2] : 0;
+    const rotY = ((Number.isFinite(obj.rotationY) ? obj.rotationY : 0) * Math.PI) / 180;
+    const scl = Math.max(0.2, Math.min(4, Number.isFinite(obj.scale) ? obj.scale : 1));
+    const col = new THREE.Color(obj.color || '#64748b');
+
+    if (obj.kind === 'actor') {
+      const rig = buildDirectorMannequin(col, secCol, 'hero');
+      rig.baseX = px;
+      rig.baseY = STAGE_FLOOR_Y + py;
+      rig.baseZ = pz;
+      rig.baseYaw = rotY;
+      rig.root.position.set(px, STAGE_FLOOR_Y + py, pz);
+      rig.root.rotation.y = rotY;
+      rig.root.scale.setScalar(scl);
+      rig.root.userData.stageObjectId = obj.id;
+      group.add(rig.root);
+      extraActors.push({ obj, rig });
+      selectableRoots.set(obj.id, rig.root);
+
+      // Subtle floor walk-path line in beauty pass when actor has an endPosition
+      if (opts.renderPass === 'beauty' && obj.endPosition) {
+        const [ex, ey, ez] = obj.endPosition;
+        if (Math.hypot(ex - px, ez - pz) > 0.08) {
+          const pts = [
+            new THREE.Vector3(px, STAGE_FLOOR_Y + py + 0.03, pz),
+            new THREE.Vector3(ex, STAGE_FLOOR_Y + (ey || 0) + 0.03, ez),
+          ];
+          const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.65 }),
+          );
+          group.add(line);
+          const endDot = new THREE.Mesh(
+            new THREE.RingGeometry(0.12, 0.2, 24),
+            new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide, transparent: true, opacity: 0.72 }),
+          );
+          endDot.rotation.x = -Math.PI / 2;
+          endDot.position.set(ex, STAGE_FLOOR_Y + (ey || 0) + 0.03, ez);
+          group.add(endDot);
+        }
+      }
+      continue;
+    }
+
+    const holder = new THREE.Group();
+    holder.userData.stageObjectId = obj.id;
+    holder.position.set(px, STAGE_FLOOR_Y + py, pz);
+    holder.rotation.y = rotY;
+    holder.scale.setScalar(scl);
+
+    if (obj.kind === 'prop-box') {
+      const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.62, metalness: 0.14 });
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.95, 0.95), mat);
+      mesh.position.y = 0.475;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      holder.add(mesh);
+    } else if (obj.kind === 'prop-pillar') {
+      const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.56, metalness: 0.18 });
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.3, 2.3, 20), mat);
+      shaft.position.y = 1.15;
+      shaft.castShadow = true;
+      shaft.receiveShadow = true;
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.16, 0.74), mat);
+      cap.position.y = 2.34;
+      const base = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.18, 0.78), mat);
+      base.position.y = 0.09;
+      holder.add(shaft, cap, base);
+    } else if (obj.kind === 'prop-arch') {
+      const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.65, metalness: 0.16 });
+      const left = new THREE.Mesh(new THREE.BoxGeometry(0.38, 2.45, 0.45), mat);
+      left.position.set(-1.05, 1.225, 0);
+      left.castShadow = true;
+      left.receiveShadow = true;
+      const right = new THREE.Mesh(new THREE.BoxGeometry(0.38, 2.45, 0.45), mat);
+      right.position.set(1.05, 1.225, 0);
+      right.castShadow = true;
+      right.receiveShadow = true;
+      const top = new THREE.Mesh(new THREE.BoxGeometry(2.55, 0.36, 0.52), mat);
+      top.position.set(0, 2.58, 0);
+      top.castShadow = true;
+      holder.add(left, right, top);
+    } else if (obj.kind === 'card-25d') {
+      const tex = obj.assetUrl ? opts.objTextures[obj.assetUrl] : undefined;
+      const img = tex?.image as { width?: number; height?: number } | undefined;
+      const aspect = img?.width && img?.height ? Math.max(0.45, Math.min(2.4, img.width / img.height)) : 0.82;
+      const cardH = 1.95;
+      const cardW = cardH * aspect;
+      const mat = tex
+        ? new THREE.MeshStandardMaterial({
+            map: tex,
+            transparent: true,
+            alphaTest: 0.08,
+            roughness: 0.42,
+            metalness: 0.05,
+            side: THREE.DoubleSide,
+          })
+        : new THREE.MeshStandardMaterial({
+            color: col,
+            roughness: 0.5,
+            metalness: 0.1,
+            side: THREE.DoubleSide,
+          });
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(cardW, cardH), mat);
+      plane.position.y = cardH * 0.5 + 0.02;
+      plane.castShadow = true;
+      plane.receiveShadow = true;
+      const standBase = new THREE.Mesh(
+        new THREE.BoxGeometry(cardW * 0.72, 0.06, 0.32),
+        new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.5, metalness: 0.5 }),
+      );
+      standBase.position.y = 0.03;
+      holder.add(plane, standBase);
+    } else if (obj.kind === 'glb') {
+      const loaded = obj.assetUrl ? opts.objGlbs[obj.assetUrl] : undefined;
+      if (loaded) {
+        const cloneModel = loaded.clone(true);
+        holder.add(cloneModel);
+      } else {
+        const placeholder = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.55, 1),
+          new THREE.MeshStandardMaterial({ color: accentCol, roughness: 0.35, metalness: 0.45 }),
+        );
+        placeholder.position.y = 0.65;
+        placeholder.castShadow = true;
+        holder.add(placeholder);
+      }
+    } else if (obj.kind === 'light') {
+      const tempHex = kelvinToHex(obj.temperature ?? 3800);
+      const pt = new THREE.PointLight(tempHex, Math.max(0.2, Number(obj.intensity ?? 2.6)), 18, 1.5);
+      pt.position.set(0, 0, 0);
+      holder.add(pt);
+      // Studio light gizmo visible ONLY in interactive studio beauty mode (never in captures/exports!)
+      if (opts.studioInteractive && opts.renderPass === 'beauty') {
+        const bulb = new THREE.Mesh(
+          new THREE.SphereGeometry(0.16, 16, 16),
+          new THREE.MeshBasicMaterial({ color: tempHex }),
+        );
+        const halo = new THREE.Mesh(
+          new THREE.RingGeometry(0.22, 0.27, 24),
+          new THREE.MeshBasicMaterial({ color: tempHex, side: THREE.DoubleSide, transparent: true, opacity: 0.75 }),
+        );
+        halo.rotation.x = -Math.PI / 2;
+        const dropLine = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, 0),
+            new THREE.Vector3(0, -(py || 0), 0),
+          ]),
+          new THREE.LineBasicMaterial({ color: tempHex, transparent: true, opacity: 0.4 }),
+        );
+        holder.add(bulb, halo, dropLine);
+      }
+    }
+
+    group.add(holder);
+    selectableRoots.set(obj.id, holder);
+  }
+
+  return { group, extraActors, selectableRoots };
+}
+
+function buildSelectionGizmo(): THREE.Group {
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.52, 0.61, 40),
+    new THREE.MeshBasicMaterial({ color: '#38bdf8', side: THREE.DoubleSide, transparent: true, opacity: 0.92 }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.04;
+  const xLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.06, 0), new THREE.Vector3(0.95, 0.06, 0)]),
+    new THREE.LineBasicMaterial({ color: '#f87171' }),
+  );
+  const zLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.06, 0), new THREE.Vector3(0, 0.06, 0.95)]),
+    new THREE.LineBasicMaterial({ color: '#60a5fa' }),
+  );
+  g.add(ring, xLine, zLine);
+  g.visible = false;
+  return g;
+}
+
+function buildCameraPathGuides(
+  bookmarks: SpatialCameraBookmark[],
+  isPortrait: boolean,
+  is25D: boolean,
+): THREE.Group {
+  const g = new THREE.Group();
+  const camPoints: THREE.Vector3[] = [];
+  for (const bm of bookmarks) {
+    const pose = computeSpatialCameraPose({
+      preset: bm.cameraPreset,
+      time: 0,
+      speed: 1,
+      isPortrait,
+      is25D,
+      lensMm: bm.cameraLens,
+      yaw: bm.cameraYaw,
+      pitch: bm.cameraPitch,
+      distance: bm.cameraDistance,
+      panX: bm.cameraPanX ?? 0,
+      panY: bm.cameraPanY ?? 0,
+    });
+    const pos = new THREE.Vector3(pose.position[0], pose.position[1], pose.position[2]);
+    const tgt = new THREE.Vector3(pose.target[0], pose.target[1], pose.target[2]);
+    camPoints.push(pos);
+
+    const marker = new THREE.Group();
+    marker.position.copy(pos);
+    marker.lookAt(tgt);
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 0.16, 0.3),
+      new THREE.MeshBasicMaterial({ color: '#facc15', wireframe: true }),
+    );
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.22, 0.42, 4),
+      new THREE.MeshBasicMaterial({ color: '#38bdf8', wireframe: true, transparent: true, opacity: 0.72 }),
+    );
+    cone.rotation.x = Math.PI / 2;
+    cone.position.z = 0.34;
+    marker.add(body, cone);
+    g.add(marker);
+  }
+  if (camPoints.length >= 2) {
+    const curve = new THREE.CatmullRomCurve3(camPoints);
+    const spline = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(curve.getPoints(36)),
+      new THREE.LineBasicMaterial({ color: '#facc15', transparent: true, opacity: 0.62 }),
+    );
+    g.add(spline);
+  }
+  return g;
+}
+
 function SpatialStageBody({
   title = '统一空间摄影棚',
   subtitle = 'SPATIAL STAGE',
   sceneType = 'parallax-25d',
   lightingPreset = 'studio',
+  keyLightYaw = 38,
+  keyLightTemp = 5600,
   lookPreset = 'cinema',
   renderPass = 'beauty',
   cameraPreset = 'dolly-in',
@@ -1375,6 +1624,11 @@ function SpatialStageBody({
   modelFilename,
   layerUrls,
   screenUrl,
+  stageObjects = [],
+  cameraBookmarks,
+  studioInteractive = false,
+  selectedObjectId = null,
+  showCameraPath = false,
   frame,
   fps,
   width,
@@ -1644,6 +1898,132 @@ function SpatialStageBody({
     };
   }, [screenUrl, sceneType, isStandalone]);
 
+  // 4. Async load textures & GLBs referenced by composable `stageObjects`
+  const objTexUrlsKey = useMemo(
+    () =>
+      (stageObjects || [])
+        .filter((o) => o.kind === 'card-25d' && o.assetUrl)
+        .map((o) => String(o.assetUrl))
+        .sort()
+        .join('|'),
+    [stageObjects],
+  );
+  const objGlbUrlsKey = useMemo(
+    () =>
+      (stageObjects || [])
+        .filter((o) => o.kind === 'glb' && o.assetUrl)
+        .map((o) => String(o.assetUrl))
+        .sort()
+        .join('|'),
+    [stageObjects],
+  );
+  const [objTextures, setObjTextures] = useState<Record<string, THREE.Texture>>({});
+  const [objGlbs, setObjGlbs] = useState<Record<string, THREE.Group>>({});
+
+  useEffect(() => {
+    const urls = objTexUrlsKey ? objTexUrlsKey.split('|').filter(Boolean) : [];
+    if (!urls.length) {
+      setObjTextures({});
+      return;
+    }
+    const handle = safeDelayRender(`Loading stage card textures (${urls.length})`, isStandalone);
+    let cancelled = false;
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin('anonymous');
+    const loaded: Record<string, THREE.Texture> = {};
+    let remaining = urls.length;
+    const done = () => {
+      remaining -= 1;
+      if (remaining <= 0 && !cancelled) {
+        setObjTextures(loaded);
+        safeContinueRender(handle);
+      }
+    };
+    for (const url of urls) {
+      loader.load(
+        url,
+        (tex) => {
+          if (cancelled) {
+            tex.dispose();
+            return;
+          }
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.needsUpdate = true;
+          loaded[url] = tex;
+          done();
+        },
+        undefined,
+        () => done(),
+      );
+    }
+    return () => {
+      cancelled = true;
+      Object.values(loaded).forEach((t) => t.dispose());
+      safeContinueRender(handle);
+    };
+  }, [objTexUrlsKey, isStandalone]);
+
+  useEffect(() => {
+    const urls = objGlbUrlsKey ? objGlbUrlsKey.split('|').filter(Boolean) : [];
+    if (!urls.length) {
+      setObjGlbs({});
+      return;
+    }
+    const handle = safeDelayRender(`Loading stage GLB props (${urls.length})`, isStandalone);
+    let cancelled = false;
+    const loader = new GLTFLoader();
+    const draco = new DRACOLoader();
+    loader.setDRACOLoader(draco);
+    const loaded: Record<string, THREE.Group> = {};
+    let remaining = urls.length;
+    const done = () => {
+      remaining -= 1;
+      if (remaining <= 0 && !cancelled) {
+        setObjGlbs(loaded);
+        draco.dispose();
+        safeContinueRender(handle);
+      }
+    };
+    for (const url of urls) {
+      loader.load(
+        url,
+        (gltf) => {
+          if (cancelled) {
+            disposeObject3D(gltf.scene);
+            return;
+          }
+          const root = gltf.scene.clone(true);
+          disposeObject3D(gltf.scene);
+          const box = new THREE.Box3().setFromObject(root);
+          const size = box.getSize(new THREE.Vector3());
+          const center = box.getCenter(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+          const normScale = 1.65 / maxDim;
+          root.position.set(-center.x, -box.min.y, -center.z);
+          root.traverse((c) => {
+            if ((c as THREE.Mesh).isMesh) {
+              c.castShadow = true;
+              c.receiveShadow = true;
+            }
+          });
+          const wrapper = new THREE.Group();
+          wrapper.scale.setScalar(normScale);
+          wrapper.add(root);
+          loaded[url] = wrapper;
+          done();
+        },
+        undefined,
+        () => done(),
+      );
+    }
+    return () => {
+      cancelled = true;
+      draco.dispose();
+      Object.values(loaded).forEach((g) => disposeObject3D(g));
+      safeContinueRender(handle);
+    };
+  }, [objGlbUrlsKey, isStandalone]);
+
   // WebGL Renderer + Scene + Optional EffectComposer lifecycle
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [staticThumbUrl, setStaticThumbUrl] = useState<string | null>(null);
@@ -1657,6 +2037,9 @@ function SpatialStageBody({
     parallaxMats: THREE.ShaderMaterial[];
     heroRig: MannequinRig | null;
     rivalRig: MannequinRig | null;
+    extraActors: Array<{ obj: ResolvedSpatialStageObject; rig: MannequinRig }>;
+    selectableRoots: Map<string, THREE.Object3D>;
+    selectionGizmo: THREE.Group | null;
   }>({
     parts: [],
     packets: [],
@@ -1667,7 +2050,13 @@ function SpatialStageBody({
     parallaxMats: [],
     heroRig: null,
     rivalRig: null,
+    extraActors: [],
+    selectableRoots: new Map(),
+    selectionGizmo: null,
   });
+
+  const stageObjectsSig = useMemo(() => JSON.stringify(stageObjects || []), [stageObjects]);
+  const bookmarksSig = useMemo(() => JSON.stringify(cameraBookmarks || []), [cameraBookmarks]);
 
   const buildSceneInto = React.useCallback(
     (scene: THREE.Scene) => {
@@ -1675,8 +2064,11 @@ function SpatialStageBody({
       const isSoft = resolvedLighting === 'soft' || resolvedLook === 'clean-studio';
 
       const amb = new THREE.AmbientLight('#dbeafe', isDramatic ? 0.34 : isSoft ? 1.15 : 0.62);
-      const key = new THREE.DirectionalLight('#ffffff', isDramatic ? 3.2 : isSoft ? 2.0 : 2.5);
-      key.position.set(isDramatic ? 7.5 : 5.5, 8.5, isDramatic ? 4.2 : 6.2);
+      const keyColor = kelvinToHex(Number(keyLightTemp ?? 5600));
+      const keyYawRad = ((Number(keyLightYaw ?? 38)) * Math.PI) / 180;
+      const keyRadius = isDramatic ? 8.6 : 8.2;
+      const key = new THREE.DirectionalLight(keyColor, isDramatic ? 3.2 : isSoft ? 2.0 : 2.5);
+      key.position.set(Math.sin(keyYawRad) * keyRadius, 8.5, Math.cos(keyYawRad) * keyRadius);
       key.castShadow = true;
       key.shadow.mapSize.width = 512;
       key.shadow.mapSize.height = 512;
@@ -1690,7 +2082,7 @@ function SpatialStageBody({
       key.shadow.camera.bottom = -d;
 
       const rim = new THREE.DirectionalLight(accent || '#3b82f6', isDramatic ? 2.8 : isSoft ? 0.95 : 1.75);
-      rim.position.set(-6, 3.8, -5.2);
+      rim.position.set(-Math.sin(keyYawRad) * 6.5, 3.8, -Math.cos(keyYawRad) * 6.5);
       const fill = new THREE.PointLight(secondary || '#14b8a6', isDramatic ? 1.15 : 1.55, 22);
       fill.position.set(0, -2.8, 4.5);
       scene.add(amb, key, rim, fill);
@@ -1712,6 +2104,9 @@ function SpatialStageBody({
         parallaxMats: [],
         heroRig: null,
         rivalRig: null,
+        extraActors: [],
+        selectableRoots: new Map(),
+        selectionGizmo: null,
       };
 
       if (loadedSplatGeom) {
@@ -1820,6 +2215,34 @@ function SpatialStageBody({
         nextRig.packets = built.packets;
       }
 
+      if (nextRig.heroRig) nextRig.selectableRoots.set('__hero__', nextRig.heroRig.root);
+      if (nextRig.rivalRig) nextRig.selectableRoots.set('__rival__', nextRig.rivalRig.root);
+
+      // Mount composable multi-object 3D scene graph (`stageObjects`)
+      if (stageObjects && stageObjects.length > 0) {
+        const composed = buildStageObjectsGroup(stageObjects, {
+          accent,
+          secondary,
+          renderPass: resolvedPass,
+          studioInteractive,
+          objTextures,
+          objGlbs,
+        });
+        scene.add(composed.group);
+        nextRig.extraActors = composed.extraActors;
+        composed.selectableRoots.forEach((root, id) => nextRig.selectableRoots.set(id, root));
+      }
+
+      // Studio-only visual helpers (selection gizmo & 3D camera path frustums) — NEVER rendered in GPU capture/export!
+      if (studioInteractive && resolvedPass === 'beauty') {
+        const gizmo = buildSelectionGizmo();
+        scene.add(gizmo);
+        nextRig.selectionGizmo = gizmo;
+        if (showCameraPath && cameraBookmarks && cameraBookmarks.length > 0) {
+          scene.add(buildCameraPathGuides(cameraBookmarks, isPortrait, is25D));
+        }
+      }
+
       // Apply multi-pass material overrides for standard mesh scenes (depth / normal / clay / wireframe)
       const usesCustomShaderOnly =
         Boolean(nextRig.splatHandle) || nextRig.parallaxMats.length > 0;
@@ -1857,6 +2280,8 @@ function SpatialStageBody({
     },
     [
       resolvedLighting,
+      keyLightYaw,
+      keyLightTemp,
       resolvedLook,
       resolvedPass,
       resolvedParticles,
@@ -1873,6 +2298,7 @@ function SpatialStageBody({
       secondary,
       isLight,
       is25D,
+      isPortrait,
       loadedGltf,
       loadedSplatGeom,
       layerTextures,
@@ -1880,6 +2306,12 @@ function SpatialStageBody({
       depthStrength,
       depthSpread,
       animationIndex,
+      stageObjectsSig,
+      bookmarksSig,
+      objTextures,
+      objGlbs,
+      studioInteractive,
+      showCameraPath,
     ],
   );
 
@@ -1939,6 +2371,40 @@ function SpatialStageBody({
         }
       }
 
+      // Advance composable scene-graph extra actors along their start -> end blocking paths
+      for (const item of rigRef.current.extraActors) {
+        const { obj, rig } = item;
+        const startX = obj.position?.[0] ?? 0;
+        const startZ = obj.position?.[2] ?? 0;
+        const endPos = obj.endPosition;
+        const hasWalk = Boolean(endPos && Math.hypot(endPos[0] - startX, endPos[2] - startZ) > 0.06);
+        const st = computeActorPathState({
+          path: 'hold',
+          time: timeSec,
+          durationSec,
+          baseX: startX,
+          baseZ: startZ,
+          baseYaw: rig.baseYaw,
+          speed: Number(speed ?? 1),
+          customStart: hasWalk ? [startX, startZ] : undefined,
+          customEnd: hasWalk && endPos ? [endPos[0], endPos[2]] : undefined,
+        });
+        rig.root.position.set(st.x, rig.baseY, st.z);
+        rig.root.rotation.y = hasWalk ? st.facingYaw : rig.baseYaw;
+        animateDirectorMannequin(rig, timeSec, (obj.action || 'walk') as SpatialActorAction, Number(speed ?? 1));
+      }
+
+      // Sync interactive 3D selection gizmo onto currently selected object
+      if (rigRef.current.selectionGizmo) {
+        const selObj = selectedObjectId ? rigRef.current.selectableRoots.get(selectedObjectId) : undefined;
+        if (selObj) {
+          rigRef.current.selectionGizmo.visible = true;
+          rigRef.current.selectionGizmo.position.set(selObj.position.x, STAGE_FLOOR_Y, selObj.position.z);
+        } else {
+          rigRef.current.selectionGizmo.visible = false;
+        }
+      }
+
       // Advance radial explosion & part rotation
       for (const p of rigRef.current.parts) {
         p.obj.position.copy(p.basePos).addScaledVector(p.explodeDir, currentExplode);
@@ -1981,6 +2447,7 @@ function SpatialStageBody({
       actorStartZ,
       actorEndX,
       actorEndZ,
+      selectedObjectId,
     ],
   );
 
@@ -2021,6 +2488,7 @@ function SpatialStageBody({
     } catch {}
     const keepTex = new Set<THREE.Texture>(layerTextures);
     if (screenTexture) keepTex.add(screenTexture);
+    Object.values(objTextures).forEach((tx) => keepTex.add(tx));
     if (scene.overrideMaterial) {
       disposeMaterial(scene.overrideMaterial);
       scene.overrideMaterial = null;
@@ -2123,6 +2591,7 @@ function SpatialStageBody({
       composer?.dispose();
       const keepTex = new Set<THREE.Texture>(layerTextures);
       if (screenTexture) keepTex.add(screenTexture);
+      Object.values(objTextures).forEach((tx) => keepTex.add(tx));
       if (scene.overrideMaterial) {
         disposeMaterial(scene.overrideMaterial);
         scene.overrideMaterial = null;
@@ -2158,6 +2627,71 @@ function SpatialStageBody({
       ctx.renderer.render(ctx.scene, ctx.camera);
     }
   }, [isSmallStaticThumb, width, height, t, applyFrameState, buildSceneInto]);
+
+  // Interactive 3D Viewport Raycast Picking & Floor Projection (Studio interactive mode only)
+  useEffect(() => {
+    if (!studioInteractive || isSmallStaticThumb) return;
+    const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -STAGE_FLOOR_Y);
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const hitFloor = new THREE.Vector3();
+
+    const onStagePointer = (ev: Event) => {
+      const detail = (ev as CustomEvent<{
+        action?: string;
+        nx?: number;
+        ny?: number;
+        requestId?: string;
+      }>).detail;
+      const ctx = ctxRef.current;
+      if (!ctx || !detail || typeof detail.nx !== 'number' || typeof detail.ny !== 'number') return;
+      ctx.camera.updateMatrixWorld();
+      ctx.scene.updateMatrixWorld();
+      ndc.set(detail.nx * 2 - 1, -(detail.ny * 2 - 1));
+      raycaster.setFromCamera(ndc, ctx.camera);
+
+      let floorX: number | null = null;
+      let floorZ: number | null = null;
+      if (raycaster.ray.intersectPlane(floorPlane, hitFloor)) {
+        floorX = Number(Math.max(-6, Math.min(6, hitFloor.x)).toFixed(2));
+        floorZ = Number(Math.max(-6, Math.min(6, hitFloor.z)).toFixed(2));
+      }
+
+      let pickedId: string | null = null;
+      if (detail.action === 'pick') {
+        const roots = Array.from(rigRef.current.selectableRoots.values());
+        if (roots.length > 0) {
+          const hits = raycaster.intersectObjects(roots, true);
+          for (const h of hits) {
+            let cur: THREE.Object3D | null = h.object;
+            while (cur) {
+              if (typeof cur.userData?.stageObjectId === 'string') {
+                pickedId = cur.userData.stageObjectId;
+                break;
+              }
+              cur = cur.parent;
+            }
+            if (pickedId) break;
+          }
+        }
+      }
+
+      window.dispatchEvent(
+        new CustomEvent('cocraft-stage-event', {
+          detail: {
+            action: detail.action || 'floor',
+            requestId: detail.requestId,
+            objectId: pickedId,
+            floorX,
+            floorZ,
+          },
+        }),
+      );
+    };
+
+    window.addEventListener('cocraft-stage-pointer', onStagePointer);
+    return () => window.removeEventListener('cocraft-stage-pointer', onStagePointer);
+  }, [studioInteractive, isSmallStaticThumb]);
 
   const bgStyle =
     resolvedPass === 'depth'

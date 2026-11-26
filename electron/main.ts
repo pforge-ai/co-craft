@@ -30,7 +30,11 @@ import {
   inferDefaultAudioAttachMode,
 } from '../src/core/project';
 import { friendlySkillTitle } from '../src/core/taxonomy';
-import { DEFAULT_SPATIAL_BOOKMARKS } from '../src/core/spatialStage';
+import {
+  DEFAULT_SPATIAL_BOOKMARKS,
+  normalizeCameraBookmarks,
+  type SpatialCameraBookmark,
+} from '../src/core/spatialStage';
 import type {
   Asset,
   Clip,
@@ -946,13 +950,19 @@ async function handle(method: string, arg: any = {}) {
           : undefined;
         const tempSeqId = uid('seq_cap');
         const isCodeTarget = Boolean(srcCompForCap || srcClipForCap?.kind === 'code');
-        const clipProps: Record<string, unknown> = isCodeTarget
+        const rawCapProps: Record<string, unknown> = isCodeTarget
           ? { ...(srcCompForCap?.props || {}), ...(srcClipForCap?.props || {}) }
           : srcClipForCap
             ? { ...srcClipForCap.props, showHud: false }
             : vItem?.rig?.presetId
               ? { ...(vItem.rig.props || {}), presetId: vItem.rig.presetId, showHud: false }
               : { cameraPreset: 'orbit', cameraLens: 35, showHud: false };
+        const clipProps: Record<string, unknown> = {
+          ...rawCapProps,
+          _studioInteractive: false,
+          _showCameraPath: false,
+          _selectedObjectId: null,
+        };
         const tempClip: Clip = {
           id: uid('clip_cap'),
           name: srcClipForCap?.name || srcCompForCap?.name || vItem?.name || mAsset?.name || '空间摄影棚',
@@ -989,11 +999,9 @@ async function handle(method: string, arg: any = {}) {
       const assetsDir = join(target.path, 'assets');
       await mkdir(assetsDir, { recursive: true });
       const requestedPasses: ('beauty' | 'clay' | 'depth' | 'normal' | 'wireframe')[] =
-        srcCompForCap || srcClipForCap?.kind === 'code'
-          ? ['beauty']
-          : Array.isArray(arg.passes) && arg.passes.length > 0
-            ? arg.passes
-            : [arg.pass || 'beauty'];
+        Array.isArray(arg.passes) && arg.passes.length > 0
+          ? arg.passes
+          : [arg.pass || 'beauty'];
 
       const passMeta: Record<
         string,
@@ -1053,8 +1061,20 @@ async function handle(method: string, arg: any = {}) {
             if (frame < clip.start || frame >= clip.start + clip.duration) continue;
             const pid = String(clip.props?.presetId || '');
             const linked = clip.assetId ? cloned.assets.find((a) => a.id === clip.assetId) : undefined;
-            if (pid === 'spatial-stage' || pid === 'teardown-3d' || linked?.kind === 'model-3d') {
-              clip.props = { ...clip.props, renderPass: pass, showHud: false };
+            if (
+              clip.kind === 'code' ||
+              pid === 'spatial-stage' ||
+              pid === 'teardown-3d' ||
+              linked?.kind === 'model-3d'
+            ) {
+              clip.props = {
+                ...clip.props,
+                renderPass: pass,
+                showHud: false,
+                _studioInteractive: false,
+                _showCameraPath: false,
+                _selectedObjectId: null,
+              };
             }
           }
           renderProject = cloned;
@@ -1144,14 +1164,15 @@ async function handle(method: string, arg: any = {}) {
               ? { cameraPreset: 'orbit', cameraLens: 35 }
               : { presetId: 'spatial-stage', sceneType: 'previs-blocking', ...(arg.props || {}) };
 
-      const mergedProps: Record<string, unknown> = isCodeBake
-        ? { ...baseProps, ...(arg.props || {}) }
-        : {
-            ...baseProps,
-            ...(arg.props || {}),
-            renderPass: pass,
-            showHud: false,
-          };
+      const mergedProps: Record<string, unknown> = {
+        ...baseProps,
+        ...(arg.props || {}),
+        renderPass: pass,
+        showHud: false,
+        _studioInteractive: false,
+        _showCameraPath: false,
+        _selectedObjectId: null,
+      };
       const tempSeqId = uid('seq_bake');
       const bakeName =
         String(arg.name || '').trim() ||
@@ -1246,12 +1267,6 @@ async function handle(method: string, arg: any = {}) {
           ? p.components.find((c) => c.id === srcClip.componentId)
           : undefined;
       const isCodePair = Boolean(srcComp || srcClip?.kind === 'code');
-      const bmA =
-        DEFAULT_SPATIAL_BOOKMARKS.find((b) => b.id === (arg.startBookmarkId || 'cam-a')) ||
-        DEFAULT_SPATIAL_BOOKMARKS[0];
-      const bmB =
-        DEFAULT_SPATIAL_BOOKMARKS.find((b) => b.id === (arg.endBookmarkId || 'cam-b')) ||
-        DEFAULT_SPATIAL_BOOKMARKS[1];
       const baseProps: Record<string, unknown> = isCodePair
         ? { ...(srcComp?.props || {}), ...(srcClip?.props || {}) }
         : srcClip
@@ -1259,6 +1274,16 @@ async function handle(method: string, arg: any = {}) {
           : srcVault?.rig?.presetId
             ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId }
             : { cameraPreset: 'orbit', cameraLens: 35 };
+      const allBookmarks = normalizeCameraBookmarks(baseProps.cameraBookmarks);
+      const bmA =
+        allBookmarks.find((b) => b.id === (arg.startBookmarkId || 'cam-a')) ||
+        allBookmarks[0] ||
+        DEFAULT_SPATIAL_BOOKMARKS[0];
+      const bmB =
+        allBookmarks.find((b) => b.id === (arg.endBookmarkId || 'cam-b')) ||
+        allBookmarks[1] ||
+        allBookmarks[0] ||
+        DEFAULT_SPATIAL_BOOKMARKS[1];
 
       const assetsDir = join(target.path, 'assets');
       await mkdir(assetsDir, { recursive: true });
@@ -1349,6 +1374,163 @@ async function handle(method: string, arg: any = {}) {
       });
       await changed(target, envelope);
       return { envelope, startAsset: pairAssets[0], endAsset: pairAssets[1] };
+    }
+    case 'stage.captureMultiCamStoryboard': {
+      const target = store;
+      const p = await target.project();
+      const baseSeq = p.sequences.find((s) => s.id === arg.sequenceId) || p.sequences[0];
+      const fps = baseSeq.fps || 30;
+      const srcClip = arg.clipId ? baseSeq.clips.find((c) => c.id === arg.clipId) : undefined;
+      const srcVault = arg.vaultItemId ? (p.vault || []).find((v) => v.id === arg.vaultItemId) : undefined;
+      const srcAsset = arg.assetId ? p.assets.find((a) => a.id === arg.assetId) : undefined;
+      const srcComp = arg.componentId
+        ? p.components.find((c) => c.id === arg.componentId)
+        : srcClip?.componentId
+          ? p.components.find((c) => c.id === srcClip.componentId)
+          : undefined;
+      const isCodeStage = Boolean(srcComp || srcClip?.kind === 'code');
+
+      const baseProps: Record<string, unknown> = isCodeStage
+        ? { ...(srcComp?.props || {}), ...(srcClip?.props || {}), ...(arg.propsOverride || {}) }
+        : srcClip
+          ? { ...srcClip.props, ...(arg.propsOverride || {}) }
+          : srcVault?.rig?.presetId
+            ? { ...(srcVault.rig.props || {}), presetId: srcVault.rig.presetId, ...(arg.propsOverride || {}) }
+            : { cameraPreset: 'orbit', cameraLens: 35, ...(arg.propsOverride || {}) };
+
+      const cameras: SpatialCameraBookmark[] = normalizeCameraBookmarks(
+        Array.isArray(arg.cameras) && arg.cameras.length > 0 ? arg.cameras : baseProps.cameraBookmarks,
+      );
+      const includeDepth = Boolean(arg.includeDepth);
+      const addToTimeline = arg.addToTimeline !== false;
+      const srcName = srcClip?.name || srcComp?.name || srcVault?.name || srcAsset?.name || '3D 导演棚';
+      const targetFrame = Math.max(0, Math.round(Number(arg.frame ?? 0)));
+      const clipDuration = srcClip ? Math.max(30, srcClip.duration) : Math.max(30, fps * 3);
+
+      const assetsDir = join(target.path, 'assets');
+      await mkdir(assetsDir, { recursive: true });
+
+      const ops: EditOperation[] = [];
+      const createdAssets: Asset[] = [];
+      const shotClipIds: string[] = [];
+      const nextLayout: Record<string, { x: number; y: number }> = { ...(p.canvasLayout || {}) };
+      const existingCoords = Object.values(nextLayout);
+      const baseX = existingCoords.length
+        ? Math.max(...existingCoords.map((c) => c.x)) + 280
+        : 120;
+      const baseY = existingCoords.length ? Math.min(...existingCoords.map((c) => c.y)) : 120;
+
+      let timelineTail = baseSeq.clips.length
+        ? Math.max(...baseSeq.clips.map((c) => c.start + c.duration))
+        : 0;
+      const shotDur = Math.round(fps * 3);
+      const passesToShoot: ('beauty' | 'depth')[] = includeDepth ? ['beauty', 'depth'] : ['beauty'];
+
+      for (let i = 0; i < cameras.length; i++) {
+        const bm = cameras[i];
+        for (let pIdx = 0; pIdx < passesToShoot.length; pIdx++) {
+          const pass = passesToShoot[pIdx];
+          const cloned = structuredClone(p);
+          const tempSeqId = uid('seq_mc');
+          const camProps: Record<string, unknown> = {
+            ...baseProps,
+            cameraPreset: bm.cameraPreset,
+            cameraLens: bm.cameraLens,
+            cameraYaw: bm.cameraYaw,
+            cameraPitch: bm.cameraPitch,
+            cameraDistance: bm.cameraDistance,
+            cameraPanX: bm.cameraPanX ?? 0,
+            cameraPanY: bm.cameraPanY ?? 0,
+            renderPass: pass,
+            showHud: false,
+            _studioInteractive: false,
+            _showCameraPath: false,
+            _selectedObjectId: null,
+          };
+          const tempClip: Clip = {
+            id: uid('clip_mc'),
+            name: `${bm.shortKey}机 · ${bm.label}`,
+            kind: isCodeStage ? 'code' : srcClip ? srcClip.kind : 'shape',
+            track: 'visual',
+            layer: 0,
+            start: 0,
+            duration: clipDuration,
+            sourceIn: srcClip?.sourceIn || 0,
+            assetId: isCodeStage ? undefined : srcClip?.assetId || srcAsset?.id || srcVault?.assetId,
+            componentId: isCodeStage ? (srcComp?.id || srcClip?.componentId) : undefined,
+            locked: false,
+            // Do not carry clip camera keyframes during fixed multi-cam bookmark shots so each camera pose is exact
+            props: camProps,
+          };
+          cloned.sequences.push({ ...baseSeq, id: tempSeqId, name: tempClip.name, clips: [tempClip] });
+          const outPath = join(
+            assetsDir,
+            `multicam-${bm.shortKey.toLowerCase()}-${pass}-${uid('shot')}.png`,
+          );
+          const job = await jobs.render(cloned, tempSeqId, outPath, {
+            still: true,
+            frame: Math.min(clipDuration - 1, targetFrame),
+            scale: 1,
+            silent: true,
+          });
+          await jobs.wait(job.id);
+          const asset = await importMedia(outPath, target.path);
+          asset.name =
+            pass === 'depth'
+              ? `分镜深度 · ${bm.label} (${bm.cameraLens}mm)`
+              : `分镜 ${i + 1} · ${bm.label} (${bm.cameraLens}mm)`;
+          asset.role = 'environment';
+          asset.tags =
+            pass === 'depth'
+              ? ['多机位分镜', '深度图', `${bm.shortKey}机`]
+              : ['多机位分镜', '透视参考', `${bm.shortKey}机`];
+          asset.category = 'subject';
+          asset.subkind = 'environment';
+          asset.derivedFrom = [
+            {
+              ...(srcVault ? { vaultItemId: srcVault.id } : {}),
+              ...(srcAsset ? { assetId: srcAsset.id } : {}),
+              via: pass === 'depth' ? 'capture-depth' : 'capture-3d',
+              note: `多机位批量出分镜：${srcName} · ${bm.label}（Yaw ${Math.round(bm.cameraYaw)}° / Pitch ${Math.round(bm.cameraPitch)}° / ${bm.cameraLens}mm）`,
+            },
+          ];
+          createdAssets.push(asset);
+          ops.push({ type: 'addAsset', asset });
+          nextLayout[`asset:${asset.id}`] = {
+            x: Math.round(baseX + i * 260),
+            y: Math.round(baseY + pIdx * 200),
+          };
+
+          if (addToTimeline && pass === 'beauty') {
+            const shotClip: Clip = {
+              id: uid('clip'),
+              name: `${bm.label} (${bm.cameraLens}mm)`,
+              kind: 'image',
+              track: 'visual',
+              layer: 0,
+              start: timelineTail,
+              duration: shotDur,
+              sourceIn: 0,
+              assetId: asset.id,
+              locked: false,
+              props: { fit: 'cover', opacity: 1, scale: 1 },
+            };
+            timelineTail += shotDur;
+            shotClipIds.push(shotClip.id);
+            ops.push({ type: 'addClip', sequenceId: baseSeq.id, clip: shotClip });
+          }
+        }
+      }
+
+      ops.push({ type: 'updateProject', changes: { canvasLayout: nextLayout } });
+      const latest = await target.project();
+      const envelope = await target.edit({
+        baseRevision: latest.revision,
+        name: `多机位批量出分镜（${cameras.length} 个机位${includeDepth ? ' + Depth' : ''}）`,
+        operations: ops,
+      });
+      await changed(target, envelope);
+      return { envelope, assets: createdAssets, shotClipIds };
     }
     case 'stage.componentPoster': {
       const p = await store.project();

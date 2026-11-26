@@ -46,6 +46,7 @@ export async function compileComponent(
       '@remotion/three',
       'roughjs',
       'cocraft/rough',
+      'cocraft/director',
     ],
     logLevel: 'silent',
     plugins: [

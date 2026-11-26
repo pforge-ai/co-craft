@@ -22,6 +22,7 @@ import {
   applyKeyframeEasing,
   buildAudioDuckingKeyframes,
   buildKenBurnsKeyframes,
+  KEYFRAME_PROPERTY_RANGES,
   evaluateKeyframeTrack,
   moveClipKeyframeFrame,
   removeClipKeyframe,
@@ -34,12 +35,16 @@ import {
   DEFAULT_SPATIAL_BOOKMARKS,
   buildSpatialStageProps,
   computeActorPathState,
+  computeDirectorCameraOverride,
   computeParallaxLayerLayout,
   computeParallaxPlaneScale,
   computeSpatialCameraPose,
+  createStageObject,
   isSpatialClip,
   isSplatAssetPath,
+  kelvinToHex,
   lensMmToFov,
+  normalizeCameraBookmarks,
 } from '../src/core/spatialStage';
 import { ProjectStore } from '../electron/store';
 import type { Asset, CodeComponent } from '../src/core/types';
@@ -2144,4 +2149,72 @@ assert.ok(
   assert.equal(assistantTurn.steps[0].media?.[1].uri, 'scene://main/meta');
 }
 
-console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client + Multi-Track & Curve Drawer regression tests');
+// 52. Full-Version 3D Director Studio: unified distance scale, TSX camera override, Kelvin color, Scene Graph & Bookmarks
+{
+  // 52a. Canonical cameraDistance scale (0.35..3.0 multiplier, default 1.0) & legacy 5.4 remap
+  assert.equal(KEYFRAME_PROPERTY_RANGES.cameraDistance.min, 0.35);
+  assert.equal(KEYFRAME_PROPERTY_RANGES.cameraDistance.max, 3.0);
+  assert.equal(KEYFRAME_PROPERTY_RANGES.cameraDistance.defaultVal, 1.0);
+  const poseBase = computeSpatialCameraPose({ preset: 'static', time: 0, distance: 1.0 });
+  const poseLegacy = computeSpatialCameraPose({ preset: 'static', time: 0, distance: 5.4 });
+  assert.ok(
+    Math.abs(poseBase.position[2] - poseLegacy.position[2]) < 1e-3,
+    `Legacy distance 5.4 should remap to canonical 1.0 (${poseBase.position[2]} vs ${poseLegacy.position[2]})`,
+  );
+  const poseClose = computeSpatialCameraPose({ preset: 'static', time: 0, distance: 0.4 });
+  const poseFar = computeSpatialCameraPose({ preset: 'static', time: 0, distance: 2.8 });
+  assert.ok(poseClose.position[2] < poseBase.position[2] && poseFar.position[2] > poseBase.position[2]);
+
+  // 52b. Pure deterministic Director Camera Override for arbitrary Three.js / TSX 3D scenes
+  const idRes = computeDirectorCameraOverride([0, 10, 20], [0, 0, 0], 45, {
+    yaw: 0,
+    pitch: 0,
+    distance: 1,
+    panX: 0,
+    panY: 0,
+  });
+  assert.equal(idRes.changed, false);
+  assert.deepEqual(idRes.position, [0, 10, 20]);
+  assert.equal(idRes.fov, 45);
+
+  const rotRes = computeDirectorCameraOverride([0, 0, 10], [0, 0, 0], 45, {
+    yaw: 90,
+    pitch: 0,
+    distance: 0.5,
+    panX: 0,
+    panY: 0,
+    lensMm: 85,
+  });
+  assert.equal(rotRes.changed, true);
+  assert.ok(Math.abs(rotRes.position[0] - 5) < 0.05 && Math.abs(rotRes.position[2]) < 0.05, `Expected [5,0,0], got ${rotRes.position}`);
+  assert.ok(Math.abs(rotRes.fov - lensMmToFov(85)) < 0.05);
+
+  // 52c. Kelvin color temperature converter
+  const warmHex = kelvinToHex(2600);
+  const dayHex = kelvinToHex(5600);
+  const coolHex = kelvinToHex(9000);
+  assert.match(warmHex, /^#[0-9a-f]{6}$/);
+  assert.ok(parseInt(warmHex.slice(1, 3), 16) > parseInt(warmHex.slice(5, 7), 16), '2600K must be warm (R > B)');
+  assert.ok(parseInt(coolHex.slice(5, 7), 16) > parseInt(coolHex.slice(1, 3), 16), '9000K must be cool (B > R)');
+  assert.ok(parseInt(dayHex.slice(1, 3), 16) > 230 && parseInt(dayHex.slice(3, 5), 16) > 225);
+
+  // 52d. Composable Scene Graph factory & custom bookmarks normalization
+  const actorObj = createStageObject('actor', []);
+  assert.equal(actorObj.kind, 'actor');
+  assert.ok(Array.isArray(actorObj.endPosition) && actorObj.endPosition.length === 3);
+  const lightObj = createStageObject('light', [actorObj]);
+  assert.equal(lightObj.kind, 'light');
+  assert.ok((lightObj.temperature ?? 0) >= 2200 && (lightObj.intensity ?? 0) > 0);
+  const normBms = normalizeCameraBookmarks([
+    { id: 'c1', shortKey: 'E', label: 'E · 定制', cameraPreset: 'orbit', cameraLens: 50, cameraYaw: 30, cameraPitch: 10, cameraDistance: 5.4 },
+  ]);
+  assert.equal(normBms.length, 1);
+  assert.equal(normBms[0].cameraDistance, 1.0, 'Legacy 5.4 bookmark distance normalized to 1.0');
+  const fallbackBms = normalizeCameraBookmarks(null);
+  assert.equal(fallbackBms.length, DEFAULT_SPATIAL_BOOKMARKS.length);
+  const stageDefaults = buildSpatialStageProps({ sceneMode: 'previs-blocking' });
+  assert.equal(stageDefaults.keyLightTemp, 5600);
+  assert.ok(Array.isArray(stageDefaults.stageObjects));
+}
+
+console.log('PASS · all Phase 1 + v0.5 + Wave B + Wave C + Milestone 1 + Milestone 2 + Unified Tools + Multi-Provider v2 + Create Canvas v2 & v3 + M1 + M2 + M3 + Spatial Stage + MCP Client + Multi-Track & Curve Drawer + Full 3D Director Studio regression tests');

@@ -56,6 +56,7 @@ export function TimelineCurveHeader({
   clip,
   sequenceId,
   prop,
+  allowedProperties,
   selectedFrame,
   currentFrame,
   onChangeProp,
@@ -66,6 +67,7 @@ export function TimelineCurveHeader({
   clip: Clip;
   sequenceId: string;
   prop: KeyframeProperty;
+  allowedProperties?: KeyframeProperty[];
   selectedFrame: number | null;
   currentFrame: number;
   onChangeProp: (p: KeyframeProperty) => void;
@@ -73,7 +75,7 @@ export function TimelineCurveHeader({
   onEdit: (name: string, ops: EditOperation[]) => void;
   onClose: () => void;
 }) {
-  const props = availableCurvePropertiesForClip(clip);
+  const props = allowedProperties?.length ? allowedProperties : availableCurvePropertiesForClip(clip);
   const points = normalizeKeyframeTrack(clip.keyframes?.[prop]);
   const selectedPt = selectedFrame !== null ? points.find((p) => p.frame === selectedFrame) : undefined;
   const localPlayhead = Math.max(0, Math.min(Math.max(0, clip.duration - 1), currentFrame - clip.start));
