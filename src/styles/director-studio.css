@@ -32,7 +32,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .sds-back-btn {
   display: inline-flex;
@@ -1823,5 +1823,36 @@
 }
 .sds-cam-hud button.sds-switch-motion-btn:hover {
   background: rgba(56, 189, 248, 0.22);
+}
+.sds-guide-select {
+  width: auto !important;
+  min-width: 0;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 22px 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--dim);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.sds-guide-select:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.sds-shots-explainer {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.sds-hud-zoom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+  margin-right: 2px;
+  border-right: 1px solid rgba(255, 255, 255, 0.09);
 }
 

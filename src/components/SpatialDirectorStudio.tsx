@@ -13,7 +13,6 @@ import {
   Compass,
   Diamond,
   Film,
-  Grid3X3,
   HelpCircle,
   Image as ImageIcon,
   Layers,
@@ -34,6 +33,8 @@ import {
   User,
   Video,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { evaluateKeyframeTrack, removeClipKeyframe, upsertClipKeyframe } from '../core/keyframes';
 import { clone, timecode } from '../core/project';
@@ -82,11 +83,12 @@ import { StageRadarOverlay } from './StageRadarOverlay';
 import { TimelineCurveHeader, TimelineCurveLane } from './TimelineCurveDrawer';
 import { DirectorLiveSlider, DirectorScrubInput, DirectorTextField } from './director/DirectorControls';
 
+// Note: spherical phi = acos(y/r), phi += pitch -> negative pitch lifts camera UP (overhead), positive lowers camera (low angle).
 const QUICK_ANGLE_PRESETS = [
   { id: 'eye', label: '平视', yaw: 0, pitch: 0, distance: 1.0 },
-  { id: 'three-quarter', label: '45° 侧拍', yaw: 34, pitch: 12, distance: 1.04 },
-  { id: 'low', label: '低仰拍', yaw: 0, pitch: -16, distance: 0.88 },
-  { id: 'overhead', label: '俯瞰', yaw: 16, pitch: 38, distance: 1.24 },
+  { id: 'three-quarter', label: '45° 侧拍', yaw: 36, pitch: -10, distance: 1.0 },
+  { id: 'low', label: '低仰拍', yaw: 0, pitch: 14, distance: 0.85 },
+  { id: 'overhead', label: '俯瞰', yaw: 16, pitch: -32, distance: 1.25 },
 ] as const;
 
 export type SpatialDirectorTarget =
@@ -222,7 +224,7 @@ function normalizeDistanceVal(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 1.0;
   const scaled = n > 3.2 ? n / 5.4 : n;
-  return Number(Math.max(0.35, Math.min(3.0, scaled)).toFixed(2));
+  return Number(Math.max(0.2, Math.min(3.0, scaled)).toFixed(2));
 }
 
 function hasAnyCameraKeyframe(kf?: ClipKeyframes): boolean {
@@ -939,12 +941,12 @@ export function SpatialDirectorStudio({
         if (!finalCam) return;
         markPendingCommit();
         updateActiveShotCameraRef.current(deferredCamLabelRef.current, {
-          cameraYaw: finalCam.yaw,
-          cameraPitch: finalCam.pitch,
-          cameraDistance: finalCam.distance,
-          cameraPanX: finalCam.panX,
-          cameraPanY: finalCam.panY,
-          ...(finalCam.lens > 0 ? { cameraLens: finalCam.lens } : {}),
+          cameraYaw: Math.round(finalCam.yaw),
+          cameraPitch: Math.round(finalCam.pitch),
+          cameraDistance: Number(Math.max(0.2, Math.min(3.0, finalCam.distance)).toFixed(2)),
+          cameraPanX: Number(finalCam.panX.toFixed(2)),
+          cameraPanY: Number(finalCam.panY.toFixed(2)),
+          ...(finalCam.lens > 0 ? { cameraLens: Math.round(finalCam.lens) } : {}),
         });
       }, delayMs);
     },
@@ -1215,17 +1217,17 @@ export function SpatialDirectorStudio({
       }
       if (viewportTool === 'camera' && ['w', 's', 'a', 'd', 'q', 'e'].includes(k)) {
         e.preventDefault();
-        const dollyStep = e.shiftKey ? 0.16 : 0.06;
-        const panStep = e.shiftKey ? 0.36 : 0.14;
+        const dollyStep = e.shiftKey ? 0.18 : 0.08;
+        const panStep = e.shiftKey ? 0.42 : 0.18;
         if (k === 'w') {
           scheduleDeferredCamCommit('推近镜头', (c) => ({
             ...c,
-            distance: Math.max(0.35, Number((c.distance - dollyStep).toFixed(2))),
+            distance: Math.max(0.2, Number((c.distance - dollyStep).toFixed(3))),
           }), 220);
         } else if (k === 's') {
           scheduleDeferredCamCommit('拉远镜头', (c) => ({
             ...c,
-            distance: Math.min(3.0, Number((c.distance + dollyStep).toFixed(2))),
+            distance: Math.min(3.0, Number((c.distance + dollyStep).toFixed(3))),
           }), 220);
         } else if (k === 'a') {
           scheduleDeferredCamCommit('左移机位', (c) => ({
@@ -1470,7 +1472,9 @@ export function SpatialDirectorStudio({
     window.addEventListener('pointercancel', finish, true);
   };
 
-  // Native non-passive wheel listener: eliminates React passive-wheel preventDefault error & prevents macOS bounce
+  // Native non-passive wheel & macOS trackpad pinch listener:
+  // - Supports BOTH two-finger scroll AND trackpad pinch-to-zoom (ctrlKey=true, smaller deltaY)
+  // - Accumulates distance at full 4-decimal precision so micro trackpad events never round to zero!
   useEffect(() => {
     const el = viewportStageRef.current;
     if (!el) return;
@@ -1479,23 +1483,24 @@ export function SpatialDirectorStudio({
       if (targetEl?.closest('.sds-vp-toolbar, .sds-cam-hud, .sds-radar-card')) return;
       e.preventDefault();
       if (e.altKey) {
-        const deltaLens = Math.max(-8, Math.min(8, e.deltaY * 0.06));
+        const deltaLens = Math.max(-8, Math.min(8, e.deltaY * 0.08));
         scheduleDeferredCamCommit(
           '调整镜头焦段',
           (c) => ({
             ...c,
-            lens: Math.max(18, Math.min(120, Math.round(c.lens + deltaLens))),
+            lens: Math.max(18, Math.min(120, Number((c.lens + deltaLens).toFixed(2)))),
           }),
           180,
         );
       } else {
-        // Smooth proportional dolly: feels silky on both macOS high-DPI trackpads and mouse wheels
-        const factor = Math.exp(Math.max(-0.18, Math.min(0.18, e.deltaY * 0.0011)));
+        // Trackpad pinch sets ctrlKey=true with small deltaY (~1..8); boost sensitivity cleanly
+        const sens = e.ctrlKey ? 0.011 : 0.0018;
+        const factor = Math.exp(Math.max(-0.24, Math.min(0.24, e.deltaY * sens)));
         scheduleDeferredCamCommit(
           '推拉机位距离',
           (c) => ({
             ...c,
-            distance: Math.max(0.35, Math.min(3.0, Number((c.distance * factor).toFixed(2)))),
+            distance: Math.max(0.2, Math.min(3.0, Number((c.distance * factor).toFixed(4)))),
           }),
           180,
         );
@@ -1621,15 +1626,15 @@ export function SpatialDirectorStudio({
   const primaryShootLabel =
     activeShot.mode === 'still'
       ? activeShotStale
-        ? '重拍此镜'
-        : '拍摄此镜'
+        ? '重拍回画布'
+        : '拍图回画布'
       : motionOutputMode === 'pair'
         ? '拍首尾帧'
         : motionOutputMode === 'live-3d'
           ? '实时入轨'
           : activeShotStale
-            ? '重录此镜'
-            : '录制此镜';
+            ? '重录回画布'
+            : '录视频回画布';
 
   const rulerTicks = useMemo(() => {
     const secs = Math.max(1, Math.round(durationFrames / Math.max(1, fps)));
@@ -1682,26 +1687,18 @@ export function SpatialDirectorStudio({
               );
             })}
           </div>
-          <div className="sds-seg" role="group" aria-label="取景辅助参考线">
-            {(
-              [
-                ['off', '无框'],
-                ['thirds', '三分线'],
-                ['vertical-safe', '9:16'],
-                ['scope-239', '2.39:1'],
-              ] as const
-            ).map(([id, lbl]) => (
-              <button
-                key={id}
-                type="button"
-                className={frameGuide === id ? 'active' : ''}
-                onClick={() => setFrameGuide(id)}
-              >
-                {id === 'thirds' && <Grid3X3 size={11} />}
-                {lbl}
-              </button>
-            ))}
-          </div>
+          <select
+            className="sds-guide-select"
+            aria-label="取景辅助参考线"
+            title="切换取景构图参考线"
+            value={frameGuide}
+            onChange={(e) => setFrameGuide(e.target.value as FrameGuide)}
+          >
+            <option value="thirds">参考线：三分线</option>
+            <option value="off">参考线：无</option>
+            <option value="vertical-safe">参考线：9:16 竖屏框</option>
+            <option value="scope-239">参考线：2.39:1 宽银幕</option>
+          </select>
         </div>
 
         <div className="sds-top-right">
@@ -1725,7 +1722,7 @@ export function SpatialDirectorStudio({
             <button
               type="button"
               className={`sds-out-btn ${includeDepthNormal ? 'active-opt' : ''}`}
-              title="开启后拍摄定机位镜头时将同步生成 Depth 深度图与 Normal 法线图"
+              title="开启后拍图将同步附带 Depth 深度图与 Normal 法线图（便于 AI 重绘控图）"
               onClick={() => setIncludeDepthNormal((v) => !v)}
             >
               <Layers size={11} /> +深度/法线
@@ -1756,8 +1753,8 @@ export function SpatialDirectorStudio({
             className="sds-out-btn primary"
             title={
               activeShot.mode === 'still'
-                ? `拍摄当前镜头「${activeShot.shortKey} · ${activeShot.name}」为项目素材落入画布`
-                : `按所选方式输出当前动态镜头「${activeShot.shortKey} · ${activeShot.name}」`
+                ? `把当前视角「${activeShot.name}」拍成图片素材放回画布`
+                : `把当前运镜「${activeShot.name}」录成素材放回画布`
             }
             onClick={() => triggerShoot([activeShot.id], false)}
           >
@@ -1767,10 +1764,10 @@ export function SpatialDirectorStudio({
           <button
             type="button"
             className="sds-out-btn"
-            title={`一键按本场镜头单顺序拍摄全部 ${stageShots.length} 个镜头并串联分镜序列`}
+            title={`一键按左侧已存机位顺序全部拍成素材并串联到分镜序列（共 ${stageShots.length} 个）`}
             onClick={() => triggerShoot(stageShots.map((s) => s.id), true)}
           >
-            <LayoutGrid size={12} /> 拍全部 ({stageShots.length})
+            <LayoutGrid size={12} /> 全拍入轨 ({stageShots.length})
           </button>
         </div>
       </header>
@@ -1784,17 +1781,18 @@ export function SpatialDirectorStudio({
             : `minmax(0, 1fr) ${rightWidth}px`,
         }}
       >
-        {/* Left Column: 本场镜头单 (Shot List — separates Shots cleanly from Scene Set!) */}
+        {/* Left Column: Saved Camera Slots — plain self-explanatory copy */}
         {showShotList && (
-          <aside className="sds-shots-col" aria-label="本场镜头单">
+          <aside className="sds-shots-col" aria-label="已存机位">
             <div className="sds-shots-head">
-              <b>本场镜头单 ({stageShots.length})</b>
+              <b>已存机位 ({stageShots.length})</b>
+              <p className="sds-shots-explainer">点选切换不同构图视角；调好后点右上角「拍图/录视频回画布」。</p>
               <div className="sds-shots-add-row">
-                <button type="button" title="按当前视角新增静态定机位镜头" onClick={() => handleAddShot('still')}>
-                  <Camera size={10} /> + 定机位
+                <button type="button" title="把当前视角另存为一个新的静图机位" onClick={() => handleAddShot('still')}>
+                  <Camera size={10} /> + 存静图
                 </button>
-                <button type="button" title="按当前视角新增动态运镜镜头" onClick={() => handleAddShot('motion')}>
-                  <Film size={10} /> + 运镜
+                <button type="button" title="以当前视角为起点新增一段动态运镜" onClick={() => handleAddShot('motion')}>
+                  <Film size={10} /> + 存运镜
                 </button>
               </div>
             </div>
@@ -1868,7 +1866,7 @@ export function SpatialDirectorStudio({
 
                     <div className="sds-shot-meta">
                       <span className={`sds-shot-mode ${shot.mode}`}>
-                        {shot.mode === 'motion' ? `运镜 ${shot.durationSec}s` : '定机位'}
+                        {shot.mode === 'motion' ? `运镜 ${shot.durationSec}s` : '静图'}
                       </span>
                       <span className="sds-shot-lens">{Math.round(shot.camera.cameraLens)}mm</span>
                     </div>
@@ -1879,32 +1877,32 @@ export function SpatialDirectorStudio({
                       </div>
                     )}
 
-                    <div className="sds-shot-status-row">
-                      {isStale ? (
-                        <span className="sds-shot-status stale">
-                          <AlertCircle size={10} /> 场景已改 · 可重拍
-                        </span>
-                      ) : isFresh ? (
-                        <span className="sds-shot-status fresh">
-                          <CheckCircle2 size={10} /> 已出素材
-                        </span>
-                      ) : (
-                        <span className="sds-shot-status idle">未拍摄</span>
-                      )}
-                      {isStale && (
-                        <button
-                          type="button"
-                          className="sds-shot-reshoot-mini"
-                          title="用最新布景重拍此镜头"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            triggerShoot([shot.id], false);
-                          }}
-                        >
-                          <RefreshCw size={9} /> 重拍
-                        </button>
-                      )}
-                    </div>
+                    {(isStale || isFresh) && (
+                      <div className="sds-shot-status-row">
+                        {isStale ? (
+                          <span className="sds-shot-status stale">
+                            <AlertCircle size={10} /> 场景有变动 · 重拍
+                          </span>
+                        ) : (
+                          <span className="sds-shot-status fresh">
+                            <CheckCircle2 size={10} /> 已入画布
+                          </span>
+                        )}
+                        {isStale && (
+                          <button
+                            type="button"
+                            className="sds-shot-reshoot-mini"
+                            title="用最新布景重拍此机位"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              triggerShoot([shot.id], false);
+                            }}
+                          >
+                            <RefreshCw size={9} /> 重拍
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -2075,36 +2073,68 @@ export function SpatialDirectorStudio({
                 <>
                   <span className="sds-cam-readout">
                     <b>{activeShot.shortKey}</b>
-                    <span>Yaw {Math.round(resolvedCam.yaw)}°</span>
-                    <span>Pitch {Math.round(resolvedCam.pitch)}°</span>
-                    <span>{resolvedCam.distance.toFixed(2)}×</span>
+                    <span>转 {Math.round(resolvedCam.yaw)}°</span>
+                    <span>仰俯 {Math.round(resolvedCam.pitch)}°</span>
+                    <span>远近 {resolvedCam.distance.toFixed(2)}×</span>
                     <span>{resolvedCam.hasExplicitLens ? `${Math.round(resolvedCam.lens)}mm` : '原焦段'}</span>
                   </span>
                   <div className="sds-cam-hud-actions">
+                    <div className="sds-hud-zoom-group" role="group" aria-label="快捷推拉远近">
+                      <button
+                        type="button"
+                        className="sds-hud-icon-btn"
+                        aria-label="拉远机位"
+                        title="拉远摄像机（或向后滚轮 / 捏合）"
+                        onClick={() =>
+                          scheduleDeferredCamCommit(
+                            '拉远机位距离',
+                            (c) => ({ ...c, distance: Math.min(3.0, Number((c.distance * 1.18).toFixed(3))) }),
+                            120,
+                          )
+                        }
+                      >
+                        <ZoomOut size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="sds-hud-icon-btn"
+                        aria-label="推近机位"
+                        title="推近摄像机（或向前滚轮 / 展开双指）"
+                        onClick={() =>
+                          scheduleDeferredCamCommit(
+                            '推近机位距离',
+                            (c) => ({ ...c, distance: Math.max(0.2, Number((c.distance / 1.18).toFixed(3))) }),
+                            120,
+                          )
+                        }
+                      >
+                        <ZoomIn size={12} />
+                      </button>
+                    </div>
                     <div className="sds-help-wrap">
                       <button
                         type="button"
                         className={`sds-hud-icon-btn ${showHelpTip ? 'active' : ''}`}
                         aria-label="视口操作快捷键说明"
-                        title="查看 3D 视口操作快捷键"
+                        title="查看 3D 视口操作方法"
                         onClick={() => setShowHelpTip((v) => !v)}
                       >
                         <HelpCircle size={12} />
                       </button>
                       {showHelpTip && (
                         <div className="sds-hotkey-popover" role="tooltip">
-                          <div><b>左键拖动</b><span>环绕视角</span></div>
-                          <div><b>右键 / Shift+拖</b><span>平移机位</span></div>
-                          <div><b>滚轮 / 双指</b><span>平滑推拉</span></div>
-                          <div><b>Alt + 滚轮</b><span>调节焦段</span></div>
-                          <div><b>WASD / QE</b><span>漫游升降</span></div>
+                          <div><b>左键拖动</b><span>旋转观察视角</span></div>
+                          <div><b>右键 / Shift+拖</b><span>平移画面中心</span></div>
+                          <div><b>滚轮 / 双指捏合</b><span>推近或拉远</span></div>
+                          <div><b>Alt + 滚轮</b><span>广角 / 长焦变焦</span></div>
+                          <div><b>WASD / QE</b><span>前后左右与升降</span></div>
                           {isMotionShot && <div><b>Space / K</b><span>播放 / 打关键帧</span></div>}
                         </div>
                       )}
                     </div>
                     <button
                       type="button"
-                      title="复位当前镜头摄像机机位"
+                      title="复位当前机位到默认视角"
                       onClick={() => {
                         cancelDeferredCamCommit();
                         markPendingCommit();
@@ -2114,7 +2144,7 @@ export function SpatialDirectorStudio({
                           distance: 1.0,
                           panX: 0,
                           panY: 0,
-                          lens: isCodeTarget ? 35 : 35,
+                          lens: 35,
                         });
                         updateActiveShotCamera('复位当前镜头机位', {
                           cameraYaw: 0,
@@ -2132,7 +2162,7 @@ export function SpatialDirectorStudio({
                       <button
                         type="button"
                         className="sds-switch-motion-btn"
-                        title="把当前镜头切换为带时间轴和曲线的动态运镜"
+                        title="切换为带起止运镜和曲线的动态视频模式"
                         onClick={() => setActiveShotMode('motion')}
                       >
                         <Film size={11} /> 转为动态运镜
@@ -2491,7 +2521,7 @@ export function SpatialDirectorStudio({
 
                 <div className="sds-scrub-grid">
                   <DirectorScrubInput
-                    label="水平"
+                    label="左右转"
                     ariaLabel="水平旋转 Yaw"
                     value={Math.round(resolvedCam.yaw)}
                     defaultValue={0}
@@ -2509,7 +2539,7 @@ export function SpatialDirectorStudio({
                     }}
                   />
                   <DirectorScrubInput
-                    label="俯仰"
+                    label="上下仰俯"
                     ariaLabel="俯仰角 Pitch"
                     value={Math.round(resolvedCam.pitch)}
                     defaultValue={0}
@@ -2528,11 +2558,11 @@ export function SpatialDirectorStudio({
                     }}
                   />
                   <DirectorScrubInput
-                    label="距离"
+                    label="远近"
                     ariaLabel="机位推拉倍率 Distance"
                     value={resolvedCam.distance}
                     defaultValue={1.0}
-                    min={0.35}
+                    min={0.2}
                     max={3.0}
                     step={0.02}
                     decimals={2}
@@ -2567,7 +2597,7 @@ export function SpatialDirectorStudio({
                     }}
                   />
                   <DirectorScrubInput
-                    label="横移"
+                    label="左右移"
                     ariaLabel="水平平移 Pan X"
                     value={resolvedCam.panX}
                     defaultValue={0}
@@ -2586,7 +2616,7 @@ export function SpatialDirectorStudio({
                     }}
                   />
                   <DirectorScrubInput
-                    label="升降"
+                    label="上下移"
                     ariaLabel="垂直升降 Pan Y"
                     value={resolvedCam.panY}
                     defaultValue={0}
@@ -2605,7 +2635,7 @@ export function SpatialDirectorStudio({
                     }}
                   />
                 </div>
-                <p className="sds-micro-hint">按住标签左右拖 60fps 微调 · 双击单格复位</p>
+                <p className="sds-micro-hint">拖画面旋转 · 滚轮/双指缩放 · WASD 飞行 · 拖标签 60fps 微调</p>
               </section>
 
               {isMotionShot && (

@@ -243,7 +243,7 @@ function normalizeShotDistance(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 1.0;
   const scaled = n > 3.2 ? n / 5.4 : n;
-  return Number(Math.max(0.35, Math.min(3.0, scaled)).toFixed(2));
+  return Number(Math.max(0.2, Math.min(3.0, scaled)).toFixed(2));
 }
 
 export function buildMotionShotKeyframes(
@@ -370,13 +370,13 @@ export const DEFAULT_SCENE_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
   {
     id: 'shot-1',
     shortKey: 'S1',
-    name: '主景建立',
+    name: '正面全景',
     mode: 'still',
     camera: {
       cameraPreset: 'static',
       cameraLens: 35,
       cameraYaw: 0,
-      cameraPitch: 8,
+      cameraPitch: 0,
       cameraDistance: 1.0,
       cameraPanX: 0,
       cameraPanY: 0,
@@ -393,8 +393,8 @@ export const DEFAULT_SCENE_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
       cameraPreset: 'static',
       cameraLens: 85,
       cameraYaw: -22,
-      cameraPitch: 12,
-      cameraDistance: 0.82,
+      cameraPitch: -6,
+      cameraDistance: 0.72,
       cameraPanX: 0,
       cameraPanY: 0,
     },
@@ -410,7 +410,7 @@ export const DEFAULT_SCENE_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
       cameraPreset: 'static',
       cameraLens: 35,
       cameraYaw: -24,
-      cameraPitch: 10,
+      cameraPitch: -8,
       cameraDistance: 1.12,
       cameraPanX: 0,
       cameraPanY: 0,
@@ -419,16 +419,16 @@ export const DEFAULT_SCENE_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
       cameraPreset: 'static',
       cameraLens: 50,
       cameraYaw: 20,
-      cameraPitch: 6,
-      cameraDistance: 0.84,
+      cameraPitch: -14,
+      cameraDistance: 0.78,
       cameraPanX: 0,
       cameraPanY: 0,
     },
     durationSec: 4,
     renderPass: 'beauty',
     keyframes: buildMotionShotKeyframes(
-      { cameraPreset: 'static', cameraLens: 35, cameraYaw: -24, cameraPitch: 10, cameraDistance: 1.12, cameraPanX: 0, cameraPanY: 0 },
-      { cameraPreset: 'static', cameraLens: 50, cameraYaw: 20, cameraPitch: 6, cameraDistance: 0.84, cameraPanX: 0, cameraPanY: 0 },
+      { cameraPreset: 'static', cameraLens: 35, cameraYaw: -24, cameraPitch: -8, cameraDistance: 1.12, cameraPanX: 0, cameraPanY: 0 },
+      { cameraPreset: 'static', cameraLens: 50, cameraYaw: 20, cameraPitch: -14, cameraDistance: 0.78, cameraPanX: 0, cameraPanY: 0 },
       120,
     ),
   },
@@ -441,7 +441,7 @@ export const DEFAULT_SCENE_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
       cameraPreset: 'static',
       cameraLens: 24,
       cameraYaw: 16,
-      cameraPitch: 38,
+      cameraPitch: -34,
       cameraDistance: 1.24,
       cameraPanX: 0,
       cameraPanY: 0,
@@ -790,7 +790,7 @@ export function computeSpatialCameraPose(input: SpatialCameraPoseInput): Spatial
   const rawDist = Number.isFinite(input.distance) ? Number(input.distance) : 1;
   // Support canonical multiplier (0.35..3.0); seamlessly remap legacy absolute distances (> 3.2, e.g. 5.4 -> 1.0)
   const normalizedDist = rawDist > 3.2 ? rawDist / 5.4 : rawDist;
-  const distMul = Math.max(0.35, Math.min(3.0, normalizedDist));
+  const distMul = Math.max(0.2, Math.min(3.0, normalizedDist));
   const panX = Number.isFinite(input.panX) ? Number(input.panX) : 0;
   const panY = Number.isFinite(input.panY) ? Number(input.panY) : 0;
   const yawDeg = Number.isFinite(input.yaw) ? Number(input.yaw) : 0;
@@ -962,7 +962,7 @@ export function computeDirectorCameraOverride(
   const yawDeg = Number.isFinite(override.yaw) ? Number(override.yaw) : 0;
   const pitchDeg = Number.isFinite(override.pitch) ? Number(override.pitch) : 0;
   const rawDist = Number.isFinite(override.distance) ? Number(override.distance) : 1;
-  const distMul = Math.max(0.35, Math.min(3.0, rawDist > 3.2 ? rawDist / 5.4 : rawDist));
+  const distMul = Math.max(0.2, Math.min(3.0, rawDist > 3.2 ? rawDist / 5.4 : rawDist));
   const panX = Number.isFinite(override.panX) ? Number(override.panX) : 0;
   const panY = Number.isFinite(override.panY) ? Number(override.panY) : 0;
   const hasLens = override.lensMm !== undefined && Number.isFinite(override.lensMm) && Number(override.lensMm) > 0;

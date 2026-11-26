@@ -574,9 +574,12 @@ function Code({
     rawPass === 'clay' || rawPass === 'depth' || rawPass === 'normal' || rawPass === 'wireframe'
       ? rawPass
       : 'beauty';
-  const compHandlesOwnCamera =
-    component.props !== undefined &&
-    ('cameraYaw' in component.props || 'cameraPitch' in component.props || 'cameraDistance' in component.props);
+  // Only opt out of automatic Director Studio spherical camera override when the TSX component's
+  // OWN SOURCE CODE explicitly reads cameraYaw/cameraPitch/cameraDistance or useDirectorStage().
+  // Never check component.props, because SpatialDirectorStudio itself persists camera props there!
+  const compHandlesOwnCamera = Boolean(
+    component.source && /\b(cameraYaw|cameraPitch|cameraDistance|useDirectorStage)\b/.test(component.source),
+  );
   const directorState = useMemo(
     () => ({
       active: true,
