@@ -1969,38 +1969,72 @@ assert.ok(
   assert.equal(pickedNoRef?.id, 'm_t2v');
 }
 
-// 50. MCP Client helpers (parseMcpServersJson, namespace qualification, label formatting)
+// 50. MCP Client helpers (URL-only JSON config, masked header round-trip, stdio rejection, namespace qualification)
 {
   const {
-    MCP_SERVER_PRESETS,
+    MCP_MASKED_HEADER_VALUE,
+    normalizeMcpTransport,
+    validateMcpUrl,
+    serializeMcpServersToJson,
     parseMcpServersJson,
     qualifyMcpToolName,
     parseMcpToolName,
     formatMcpToolLabel,
   } = await import('../src/core/mcp');
-  assert.ok(MCP_SERVER_PRESETS.some((p) => p.id === 'blender' && p.config.command === 'uvx'));
+
+  assert.equal(normalizeMcpTransport('streamable-http'), 'streamable-http');
+  assert.equal(normalizeMcpTransport('sse'), 'sse');
+  assert.equal(normalizeMcpTransport('http'), 'auto');
+  assert.equal(validateMcpUrl('http://127.0.0.1:8787/mcp'), 'http://127.0.0.1:8787/mcp');
+  assert.throws(() => validateMcpUrl('ftp://127.0.0.1:8787/mcp'));
 
   const parsed = parseMcpServersJson(
     JSON.stringify({
       mcpServers: {
-        blender: { command: 'uvx', args: ['blender-mcp'], env: { BLENDER_PORT: '9876' } },
-        remoteDesign: { url: 'http://127.0.0.1:8787/mcp', headers: { Authorization: 'Bearer tok' } },
+        designTools: {
+          url: 'http://127.0.0.1:8787/mcp',
+          transport: 'streamable-http',
+          headers: { Authorization: 'Bearer tok' },
+        },
+        legacyStream: {
+          url: 'http://127.0.0.1:8788/sse',
+          type: 'sse',
+        },
       },
     }),
   );
   assert.equal(parsed.length, 2);
-  assert.equal(parsed[0].transport, 'stdio');
-  assert.equal(parsed[0].command, 'uvx');
-  assert.deepEqual(parsed[0].args, ['blender-mcp']);
-  assert.equal(parsed[0].preset, 'blender');
-  assert.equal(parsed[1].transport, 'http');
-  assert.equal(parsed[1].url, 'http://127.0.0.1:8787/mcp');
-  assert.deepEqual(parsed[1].headerKeys, ['Authorization']);
+  assert.equal(parsed[0].transport, 'streamable-http');
+  assert.equal(parsed[0].url, 'http://127.0.0.1:8787/mcp');
+  assert.deepEqual(parsed[0].headerKeys, ['Authorization']);
+  assert.equal(parsed[1].transport, 'sse');
+  assert.equal(parsed[1].url, 'http://127.0.0.1:8788/sse');
 
-  const q = qualifyMcpToolName('Blender Studio', 'execute_blender_code');
-  assert.equal(q, 'mcp__blender_studio__execute_blender_code');
-  assert.deepEqual(parseMcpToolName(q), { serverSlug: 'blender_studio', toolName: 'execute_blender_code' });
-  assert.equal(formatMcpToolLabel(q), 'MCP · blender_studio · execute_blender_code');
+  // Masked header round-trip preserves existing ID and leaves headers undefined (keeps encrypted secret on disk)
+  const storedPublic = parsed.map(({ headers: _h, ...rest }) => rest);
+  const serialized = serializeMcpServersToJson(storedPublic);
+  assert.ok(serialized.includes(MCP_MASKED_HEADER_VALUE));
+  const roundTripped = parseMcpServersJson(serialized, storedPublic, { allowEmpty: true });
+  assert.equal(roundTripped[0].id, storedPublic[0].id);
+  assert.equal(roundTripped[0].headers, undefined);
+  assert.deepEqual(roundTripped[0].headerKeys, ['Authorization']);
+
+  // Empty config clears cleanly when allowEmpty is enabled
+  assert.deepEqual(parseMcpServersJson('{ "mcpServers": {} }', storedPublic, { allowEmpty: true }), []);
+
+  // Rejects command-only stdio config explicitly (CoCraft connects to URLs only)
+  assert.throws(
+    () =>
+      parseMcpServersJson(
+        JSON.stringify({ mcpServers: { localCmd: { command: 'npx', args: ['-y', 'demo'] } } }),
+      ),
+    /仅连接运行中的 MCP 服务 URL/,
+  );
+
+  const q = qualifyMcpToolName('Studio Tools', 'render_pass');
+  assert.equal(q, 'mcp__studio_tools__render_pass');
+  assert.deepEqual(parseMcpToolName(q), { serverSlug: 'studio_tools', toolName: 'render_pass' });
+  assert.equal(formatMcpToolLabel(q), 'MCP · studio_tools · render_pass');
   assert.throws(() => parseMcpServersJson('not valid json'));
 }
 

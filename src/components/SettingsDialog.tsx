@@ -33,7 +33,7 @@ import {
   MINIMAX_VOICES,
   type CuratedModelOption,
 } from '../core/models';
-import { MCP_SERVER_PRESETS, parseMcpServersJson } from '../core/mcp';
+import { normalizeMcpTransport, parseMcpServersJson, serializeMcpServersToJson } from '../core/mcp';
 import { uid } from '../core/project';
 import { friendlySkillTitle } from '../core/taxonomy';
 import type {
@@ -70,7 +70,7 @@ const sections = [
   ['defaults', '用途默认值', Workflow],
   ['system1', '智能辅助', Zap],
   ['assets', '素材服务', Plug],
-  ['mcp', 'MCP 服务', Cable],
+  ['mcp', 'MCP 连接', Cable],
   ['skills', 'Skills 与工具', Code2],
 ] as const;
 export function SettingsDialog({
@@ -129,41 +129,162 @@ export function SettingsDialog({
   const [skillImportScope, setSkillImportScope] = useState<'project' | 'user'>('project');
   const [mcpInfo, setMcpInfo] = useState<{ running: boolean; port: number | null; scriptPath?: string; discoveryFile?: string } | null>(null);
   const [mcpCopied, setMcpCopied] = useState(false);
-  const [selectedMcpId, setSelectedMcpId] = useState<string>(settings.mcpServers?.[0]?.id || '');
+  const [mcpJsonText, setMcpJsonText] = useState(() =>
+    settings.mcpServers?.length ? serializeMcpServersToJson(settings.mcpServers) : '',
+  );
+  const [mcpJsonDirty, setMcpJsonDirty] = useState(false);
   const [mcpStatuses, setMcpStatuses] = useState<McpServerStatus[]>([]);
   const [mcpToolsByServer, setMcpToolsByServer] = useState<Record<string, McpRemoteToolInfo[]>>({});
+  const [mcpExpandedTools, setMcpExpandedTools] = useState<Record<string, boolean>>({});
   const [mcpTestingId, setMcpTestingId] = useState('');
-  const [mcpJsonOpen, setMcpJsonOpen] = useState(false);
-  const [mcpJsonDraft, setMcpJsonDraft] = useState('');
-  const [mcpEnvText, setMcpEnvText] = useState('');
-  const [mcpHeadersText, setMcpHeadersText] = useState('');
+  const [mcpTestingAll, setMcpTestingAll] = useState(false);
   const [s1Usage, setS1Usage] = useState<System1UsageStats | null>(null);
   const [s1Testing, setS1Testing] = useState(false);
 
   const mcpServers: McpServerConfig[] = draft.mcpServers || [];
-  const activeMcpServer = mcpServers.find((s) => s.id === selectedMcpId) || mcpServers[0];
+  const syncMcpDraftAndJson = (nextList: McpServerConfig[]) => {
+    field('mcpServers', nextList);
+    setMcpJsonText(nextList.length ? serializeMcpServersToJson(nextList) : '');
+    setMcpJsonDirty(false);
+  };
   const updateMcpServer = (id: string, patch: Partial<McpServerConfig>) => {
-    field(
-      'mcpServers',
-      mcpServers.map((s) => (s.id === id ? { ...s, ...patch } : s)),
-    );
+    const nextList = mcpServers.map((s) => (s.id === id ? { ...s, ...patch } : s));
+    syncMcpDraftAndJson(nextList);
   };
-  const addMcpServer = (cfg: Omit<McpServerConfig, 'id'>) => {
-    const id = uid('mcp');
-    const created: McpServerConfig = { id, ...cfg };
-    field('mcpServers', [...mcpServers, created]);
-    setSelectedMcpId(id);
-    setMcpEnvText('');
-    setMcpHeadersText('');
+  const testSingleMcpServer = async (srv: McpServerConfig) => {
+    setMcpTestingId(srv.id);
     setError('');
-    setInfo(`已添加 MCP 服务「${created.name}」，点击「测试连接」检查工具或保存生效。`);
+    setInfo('');
+    try {
+      const res = await window.cocraft.call<{
+        ok: boolean;
+        tools: McpRemoteToolInfo[];
+        activeTransport?: 'streamable-http' | 'sse';
+        serverVersion?: { name: string; version: string };
+        error?: string;
+      }>('mcp.client.test', { server: srv });
+      if (!res.ok) {
+        setMcpStatuses((prev) => [
+          ...prev.filter((x) => x.id !== srv.id),
+          {
+            id: srv.id,
+            name: srv.name,
+            enabled: srv.enabled,
+            url: srv.url,
+            transport: normalizeMcpTransport(srv.transport),
+            connected: false,
+            error: res.error || '连接失败',
+            tools: [],
+          },
+        ]);
+        setError(`[${srv.name}] ${res.error || '连接测试失败'}`);
+      } else {
+        setMcpToolsByServer((prev) => ({ ...prev, [srv.id]: res.tools }));
+        setMcpStatuses((prev) => [
+          ...prev.filter((x) => x.id !== srv.id),
+          {
+            id: srv.id,
+            name: srv.name,
+            enabled: srv.enabled,
+            url: srv.url,
+            transport: normalizeMcpTransport(srv.transport),
+            activeTransport: res.activeTransport,
+            serverVersion: res.serverVersion,
+            connected: true,
+            tools: res.tools,
+            lastCheckedAt: new Date().toISOString(),
+          },
+        ]);
+        const protoLabel = res.activeTransport === 'sse' ? 'SSE' : 'Streamable HTTP';
+        setInfo(`已连接「${srv.name}」（${protoLabel}），发现 ${res.tools.length} 个工具。`);
+      }
+    } catch (e) {
+      setError(String(e).replace(/^Error:.*?Error: /, ''));
+    } finally {
+      setMcpTestingId('');
+    }
   };
-  const removeMcpServer = (id: string) => {
-    const rest = mcpServers.filter((s) => s.id !== id);
-    field('mcpServers', rest);
-    setSelectedMcpId(rest[0]?.id || '');
-    setMcpEnvText('');
-    setMcpHeadersText('');
+  const applyAndTestMcpJson = async (doTest: boolean) => {
+    setError('');
+    setInfo('');
+    let parsed: McpServerConfig[];
+    try {
+      parsed = parseMcpServersJson(mcpJsonText, mcpServers, { allowEmpty: true });
+    } catch (e) {
+      setError(String(e).replace(/^Error:\s*/, ''));
+      return null;
+    }
+    syncMcpDraftAndJson(parsed);
+    if (!doTest) {
+      setInfo(parsed.length ? `已解析 ${parsed.length} 个 MCP 连接配置。` : '已清空 MCP 连接配置。');
+      return parsed;
+    }
+    const enabledList = parsed.filter((s) => s.enabled);
+    if (!enabledList.length) {
+      setInfo(parsed.length ? '配置有效，但所有连接当前均处于禁用状态。' : '当前未配置 MCP 连接。');
+      return parsed;
+    }
+    setMcpTestingAll(true);
+    try {
+      let okCount = 0;
+      let totalTools = 0;
+      const errors: string[] = [];
+      for (const srv of enabledList) {
+        const res = await window.cocraft.call<{
+          ok: boolean;
+          tools: McpRemoteToolInfo[];
+          activeTransport?: 'streamable-http' | 'sse';
+          serverVersion?: { name: string; version: string };
+          error?: string;
+        }>('mcp.client.test', { server: srv });
+        if (res.ok) {
+          okCount++;
+          totalTools += res.tools.length;
+          setMcpToolsByServer((prev) => ({ ...prev, [srv.id]: res.tools }));
+          setMcpStatuses((prev) => [
+            ...prev.filter((x) => x.id !== srv.id),
+            {
+              id: srv.id,
+              name: srv.name,
+              enabled: srv.enabled,
+              url: srv.url,
+              transport: normalizeMcpTransport(srv.transport),
+              activeTransport: res.activeTransport,
+              serverVersion: res.serverVersion,
+              connected: true,
+              tools: res.tools,
+              lastCheckedAt: new Date().toISOString(),
+            },
+          ]);
+        } else {
+          errors.push(`[${srv.name}] ${res.error || '连接失败'}`);
+          setMcpStatuses((prev) => [
+            ...prev.filter((x) => x.id !== srv.id),
+            {
+              id: srv.id,
+              name: srv.name,
+              enabled: srv.enabled,
+              url: srv.url,
+              transport: normalizeMcpTransport(srv.transport),
+              connected: false,
+              error: res.error || '连接失败',
+              tools: [],
+            },
+          ]);
+        }
+      }
+      if (errors.length) {
+        setError(errors.join('；'));
+      }
+      if (okCount > 0) {
+        setInfo(`已连通 ${okCount}/${enabledList.length} 个 MCP 服务，共发现 ${totalTools} 个工具（点击「保存设置」生效）。`);
+      }
+    } catch (e) {
+      setError(String(e).replace(/^Error:.*?Error: /, ''));
+    } finally {
+      setMcpTestingAll(false);
+    }
+    return parsed;
   };
 
   useEffect(() => {
@@ -423,6 +544,9 @@ export function SettingsDialog({
       for (const m of next.models)
         if (!m.modelId.trim() || !m.name.trim() || !m.capabilities.length)
           throw new Error('请补全模型 ID、名称与用途');
+      if (mcpJsonDirty) {
+        next.mcpServers = parseMcpServersJson(mcpJsonText, next.mcpServers || [], { allowEmpty: true });
+      }
       const cleanProject = { ...projectDraft };
       for (const use of modelUses) {
         const valid = (id?: string) =>
@@ -476,7 +600,7 @@ export function SettingsDialog({
                     models: '登记模型与能力，选择对应接口。模型可以承担多个用途。',
                     defaults: '为不同工作选择合适的模型，项目可以覆盖全局设置。',
                     assets: '连接素材来源，导入时保留来源与许可。',
-                    mcp: '配置内置 Agent 可调用的外部 MCP 服务（如 Blender MCP），以及对外开放的本地 MCP 桥接服务。',
+                    mcp: '直接粘贴标准 MCP JSON 配置连接运行中的外部 MCP 服务（基于官方 MCP SDK，支持 Streamable HTTP 与 SSE）。',
                     skills: 'Agent 通过 Skills、编码和工具扩展创作能力。',
                   } as Record<string, string>
                 )[tab]
@@ -513,6 +637,51 @@ export function SettingsDialog({
                     <FolderOpen size={14} />
                     打开
                   </button>
+                </div>
+              </div>
+              <div className="settings-section">
+                <h3>对外开放（供外部 MCP 客户端操控 CoCraft）</h3>
+                <div className="setting-row">
+                  <div>
+                    <b>启用本地 MCP 桥接服务</b>
+                    <p>允许外部 MCP 客户端通过受控本地协议操作当前工程并调用已配置模型（仅监听 127.0.0.1，0600 令牌鉴权，绝不暴露 API 密钥）。</p>
+                  </div>
+                  <input
+                    className="switch"
+                    aria-label="启用本地 MCP 桥接服务"
+                    type="checkbox"
+                    checked={Boolean(draft.mcpBridgeEnabled)}
+                    onChange={(e) => field('mcpBridgeEnabled', e.target.checked)}
+                  />
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <b>桥接状态与客户端配置</b>
+                    <p>
+                      {mcpInfo?.running && mcpInfo.port
+                        ? `监听 127.0.0.1:${mcpInfo.port} · 可供外部客户端接入`
+                        : draft.mcpBridgeEnabled
+                          ? '点击右下角「保存设置」后立即启动本地 MCP 桥接服务'
+                          : '默认关闭，按需开启'}
+                    </p>
+                  </div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <span className={`status-badge ${mcpInfo?.running ? 'good' : ''}`}>
+                      {mcpInfo?.running ? '运行中' : '未启用'}
+                    </span>
+                    <button
+                      type="button"
+                      className="button subtle"
+                      onClick={() =>
+                        void window.cocraft.call('mcp.copyConfig', {}).then(() => {
+                          setMcpCopied(true);
+                          setTimeout(() => setMcpCopied(false), 2000);
+                        })
+                      }
+                    >
+                      {mcpCopied ? '已复制配置' : '复制 MCP 配置'}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="settings-section">
@@ -1604,429 +1773,162 @@ export function SettingsDialog({
             <>
               <div className="settings-section">
                 <div className="section-toolbar">
-                  <span>外部 MCP 服务（供内置 Agent 调用 · 如 Blender / 外部工具）</span>
+                  <span>mcpServers JSON 配置（连接已运行的 Streamable HTTP / SSE 服务）</span>
                   <div className="skill-toolbar-actions">
                     <button
                       type="button"
                       className="button subtle"
-                      onClick={() => addMcpServer(MCP_SERVER_PRESETS[0].config)}
+                      onClick={() => void applyAndTestMcpJson(false)}
                     >
-                      <Plus size={13} /> Blender MCP
+                      <FileCode2 size={13} /> 格式化并校验
                     </button>
                     <button
                       type="button"
-                      className="button subtle"
-                      onClick={() =>
-                        addMcpServer({
-                          name: `MCP 服务 ${mcpServers.length + 1}`,
-                          enabled: true,
-                          transport: 'stdio',
-                          command: 'npx',
-                          args: ['-y', ''],
-                        })
-                      }
+                      className="button primary"
+                      disabled={mcpTestingAll}
+                      onClick={() => void applyAndTestMcpJson(true)}
                     >
-                      <Plus size={13} /> 新建服务
-                    </button>
-                    <button
-                      type="button"
-                      className="button subtle"
-                      onClick={() => {
-                        setMcpJsonOpen((v) => !v);
-                        setError('');
-                      }}
-                    >
-                      <FileCode2 size={13} /> 粘贴 JSON
+                      {mcpTestingAll ? <Spinner /> : <RefreshCw size={13} />} 验证并测试连接
                     </button>
                   </div>
                 </div>
 
-                {mcpJsonOpen && (
-                  <div className="mcp-json-import-box">
-                    <textarea
-                      rows={5}
-                      aria-label="粘贴标准 mcpServers JSON"
-                      placeholder={'粘贴 Claude Desktop / Cursor 格式的 mcpServers JSON，例如：\n{\n  "mcpServers": {\n    "blender": { "command": "uvx", "args": ["blender-mcp"] }\n  }\n}'}
-                      value={mcpJsonDraft}
-                      onChange={(e) => setMcpJsonDraft(e.target.value)}
-                    />
-                    <div className="mcp-json-import-actions">
-                      <button
-                        type="button"
-                        className="button primary"
-                        onClick={() => {
-                          setError('');
-                          try {
-                            const imported = parseMcpServersJson(mcpJsonDraft);
-                            field('mcpServers', [...mcpServers, ...imported]);
-                            setSelectedMcpId(imported[0].id);
-                            setMcpJsonDraft('');
-                            setMcpJsonOpen(false);
-                            setInfo(`已解析并加入 ${imported.length} 个外部 MCP 服务，请点击「保存设置」生效。`);
-                          } catch (e) {
-                            setError(String(e).replace(/^Error: /, ''));
-                          }
-                        }}
-                      >
-                        解析并添加
-                      </button>
-                      <button type="button" className="button subtle" onClick={() => setMcpJsonOpen(false)}>
-                        取消
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <textarea
+                  className="mcp-json-editor"
+                  rows={10}
+                  spellCheck={false}
+                  aria-label="MCP JSON 配置"
+                  placeholder={
+                    '{\n  "mcpServers": {\n    "my-service": {\n      "url": "http://127.0.0.1:8000/mcp",\n      "headers": {\n        "Authorization": "Bearer ..."\n      }\n    }\n  }\n}'
+                  }
+                  value={mcpJsonText}
+                  onChange={(e) => {
+                    setMcpJsonText(e.target.value);
+                    setMcpJsonDirty(true);
+                  }}
+                />
+                <p className="help-copy">
+                  支持标准 <code>url</code>（Streamable HTTP 优先，自动兼容 SSE；可选 <code>transport: "streamable-http" | "sse"</code> 与加密保存的 <code>headers</code>）。CoCraft 仅连接运行中的 MCP 服务地址，不代为启动本地命令行进程。
+                </p>
+              </div>
 
-                {mcpServers.length === 0 ? (
-                  <div className="mcp-empty-presets">
-                    <p className="help-copy">
-                      尚未配置外部 MCP 服务。一键添加常用预设，或点击上方「粘贴 JSON」导入已有配置：
-                    </p>
-                    <div className="mcp-preset-grid">
-                      {MCP_SERVER_PRESETS.map((preset) => (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          className="mcp-preset-card"
-                          onClick={() => addMcpServer(preset.config)}
-                        >
-                          <b>{preset.label}</b>
-                          <small>{preset.description}</small>
-                        </button>
-                      ))}
-                    </div>
+              {mcpServers.length > 0 && (
+                <div className="settings-section">
+                  <div className="section-toolbar">
+                    <span>已解析连接（{mcpServers.length} 个 · 一视同仁通过官方 MCP SDK 接入）</span>
                   </div>
-                ) : (
                   <div className="mcp-server-list">
                     {mcpServers.map((srv) => {
                       const st = mcpStatuses.find((x) => x.id === srv.id);
-                      const toolCount = (mcpToolsByServer[srv.id] || st?.tools || []).length;
-                      const isSel = activeMcpServer?.id === srv.id;
+                      const discoveredTools = mcpToolsByServer[srv.id] || st?.tools || [];
+                      const disabledSet = new Set(srv.disabledTools || []);
+                      const enabledToolCount = Math.max(0, discoveredTools.length - disabledSet.size);
+                      const protoBadge =
+                        st?.activeTransport === 'streamable-http'
+                          ? 'Streamable HTTP'
+                          : st?.activeTransport === 'sse'
+                            ? 'SSE'
+                            : srv.transport === 'streamable-http'
+                              ? 'Streamable HTTP'
+                              : srv.transport === 'sse'
+                                ? 'SSE'
+                                : '自动';
+                      const expanded = Boolean(mcpExpandedTools[srv.id]);
+
                       return (
-                        <div
-                          key={srv.id}
-                          className={`skill-row interactive ${isSel ? 'selected' : ''}`}
-                          onClick={() => {
-                            setSelectedMcpId(srv.id);
-                            setMcpEnvText('');
-                            setMcpHeadersText('');
-                          }}
-                        >
-                          <Cable size={15} />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div className="skill-row-head">
-                              <b>{srv.name}</b>
-                              <span className="skill-scope-badge project">
-                                {srv.transport === 'http' ? 'HTTP/SSE' : 'stdio'}
-                              </span>
-                              {st?.connected ? (
-                                <span className="status-badge good">已连接 · {toolCount} 工具</span>
-                              ) : st?.error ? (
-                                <span className="status-badge warn" title={st.error}>
-                                  连接异常
-                                </span>
-                              ) : toolCount > 0 ? (
-                                <span className="status-badge">{toolCount} 工具</span>
-                              ) : null}
+                        <div key={srv.id} className="mcp-server-card">
+                          <div className="mcp-server-card-head">
+                            <Cable size={15} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div className="skill-row-head">
+                                <b>{srv.name}</b>
+                                <span className="skill-scope-badge project">{protoBadge}</span>
+                                {st?.connected ? (
+                                  <span className="status-badge good">
+                                    已连接 · {enabledToolCount}/{discoveredTools.length} 工具
+                                  </span>
+                                ) : st?.error ? (
+                                  <span className="status-badge warn" title={st.error}>
+                                    连接异常
+                                  </span>
+                                ) : discoveredTools.length > 0 ? (
+                                  <span className="status-badge">{discoveredTools.length} 工具</span>
+                                ) : null}
+                              </div>
+                              <p className="mcp-server-url">{srv.url}</p>
+                              {st?.error && !st.connected && (
+                                <p className="mcp-server-err">{st.error}</p>
+                              )}
                             </div>
-                            <p>
-                              {srv.transport === 'http'
-                                ? srv.url || '未填写 URL'
-                                : [srv.command, ...(srv.args || [])].filter(Boolean).join(' ') || '未填写命令'}
-                            </p>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <button
+                                type="button"
+                                className="button subtle tiny"
+                                disabled={mcpTestingId === srv.id || mcpTestingAll}
+                                onClick={() => void testSingleMcpServer(srv)}
+                              >
+                                {mcpTestingId === srv.id ? <Spinner /> : <RefreshCw size={12} />} 测试
+                              </button>
+                              {discoveredTools.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="button subtle tiny"
+                                  onClick={() =>
+                                    setMcpExpandedTools((prev) => ({ ...prev, [srv.id]: !prev[srv.id] }))
+                                  }
+                                >
+                                  {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />} 工具
+                                </button>
+                              )}
+                              <input
+                                className="switch"
+                                aria-label={`启用 MCP 连接 ${srv.name}`}
+                                type="checkbox"
+                                checked={srv.enabled}
+                                onChange={(e) => updateMcpServer(srv.id, { enabled: e.target.checked })}
+                              />
+                            </div>
                           </div>
-                          <input
-                            className="switch"
-                            aria-label={`启用 MCP 服务 ${srv.name}`}
-                            type="checkbox"
-                            checked={srv.enabled}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => updateMcpServer(srv.id, { enabled: e.target.checked })}
-                          />
+
+                          {expanded && discoveredTools.length > 0 && (
+                            <div className="mcp-tools-list">
+                              <div className="mcp-tools-grid">
+                                {discoveredTools.map((tool) => {
+                                  const checked = !disabledSet.has(tool.name);
+                                  return (
+                                    <label
+                                      key={tool.qualifiedName}
+                                      className="mcp-tool-item"
+                                      title={tool.description}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={(e) => {
+                                          const nextDisabled = new Set(srv.disabledTools || []);
+                                          if (e.target.checked) nextDisabled.delete(tool.name);
+                                          else nextDisabled.add(tool.name);
+                                          updateMcpServer(srv.id, {
+                                            disabledTools: Array.from(nextDisabled),
+                                          });
+                                        }}
+                                      />
+                                      <div>
+                                        <code>{tool.name}</code>
+                                        {tool.description && <small>{tool.description.slice(0, 72)}</small>}
+                                      </div>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
-                )}
-              </div>
-
-              {activeMcpServer && (
-                <div className="settings-editor">
-                  <div className="editor-heading">
-                    <h3>配置 · {activeMcpServer.name}</h3>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <button
-                        type="button"
-                        className="button subtle"
-                        disabled={mcpTestingId === activeMcpServer.id}
-                        onClick={() =>
-                          void (async () => {
-                            setMcpTestingId(activeMcpServer.id);
-                            setError('');
-                            setInfo('');
-                            try {
-                              const res = await window.cocraft.call<{
-                                ok: boolean;
-                                tools: McpRemoteToolInfo[];
-                                error?: string;
-                              }>('mcp.client.test', { server: activeMcpServer });
-                              if (!res.ok) {
-                                setError(res.error || '连接测试失败');
-                              } else {
-                                setMcpToolsByServer((prev) => ({
-                                  ...prev,
-                                  [activeMcpServer.id]: res.tools,
-                                }));
-                                setInfo(
-                                  `已连接「${activeMcpServer.name}」，发现 ${res.tools.length} 个可用工具（记得点击「保存设置」持久化）。`,
-                                );
-                              }
-                            } catch (e) {
-                              setError(String(e).replace(/^Error:.*?Error: /, ''));
-                            } finally {
-                              setMcpTestingId('');
-                            }
-                          })()
-                        }
-                      >
-                        {mcpTestingId === activeMcpServer.id ? <Spinner /> : <RefreshCw size={13} />}
-                        测试连接并拉取工具
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button danger"
-                        aria-label="删除此 MCP 服务"
-                        onClick={() => removeMcpServer(activeMcpServer.id)}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="settings-fields">
-                    <label className="field">
-                      <span>服务名称（兼作工具命名空间）</span>
-                      <input
-                        aria-label="MCP 服务名称"
-                        value={activeMcpServer.name}
-                        placeholder="如 Blender"
-                        onChange={(e) => updateMcpServer(activeMcpServer.id, { name: e.target.value })}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>传输协议</span>
-                      <select
-                        aria-label="MCP 传输协议"
-                        value={activeMcpServer.transport}
-                        onChange={(e) =>
-                          updateMcpServer(activeMcpServer.id, {
-                            transport: e.target.value === 'http' ? 'http' : 'stdio',
-                          })
-                        }
-                      >
-                        <option value="stdio">本地命令 (stdio · 如 uvx / npx)</option>
-                        <option value="http">远程或本地 HTTP / SSE</option>
-                      </select>
-                    </label>
-                    {activeMcpServer.transport === 'stdio' ? (
-                      <>
-                        <label className="field">
-                          <span>启动命令 (command)</span>
-                          <input
-                            aria-label="MCP 启动命令"
-                            value={activeMcpServer.command || ''}
-                            placeholder="如 uvx / npx / node / python3"
-                            onChange={(e) => updateMcpServer(activeMcpServer.id, { command: e.target.value })}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>参数列表 (args，空格分隔)</span>
-                          <input
-                            aria-label="MCP 参数列表"
-                            value={(activeMcpServer.args || []).join(' ')}
-                            placeholder="如 blender-mcp"
-                            onChange={(e) =>
-                              updateMcpServer(activeMcpServer.id, {
-                                args: e.target.value.trim() ? e.target.value.trim().split(/\s+/) : [],
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="field full">
-                          <span>工作目录 cwd（可选）</span>
-                          <input
-                            aria-label="MCP 工作目录"
-                            value={activeMcpServer.cwd || ''}
-                            placeholder="留空默认使用用户主目录"
-                            onChange={(e) => updateMcpServer(activeMcpServer.id, { cwd: e.target.value || undefined })}
-                          />
-                        </label>
-                        <label className="field full">
-                          <span>
-                            环境变量（每行 KEY=VALUE，通过系统 safeStorage 加密保存
-                            {activeMcpServer.envKeys?.length
-                              ? ` · 已存 ${activeMcpServer.envKeys.join(', ')}，留空保留`
-                              : ''}
-                            ）
-                          </span>
-                          <textarea
-                            rows={2}
-                            aria-label="MCP 环境变量"
-                            placeholder="BLENDER_HOST=localhost&#10;BLENDER_PORT=9876"
-                            value={mcpEnvText}
-                            onChange={(e) => {
-                              const rawText = e.target.value;
-                              setMcpEnvText(rawText);
-                              const map: Record<string, string> = {};
-                              for (const line of rawText.split(/\r?\n/)) {
-                                const eq = line.indexOf('=');
-                                if (eq > 0) {
-                                  const k = line.slice(0, eq).trim();
-                                  const v = line.slice(eq + 1).trim();
-                                  if (k) map[k] = v;
-                                }
-                              }
-                              updateMcpServer(activeMcpServer.id, {
-                                env: rawText.trim() ? map : undefined,
-                              });
-                            }}
-                          />
-                        </label>
-                      </>
-                    ) : (
-                      <>
-                        <label className="field full">
-                          <span>MCP 服务 URL (Streamable HTTP / SSE)</span>
-                          <input
-                            aria-label="MCP HTTP 地址"
-                            value={activeMcpServer.url || ''}
-                            placeholder="http://127.0.0.1:8000/mcp"
-                            onChange={(e) => updateMcpServer(activeMcpServer.id, { url: e.target.value })}
-                          />
-                        </label>
-                        <label className="field full">
-                          <span>
-                            请求头 Headers（每行 Key: Value，加密保存
-                            {activeMcpServer.headerKeys?.length
-                              ? ` · 已存 ${activeMcpServer.headerKeys.join(', ')}，留空保留`
-                              : ''}
-                            ）
-                          </span>
-                          <textarea
-                            rows={2}
-                            aria-label="MCP HTTP Headers"
-                            placeholder="Authorization: Bearer sk-..."
-                            value={mcpHeadersText}
-                            onChange={(e) => {
-                              const rawText = e.target.value;
-                              setMcpHeadersText(rawText);
-                              const map: Record<string, string> = {};
-                              for (const line of rawText.split(/\r?\n/)) {
-                                const sep = line.indexOf(':');
-                                if (sep > 0) {
-                                  const k = line.slice(0, sep).trim();
-                                  const v = line.slice(sep + 1).trim();
-                                  if (k) map[k] = v;
-                                }
-                              }
-                              updateMcpServer(activeMcpServer.id, {
-                                headers: rawText.trim() ? map : undefined,
-                              });
-                            }}
-                          />
-                        </label>
-                      </>
-                    )}
-                  </div>
-
-                  {(() => {
-                    const discoveredTools =
-                      mcpToolsByServer[activeMcpServer.id] ||
-                      mcpStatuses.find((x) => x.id === activeMcpServer.id)?.tools ||
-                      [];
-                    if (!discoveredTools.length) return null;
-                    const disabledSet = new Set(activeMcpServer.disabledTools || []);
-                    return (
-                      <div className="mcp-tools-list">
-                        <div className="mcp-tools-head">
-                          <b>已发现工具（{discoveredTools.length - disabledSet.size}/{discoveredTools.length} 启用）</b>
-                          <small>勾选要注入内置 Agent 的工具，避免冗余工具占用上下文</small>
-                        </div>
-                        <div className="mcp-tools-grid">
-                          {discoveredTools.map((tool) => {
-                            const checked = !disabledSet.has(tool.name);
-                            return (
-                              <label key={tool.qualifiedName} className="mcp-tool-item" title={tool.description}>
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={(e) => {
-                                    const nextDisabled = new Set(activeMcpServer.disabledTools || []);
-                                    if (e.target.checked) nextDisabled.delete(tool.name);
-                                    else nextDisabled.add(tool.name);
-                                    updateMcpServer(activeMcpServer.id, {
-                                      disabledTools: Array.from(nextDisabled),
-                                    });
-                                  }}
-                                />
-                                <div>
-                                  <code>{tool.name}</code>
-                                  {tool.description && <small>{tool.description.slice(0, 72)}</small>}
-                                </div>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()}
                 </div>
               )}
-
-              <div className="settings-section">
-                <h3>对外提供 CoCraft 本地 MCP 服务（供 Claude / Cursor 操控 CoCraft）</h3>
-                <div className="setting-row">
-                  <div>
-                    <b>启用本地 MCP 桥接服务</b>
-                    <p>允许 Claude / Cursor / Antigravity 等外部 MCP 客户端通过受控协议操作当前工程并调用已配置模型（仅监听 127.0.0.1，0600 令牌鉴权，绝不暴露 API 密钥）。</p>
-                  </div>
-                  <input
-                    className="switch"
-                    aria-label="启用本地 MCP 桥接服务"
-                    type="checkbox"
-                    checked={Boolean(draft.mcpBridgeEnabled)}
-                    onChange={(e) => field('mcpBridgeEnabled', e.target.checked)}
-                  />
-                </div>
-                <div className="setting-row">
-                  <div>
-                    <b>运行状态与客户端配置</b>
-                    <p>
-                      {mcpInfo?.running && mcpInfo.port
-                        ? `监听 127.0.0.1:${mcpInfo.port} · 可直接接入任意 MCP 客户端`
-                        : draft.mcpBridgeEnabled
-                          ? '点击右下角「保存设置」后立即启动本地 MCP 桥接服务'
-                          : '默认关闭，按需开启'}
-                    </p>
-                  </div>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                    <span className={`status-badge ${mcpInfo?.running ? 'good' : ''}`}>
-                      {mcpInfo?.running ? '运行中' : '未启用'}
-                    </span>
-                    <button
-                      type="button"
-                      className="button subtle"
-                      onClick={() =>
-                        void window.cocraft.call('mcp.copyConfig', {}).then(() => {
-                          setMcpCopied(true);
-                          setTimeout(() => setMcpCopied(false), 2000);
-                        })
-                      }
-                    >
-                      {mcpCopied ? '已复制配置' : '复制 MCP 配置'}
-                    </button>
-                  </div>
-                </div>
-              </div>
             </>
           )}
           {tab === 'skills' && (

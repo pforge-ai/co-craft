@@ -5368,7 +5368,7 @@ export function CreateCanvas({
                     <button
                       type="button"
                       className="cc-tb-primary"
-                      title="进入独立全屏「3D 导演棚」大屏预览、调参数、联动 Blender MCP 并一键录片"
+                      title="进入独立全屏「3D 导演棚」大屏预览、调参数并一键录片"
                       onClick={() => onOpenSpatialDirector({ kind: 'component', componentId: comp.id })}
                     >
                       <Box size={11} /> 导演棚

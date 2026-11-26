@@ -7088,86 +7088,17 @@ input[type='checkbox']:not(.switch) {
   font-size: 11px;
   color: var(--text);
 }
-.sds-muted {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--muted);
-}
-.sds-prompt-box {
+.sds-agent-host {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  overflow: hidden;
+  background: var(--panel);
 }
-.sds-prompt-box textarea {
-  width: 100%;
-  padding: 8px;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--well);
-  color: var(--text);
-  font-size: 11.5px;
-  line-height: 1.5;
-  resize: vertical;
-}
-.sds-send-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 29px;
-  border-radius: 7px;
-  background: #f4f4f6;
-  color: #0d0e10;
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.sds-send-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.sds-quick-chips {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.sds-quick-chips button {
-  text-align: left;
-  padding: 7px 9px;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--well);
-  color: var(--dim);
-  font-size: 11px;
-  line-height: 1.4;
-  cursor: pointer;
-}
-.sds-quick-chips button:hover {
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-.sds-mcp-card {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--well);
-}
-.sds-mcp-card.active {
-  border-color: rgba(52, 211, 153, 0.32);
-  background: rgba(52, 211, 153, 0.06);
-}
-.sds-mcp-card b {
-  font-size: 11.5px;
-}
-.sds-mcp-card p {
-  margin: 0;
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: var(--muted);
+.sds-agent-host > .agent-panel {
+  flex: 1;
+  min-height: 0;
 }
 .sds-empty-note {
   display: flex;
@@ -7199,73 +7130,56 @@ input[type='checkbox']:not(.switch) {
   color: var(--text);
   font-size: 11px;
 }
-.mcp-json-import-box {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+.mcp-json-editor {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--well);
-  margin-bottom: 10px;
-}
-.mcp-json-import-box textarea {
-  width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  padding: 8px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--panel);
   color: var(--text);
   resize: vertical;
+  tab-size: 2;
 }
-.mcp-json-import-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.mcp-empty-presets {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.mcp-preset-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-.mcp-preset-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 10px 11px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--well);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.14s ease, background 0.14s ease;
-}
-.mcp-preset-card:hover {
+.mcp-json-editor:focus {
+  outline: none;
   border-color: var(--line-strong);
-  background: var(--hover);
-}
-.mcp-preset-card b {
-  font-size: 12px;
-  color: var(--text);
-}
-.mcp-preset-card small {
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: var(--muted);
 }
 .mcp-server-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+}
+.mcp-server-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--well);
+  padding: 10px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mcp-server-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mcp-server-url {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-server-err {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  color: #f87171;
+  line-height: 1.4;
 }
 .mcp-tools-list {
   margin-top: 10px;

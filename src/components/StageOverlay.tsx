@@ -702,7 +702,7 @@ export function StageOverlay({
                       <button
                         type="button"
                         className="stage-spatial-capture"
-                        title="进入专属全屏「3D 导演棚」自由运镜、打机位关键帧与联动 Blender MCP"
+                        title="进入专属全屏「3D 导演棚」自由运镜、打机位关键帧与 AI 协同调度"
                         onClick={() => onOpenSpatialDirector(selectedClip)}
                       >
                         <Box size={11} /> 导演棚

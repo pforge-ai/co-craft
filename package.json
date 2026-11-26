@@ -27,6 +27,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@remotion/media": "4.0.544",
     "@remotion/player": "4.0.544",
     "@remotion/renderer": "4.0.544",

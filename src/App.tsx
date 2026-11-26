@@ -1866,6 +1866,85 @@ export function App() {
       : []),
   ];
 
+  const renderAgentPanel = () => (
+    <AgentPanel
+      project={project}
+      sequence={sequence}
+      sequenceId={sequenceId}
+      tasks={env.tasks}
+      task={task}
+      taskId={taskId}
+      connectingTask={connectingTask}
+      skills={boot.skills}
+      settings={settings}
+      agentModels={agentModels}
+      chatModel={chatModel}
+      chatConnected={chatConnected}
+      thinkingLevel={thinkingLevel}
+      streamText={stream[taskId] || ''}
+      thinkingStreamText={thinkingStream[taskId] || ''}
+      toolStatus={toolState[taskId] || ''}
+      prompt={prompt}
+      promptRef={promptRef}
+      messagesEndRef={messagesEnd}
+      mentionIndex={mentionIndex}
+      openComposerMenu={openComposerMenu}
+      scope={scope}
+      strictScope={strictScope}
+      stagePin={stagePin}
+      chatRefs={chatRefs}
+      activeComposerSkills={activeComposerSkills}
+      composerAttachments={composerAttachments}
+      onSetOpenComposerMenu={setOpenComposerMenu}
+      onNewTask={() => openDialog('new-task')}
+      onSelectTask={(t) => {
+        setTaskId(t.id);
+        if (t.sequenceId !== sequenceId) changeSequence(t.sequenceId);
+      }}
+      onRenameTask={(t) => {
+        setTaskId(t.id);
+        setFormName(t.name);
+        setDialog('rename-task');
+      }}
+      onDeleteTask={(t) => {
+        void work('删除会话', async () => {
+          const next = await api<ProjectEnvelope>('tasks.delete', { id: t.id });
+          accept(next);
+          if (taskId === t.id) setTaskId(next.tasks[0]?.id || '');
+        });
+      }}
+      onStopAgent={() => void api('agent.stop', { taskId })}
+      onSetPrompt={setPrompt}
+      onSetMentionIndex={setMentionIndex}
+      onApplyMentionCandidate={applyMentionCandidate}
+      onSeekTimecode={(sec) => {
+        pause();
+        seek(Math.round(sec * sequence.fps));
+      }}
+      onOpenSettings={openSettings}
+      onComposerDrop={handleComposerDrop}
+      onComposerPaste={handleComposerPaste}
+      onRemoveComposerSkill={(sk) =>
+        setActiveComposerSkills((prev) => prev.filter((x) => x !== sk))
+      }
+      onToggleStrictScope={() => setStrictScope((v) => !v)}
+      onClearScope={() => setScope(null)}
+      onClearStagePin={() => setStagePin(undefined)}
+      onRemoveChatRef={removeChatRef}
+      onRemoveAttachment={(id) =>
+        setComposerAttachments((prev) => prev.filter((x) => x.id !== id))
+      }
+      onAttachFiles={() => void attachFilesToComposer()}
+      onSelectModel={selectAgentModel}
+      onSelectThinkingLevel={(level) => {
+        setThinkingLevel(level);
+        localStorage.setItem('cc-thinking-level', level);
+        setOpenComposerMenu(null);
+      }}
+      onSend={() => void send()}
+    />
+  );
+
   return (
     <div
       ref={appRef}
@@ -3213,84 +3292,9 @@ export function App() {
                 setSpatialStudio({ kind: 'clip', sequenceId: sequence.id, clipId: targetClip.id });
               }}
             />
-          ) : (
-            <AgentPanel
-              project={project}
-              sequence={sequence}
-              sequenceId={sequenceId}
-              tasks={env.tasks}
-              task={task}
-              taskId={taskId}
-              connectingTask={connectingTask}
-              skills={boot.skills}
-              settings={settings}
-              agentModels={agentModels}
-              chatModel={chatModel}
-              chatConnected={chatConnected}
-              thinkingLevel={thinkingLevel}
-              streamText={stream[taskId] || ''}
-              thinkingStreamText={thinkingStream[taskId] || ''}
-              toolStatus={toolState[taskId] || ''}
-              prompt={prompt}
-              promptRef={promptRef}
-              messagesEndRef={messagesEnd}
-              mentionIndex={mentionIndex}
-              openComposerMenu={openComposerMenu}
-              scope={scope}
-              strictScope={strictScope}
-              stagePin={stagePin}
-              chatRefs={chatRefs}
-              activeComposerSkills={activeComposerSkills}
-              composerAttachments={composerAttachments}
-              onSetOpenComposerMenu={setOpenComposerMenu}
-              onNewTask={() => openDialog('new-task')}
-              onSelectTask={(t) => {
-                setTaskId(t.id);
-                if (t.sequenceId !== sequenceId) changeSequence(t.sequenceId);
-              }}
-              onRenameTask={(t) => {
-                setTaskId(t.id);
-                setFormName(t.name);
-                setDialog('rename-task');
-              }}
-              onDeleteTask={(t) => {
-                void work('删除会话', async () => {
-                  const next = await api<ProjectEnvelope>('tasks.delete', { id: t.id });
-                  accept(next);
-                  if (taskId === t.id) setTaskId(next.tasks[0]?.id || '');
-                });
-              }}
-              onStopAgent={() => void api('agent.stop', { taskId })}
-              onSetPrompt={setPrompt}
-              onSetMentionIndex={setMentionIndex}
-              onApplyMentionCandidate={applyMentionCandidate}
-              onSeekTimecode={(sec) => {
-                pause();
-                seek(Math.round(sec * sequence.fps));
-              }}
-              onOpenSettings={openSettings}
-              onComposerDrop={handleComposerDrop}
-              onComposerPaste={handleComposerPaste}
-              onRemoveComposerSkill={(sk) =>
-                setActiveComposerSkills((prev) => prev.filter((x) => x !== sk))
-              }
-              onToggleStrictScope={() => setStrictScope((v) => !v)}
-              onClearScope={() => setScope(null)}
-              onClearStagePin={() => setStagePin(undefined)}
-              onRemoveChatRef={removeChatRef}
-              onRemoveAttachment={(id) =>
-                setComposerAttachments((prev) => prev.filter((x) => x.id !== id))
-              }
-              onAttachFiles={() => void attachFilesToComposer()}
-              onSelectModel={selectAgentModel}
-              onSelectThinkingLevel={(level) => {
-                setThinkingLevel(level);
-                localStorage.setItem('cc-thinking-level', level);
-                setOpenComposerMenu(null);
-              }}
-              onSend={() => void send()}
-            />
-          )}
+          ) : !spatialStudio ? (
+            renderAgentPanel()
+          ) : null}
         </aside>
       )}
       <footer className="statusbar">
@@ -3433,23 +3437,17 @@ export function App() {
             });
           }}
           onAskAgent={(instruction, scopeClip) => {
-            setSpatialStudio(null);
             if (scopeClip) setScope(clone(scopeClip));
-            setRight('agent');
-            setShowRight(true);
             void send(instruction, scopeClip);
           }}
           onOpenCodeEditor={(compId) => {
             const comp = project.components.find((c) => c.id === compId);
             if (!comp) return;
-            setSpatialStudio(null);
             setCodeComponent(comp);
             setDialog('code');
           }}
-          onOpenMcpSettings={() => {
-            setSpatialStudio(null);
-            openSettings('mcp');
-          }}
+          onOpenMcpSettings={() => openSettings('mcp')}
+          agentSlot={renderAgentPanel()}
         />
       )}
       {dialog === 'settings' && (

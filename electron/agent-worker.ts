@@ -606,7 +606,7 @@ async function start(data: any) {
   }
   const connectedMcpServers = Array.from(new Set(mcpTools.map((t) => t.serverName)));
   const mcpPromptNote = connectedMcpServers.length
-    ? ` External MCP servers connected via MCP Client: ${connectedMcpServers.join(', ')} (tools prefixed with mcp__). When using Blender or external 3D/design MCP tools, save or export .glb / PNG / MP4 artifacts into the task workspace (${cwd}) so you can call import_asset and bring them cleanly into CoCraft.`
+    ? ` External MCP servers connected via MCP Client: ${connectedMcpServers.join(', ')} (tools prefixed with mcp__). When any external MCP tool exports local media or 3D files (.glb / PNG / MP4 / WAV), save them into the task workspace (${cwd}) so you can call import_asset to bring them cleanly into CoCraft.`
     : '';
   const runtime = await ModelRuntime.create({
     authPath: join(agentDir, 'unused-auth.json'),

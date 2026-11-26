@@ -13,6 +13,7 @@ import {
   normalizeProviderUrl,
   compatibleAdapters,
 } from '../src/core/models';
+import { MCP_MASKED_HEADER_VALUE, normalizeMcpTransport, validateMcpUrl } from '../src/core/mcp';
 import type { Settings, ModelUse, ModelDefinition, ProviderConnection, McpServerConfig } from '../src/core/types';
 
 export const defaults: Settings = {
@@ -154,20 +155,17 @@ export class SettingsStore {
           : 500,
     };
     value.mcpServers = Array.isArray(raw.mcpServers)
-      ? raw.mcpServers.map((s: any): McpServerConfig => ({
-          id: String(s.id || ''),
-          name: String(s.name || 'MCP 服务'),
-          enabled: Boolean(s.enabled),
-          transport: s.transport === 'http' ? 'http' : 'stdio',
-          command: typeof s.command === 'string' ? s.command : undefined,
-          args: Array.isArray(s.args) ? s.args.map(String) : undefined,
-          cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
-          envKeys: Array.isArray(s.envKeys) ? s.envKeys.map(String) : [],
-          url: typeof s.url === 'string' ? s.url : undefined,
-          headerKeys: Array.isArray(s.headerKeys) ? s.headerKeys.map(String) : [],
-          disabledTools: Array.isArray(s.disabledTools) ? s.disabledTools.map(String) : [],
-          preset: typeof s.preset === 'string' ? s.preset : undefined,
-        }))
+      ? raw.mcpServers
+          .filter((s: any) => typeof s?.url === 'string' && /^https?:\/\//i.test(s.url.trim()))
+          .map((s: any): McpServerConfig => ({
+            id: String(s.id || ''),
+            name: String(s.name || 'MCP 服务'),
+            enabled: Boolean(s.enabled),
+            url: String(s.url).trim(),
+            transport: normalizeMcpTransport(s.transport),
+            headerKeys: Array.isArray(s.headerKeys) ? s.headerKeys.map(String) : [],
+            disabledTools: Array.isArray(s.disabledTools) ? s.disabledTools.map(String) : [],
+          }))
       : [];
     const model = selectedModel(value, 'agent');
     const provider = value.providers.find((p) => p.id === model?.providerId);
@@ -201,14 +199,8 @@ export class SettingsStore {
     const list = Array.isArray(raw.mcpServers) ? raw.mcpServers : [];
     const resolved: McpServerConfig[] = [];
     for (const s of list) {
-      let env: Record<string, string> | undefined;
+      if (typeof s?.url !== 'string' || !/^https?:\/\//i.test(s.url.trim())) continue;
       let headers: Record<string, string> | undefined;
-      if (typeof s.envEncrypted === 'string' && s.envEncrypted) {
-        try {
-          const parsed = JSON.parse(await this.decrypt(s.envEncrypted));
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) env = parsed;
-        } catch {}
-      }
       if (typeof s.headersEncrypted === 'string' && s.headersEncrypted) {
         try {
           const parsed = JSON.parse(await this.decrypt(s.headersEncrypted));
@@ -219,17 +211,11 @@ export class SettingsStore {
         id: String(s.id || ''),
         name: String(s.name || 'MCP 服务'),
         enabled: Boolean(s.enabled),
-        transport: s.transport === 'http' ? 'http' : 'stdio',
-        command: typeof s.command === 'string' ? s.command : undefined,
-        args: Array.isArray(s.args) ? s.args.map(String) : undefined,
-        cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
-        env,
-        envKeys: env ? Object.keys(env) : [],
-        url: typeof s.url === 'string' ? s.url : undefined,
+        url: String(s.url).trim(),
+        transport: normalizeMcpTransport(s.transport),
         headers,
         headerKeys: headers ? Object.keys(headers) : [],
         disabledTools: Array.isArray(s.disabledTools) ? s.disabledTools.map(String) : [],
-        preset: typeof s.preset === 'string' ? s.preset : undefined,
       });
     }
     return resolved;
@@ -408,54 +394,48 @@ export class SettingsStore {
         raw.mcpServers = await Promise.all(
           input.mcpServers.map(async (s) => {
             const id = String(s.id || '').trim();
-            if (!id || seenMcpIds.has(id)) throw new Error('外部 MCP 服务必须具有唯一标识');
+            if (!id || seenMcpIds.has(id)) throw new Error('外部 MCP 连接必须具有唯一标识');
             seenMcpIds.add(id);
             const name = String(s.name || '').trim();
-            if (!name) throw new Error('请填写外部 MCP 服务名称');
-            const transport = s.transport === 'http' ? 'http' : 'stdio';
+            if (!name) throw new Error('请填写 MCP 服务名称');
+            const url = validateMcpUrl(s.url);
+            const transport = normalizeMcpTransport(s.transport);
             const existing = prevList.find((v: any) => v.id === id);
-            let command: string | undefined;
-            let args: string[] | undefined;
-            let cwd: string | undefined;
-            let url: string | undefined;
-            if (transport === 'stdio') {
-              command = String(s.command || '').trim();
-              if (!command) throw new Error(`MCP 服务「${name}」需要填写启动命令（如 uvx 或 npx）`);
-              args = Array.isArray(s.args) ? s.args.map((a) => String(a)).filter((a) => a.length > 0) : [];
-              cwd = typeof s.cwd === 'string' && s.cwd.trim() ? s.cwd.trim() : undefined;
-            } else {
-              url = normalizeProviderUrl(String(s.url || '').trim());
-            }
-            const sameTarget =
+            const sameTarget = Boolean(
               existing &&
-              existing.transport === transport &&
-              (transport === 'stdio'
-                ? existing.command === command
-                : existing.url && normalizeProviderUrl(existing.url) === url);
-
-            let envEncrypted: string | undefined;
-            let envKeys: string[] = [];
-            if (s.env !== undefined) {
-              const cleaned = Object.fromEntries(
-                Object.entries(s.env)
-                  .map(([k, v]) => [k.trim(), String(v)] as const)
-                  .filter(([k]) => k.length > 0),
-              );
-              envKeys = Object.keys(cleaned);
-              envEncrypted = envKeys.length ? await encrypt(JSON.stringify(cleaned)) : undefined;
-            } else if (sameTarget && existing.envEncrypted) {
-              envEncrypted = existing.envEncrypted;
-              envKeys = Array.isArray(existing.envKeys) ? existing.envKeys.map(String) : [];
-            }
+                typeof existing.url === 'string' &&
+                existing.url.trim() === url,
+            );
 
             let headersEncrypted: string | undefined;
             let headerKeys: string[] = [];
             if (s.headers !== undefined) {
-              const cleaned = Object.fromEntries(
-                Object.entries(s.headers)
-                  .map(([k, v]) => [k.trim(), String(v)] as const)
-                  .filter(([k]) => k.length > 0),
-              );
+              let existingDecrypted: Record<string, string> | undefined;
+              const cleanedEntries: Array<[string, string]> = [];
+              for (const [kRaw, vRaw] of Object.entries(s.headers)) {
+                const k = kRaw.trim();
+                if (!k) continue;
+                let v = String(vRaw);
+                if (v === MCP_MASKED_HEADER_VALUE && sameTarget && existing?.headersEncrypted) {
+                  if (!existingDecrypted) {
+                    try {
+                      const parsed = JSON.parse(await this.decrypt(existing.headersEncrypted));
+                      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        existingDecrypted = parsed;
+                      }
+                    } catch {
+                      existingDecrypted = {};
+                    }
+                  }
+                  if (existingDecrypted && typeof existingDecrypted[k] === 'string') {
+                    v = existingDecrypted[k];
+                  } else {
+                    continue;
+                  }
+                }
+                cleanedEntries.push([k, v]);
+              }
+              const cleaned = Object.fromEntries(cleanedEntries);
               headerKeys = Object.keys(cleaned);
               headersEncrypted = headerKeys.length ? await encrypt(JSON.stringify(cleaned)) : undefined;
             } else if (sameTarget && existing.headersEncrypted) {
@@ -467,16 +447,12 @@ export class SettingsStore {
               id,
               name,
               enabled: Boolean(s.enabled),
+              url,
               transport,
-              ...(command ? { command, args } : {}),
-              ...(cwd ? { cwd } : {}),
-              ...(url ? { url } : {}),
-              ...(envEncrypted ? { envEncrypted, envKeys } : { envKeys: [] }),
               ...(headersEncrypted ? { headersEncrypted, headerKeys } : { headerKeys: [] }),
               disabledTools: Array.isArray(s.disabledTools)
                 ? Array.from(new Set(s.disabledTools.map(String).filter(Boolean)))
                 : [],
-              ...(s.preset ? { preset: String(s.preset) } : {}),
             };
           }),
         );

@@ -1,57 +1,36 @@
-import type { McpServerConfig } from './types';
+import type { McpServerConfig, McpServerTransport } from './types';
 import { uid } from './project';
 
-export interface McpServerPreset {
-  id: string;
-  label: string;
-  description: string;
-  hint: string;
-  config: Omit<McpServerConfig, 'id'>;
+/** Sentinel displayed in the JSON editor for encrypted header values already stored on disk */
+export const MCP_MASKED_HEADER_VALUE = '••••••••';
+
+export function normalizeMcpTransport(raw: unknown): McpServerTransport {
+  const s = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (s === 'sse') return 'sse';
+  if (s === 'streamable-http' || s === 'streamablehttp' || s === 'streamable_http') {
+    return 'streamable-http';
+  }
+  return 'auto';
 }
 
-export const MCP_SERVER_PRESETS: McpServerPreset[] = [
-  {
-    id: 'blender',
-    label: 'Blender MCP',
-    description: '连接本机运行中的 Blender，让内置 Agent 直接建模、布光、摆机位、导出 .glb 与渲染通道图',
-    hint: '需先在 Blender 中启用 BlenderMCP 插件并安装 uv（uvx blender-mcp）',
-    config: {
-      name: 'Blender',
-      enabled: true,
-      transport: 'stdio',
-      command: 'uvx',
-      args: ['blender-mcp'],
-      preset: 'blender',
-    },
-  },
-  {
-    id: 'fetch',
-    label: 'Fetch MCP',
-    description: '抓取网页资料、参考文档或公开接口内容辅助脚本与分镜调研',
-    hint: '通过 uvx mcp-server-fetch 本地启动',
-    config: {
-      name: 'Fetch',
-      enabled: true,
-      transport: 'stdio',
-      command: 'uvx',
-      args: ['mcp-server-fetch'],
-      preset: 'fetch',
-    },
-  },
-  {
-    id: 'http-custom',
-    label: 'HTTP / SSE 远端 MCP',
-    description: '连接符合 MCP Streamable HTTP / SSE 协议的本地或远程工具服务',
-    hint: '填写完整 http(s):// 地址，可选加密鉴权 Header',
-    config: {
-      name: 'HTTP MCP 服务',
-      enabled: true,
-      transport: 'http',
-      url: 'http://127.0.0.1:8000/mcp',
-      preset: 'http-custom',
-    },
-  },
-];
+export function validateMcpUrl(raw: string): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    throw new Error('请填写运行中的 MCP 服务地址（http:// 或 https://）');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`MCP 服务地址格式无效：${trimmed}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`MCP 服务地址仅支持 http:// 或 https:// 协议：${trimmed}`);
+  }
+  return parsed.toString();
+}
 
 export function sanitizeMcpSlug(raw: string): string {
   const cleaned = String(raw || '')
@@ -84,64 +63,156 @@ export function formatMcpToolLabel(qualifiedName: string): string | null {
 }
 
 /**
- * Parses standard Claude Desktop / Cursor `{ "mcpServers": { ... } }` or bare server-map JSON
- * into CoCraft `McpServerConfig[]`.
+ * Serializes CoCraft `McpServerConfig[]` to standard `{ "mcpServers": { ... } }` JSON.
+ * Secret header values already encrypted on disk are rendered as masked sentinels so users
+ * can edit the JSON freely without losing saved tokens.
  */
-export function parseMcpServersJson(raw: string): McpServerConfig[] {
+export function serializeMcpServersToJson(servers: McpServerConfig[]): string {
+  const map: Record<string, Record<string, unknown>> = {};
+  const usedNames = new Set<string>();
+  for (const srv of servers || []) {
+    let key = String(srv.name || '').trim() || srv.id || 'server';
+    if (usedNames.has(key)) {
+      let n = 2;
+      while (usedNames.has(`${key}-${n}`)) n++;
+      key = `${key}-${n}`;
+    }
+    usedNames.add(key);
+
+    const entry: Record<string, unknown> = {
+      url: srv.url,
+    };
+    const transport = normalizeMcpTransport(srv.transport);
+    if (transport !== 'auto') entry.transport = transport;
+    if (srv.headers && Object.keys(srv.headers).length > 0) {
+      entry.headers = { ...srv.headers };
+    } else if (srv.headerKeys && srv.headerKeys.length > 0) {
+      entry.headers = Object.fromEntries(srv.headerKeys.map((k) => [k, MCP_MASKED_HEADER_VALUE]));
+    }
+    if (srv.enabled === false) entry.disabled = true;
+    if (srv.disabledTools && srv.disabledTools.length > 0) entry.disabledTools = [...srv.disabledTools];
+    map[key] = entry;
+  }
+  return JSON.stringify({ mcpServers: map }, null, 2);
+}
+
+/**
+ * Parses standard URL-based MCP server configuration JSON:
+ * `{ "mcpServers": { "service": { "url": "http://127.0.0.1:8000/mcp", "headers": { ... } } } }`
+ * or `{ "servers": { ... } }` or a bare server map.
+ * CoCraft strictly connects to already-running MCP endpoints (Streamable HTTP / SSE) and never spawns local commands.
+ * Pass `existing` to preserve stable server IDs, disabledTools, and masked encrypted headers across edits.
+ */
+export function parseMcpServersJson(
+  raw: string,
+  existing: McpServerConfig[] = [],
+  opts: { allowEmpty?: boolean } = {},
+): McpServerConfig[] {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    if (opts.allowEmpty) return [];
+    throw new Error('请粘贴有效的 MCP JSON 配置');
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(trimmed);
   } catch {
-    throw new Error('无法解析 JSON，请检查格式是否完整（如标准 mcpServers 配置）');
+    throw new Error('JSON 语法有误，请检查括号、引号与逗号');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('JSON 顶层必须是对象，例如 { "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"] } } }');
+    throw new Error(
+      'JSON 顶层必须是对象，例如 { "mcpServers": { "my-service": { "url": "http://127.0.0.1:8000/mcp" } } }',
+    );
   }
   const obj = parsed as Record<string, unknown>;
+  const hasWrapper =
+    (obj.mcpServers && typeof obj.mcpServers === 'object' && !Array.isArray(obj.mcpServers)) ||
+    (obj.servers && typeof obj.servers === 'object' && !Array.isArray(obj.servers));
   const root =
     obj.mcpServers && typeof obj.mcpServers === 'object' && !Array.isArray(obj.mcpServers)
       ? (obj.mcpServers as Record<string, unknown>)
-      : obj;
+      : obj.servers && typeof obj.servers === 'object' && !Array.isArray(obj.servers)
+        ? (obj.servers as Record<string, unknown>)
+        : obj;
+
+  const entries = Object.entries(root);
+  if (entries.length === 0) {
+    if (opts.allowEmpty || hasWrapper) return [];
+    throw new Error('未在 JSON 中发现 MCP 服务配置');
+  }
 
   const out: McpServerConfig[] = [];
-  for (const [key, entry] of Object.entries(root)) {
+  const usedExistingIds = new Set<string>();
+  let sawCommandOnly = false;
+
+  for (const [key, entry] of entries) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     const rec = entry as Record<string, unknown>;
-    const hasUrl = typeof rec.url === 'string' && rec.url.trim().length > 0;
-    const hasCommand = typeof rec.command === 'string' && rec.command.trim().length > 0;
-    if (!hasUrl && !hasCommand) continue;
-
-    const env: Record<string, string> = {};
-    if (rec.env && typeof rec.env === 'object' && !Array.isArray(rec.env)) {
-      for (const [ek, ev] of Object.entries(rec.env as Record<string, unknown>)) {
-        if (ek.trim() && ev !== undefined && ev !== null) env[ek.trim()] = String(ev);
-      }
+    const rawUrl =
+      typeof rec.url === 'string' && rec.url.trim()
+        ? rec.url.trim()
+        : typeof rec.serverUrl === 'string' && rec.serverUrl.trim()
+          ? rec.serverUrl.trim()
+          : '';
+    if (!rawUrl) {
+      if (typeof rec.command === 'string' && rec.command.trim()) sawCommandOnly = true;
+      continue;
     }
-    const headers: Record<string, string> = {};
+
+    const url = validateMcpUrl(rawUrl);
+    const name = typeof rec.name === 'string' && rec.name.trim() ? rec.name.trim() : key.trim() || 'MCP 服务';
+    const prev = existing.find(
+      (s) =>
+        !usedExistingIds.has(s.id) &&
+        (s.name.trim().toLowerCase() === name.toLowerCase() || s.url.trim() === url),
+    );
+    if (prev) usedExistingIds.add(prev.id);
+
+    const parsedHeaders: Record<string, string> = {};
+    const hasHeadersField = rec.headers !== undefined;
     if (rec.headers && typeof rec.headers === 'object' && !Array.isArray(rec.headers)) {
       for (const [hk, hv] of Object.entries(rec.headers as Record<string, unknown>)) {
-        if (hk.trim() && hv !== undefined && hv !== null) headers[hk.trim()] = String(hv);
+        if (hk.trim() && hv !== undefined && hv !== null) parsedHeaders[hk.trim()] = String(hv);
       }
     }
-    const args = Array.isArray(rec.args) ? rec.args.map((a) => String(a)) : [];
-    const name = typeof rec.name === 'string' && rec.name.trim() ? rec.name.trim() : key.trim() || 'MCP 服务';
-    const isBlender = /blender/i.test(name) || args.some((a) => /blender/i.test(a));
+    const headerKeys = Object.keys(parsedHeaders);
+    const allHeadersMaskedAndUnchanged =
+      Boolean(prev) &&
+      prev!.url.trim() === url &&
+      headerKeys.length > 0 &&
+      headerKeys.length === (prev!.headerKeys?.length || 0) &&
+      headerKeys.every(
+        (k) => parsedHeaders[k] === MCP_MASKED_HEADER_VALUE && prev!.headerKeys?.includes(k),
+      );
+
+    const transport = normalizeMcpTransport(rec.transport ?? rec.type);
+    const disabledTools = Array.isArray(rec.disabledTools)
+      ? Array.from(new Set(rec.disabledTools.map(String).filter(Boolean)))
+      : prev?.disabledTools || [];
 
     out.push({
-      id: uid('mcp'),
+      id: prev?.id || uid('mcp'),
       name,
       enabled: rec.disabled === true ? false : rec.enabled === false ? false : true,
-      transport: hasUrl && !hasCommand ? 'http' : 'stdio',
-      ...(hasCommand ? { command: String(rec.command).trim(), args } : {}),
-      ...(typeof rec.cwd === 'string' && rec.cwd.trim() ? { cwd: rec.cwd.trim() } : {}),
-      ...(Object.keys(env).length ? { env, envKeys: Object.keys(env) } : {}),
-      ...(hasUrl ? { url: String(rec.url).trim() } : {}),
-      ...(Object.keys(headers).length ? { headers, headerKeys: Object.keys(headers) } : {}),
-      ...(isBlender ? { preset: 'blender' } : {}),
+      url,
+      transport,
+      ...(allHeadersMaskedAndUnchanged
+        ? { headerKeys: prev!.headerKeys }
+        : hasHeadersField
+          ? { headers: parsedHeaders, headerKeys }
+          : { headers: {}, headerKeys: [] }),
+      ...(disabledTools.length ? { disabledTools } : {}),
     });
   }
+
   if (!out.length) {
-    throw new Error('未在 JSON 中发现包含 command 或 url 的有效 MCP 服务条目');
+    if (sawCommandOnly) {
+      throw new Error(
+        'CoCraft 仅连接运行中的 MCP 服务 URL（Streamable HTTP / SSE），不代为启动本地命令行进程（stdio）；请先自行启动服务并填写其 http(s):// 地址',
+      );
+    }
+    if (opts.allowEmpty) return [];
+    throw new Error('未在 JSON 中发现包含有效 http(s):// url 的 MCP 服务条目');
   }
   return out;
 }

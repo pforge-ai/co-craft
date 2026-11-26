@@ -14,12 +14,10 @@ import {
   Play,
   Plus,
   RotateCcw,
-  Send,
   SkipBack,
   SlidersHorizontal,
   Sparkles,
   Trash2,
-  Wand2,
 } from 'lucide-react';
 import { evaluateKeyframeTrack, removeClipKeyframe, upsertClipKeyframe } from '../core/keyframes';
 import { clone, newClip, timecode, uid } from '../core/project';
@@ -84,6 +82,7 @@ export interface SpatialDirectorStudioProps {
   onAskAgent: (instruction: string, scopeClip?: Clip) => void;
   onOpenCodeEditor?: (componentId: string) => void;
   onOpenMcpSettings: () => void;
+  agentSlot: React.ReactNode;
 }
 
 type FrameGuide = 'off' | 'thirds' | 'vertical-safe' | 'scope-239';
@@ -136,16 +135,16 @@ export function SpatialDirectorStudio({
   onAskAgent,
   onOpenCodeEditor,
   onOpenMcpSettings,
+  agentSlot,
 }: SpatialDirectorStudioProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const portRef = useRef<MessagePort | null>(null);
   const [iframeReady, setIframeReady] = useState(false);
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [rightTab, setRightTab] = useState<'direct' | 'ai'>('direct');
+  const [rightTab, setRightTab] = useState<'direct' | 'agent'>('direct');
   const [frameGuide, setFrameGuide] = useState<FrameGuide>('thirds');
   const [previewDurationSec, setPreviewDurationSec] = useState(4);
-  const [agentInput, setAgentInput] = useState('');
   const [assetPropsLocal, setAssetPropsLocal] = useState<Record<string, unknown>>({
     cameraPreset: 'orbit',
     cameraLens: 35,
@@ -623,7 +622,6 @@ export function SpatialDirectorStudio({
   };
 
   const enabledMcpServers = (settings.mcpServers || []).filter((s) => s.enabled);
-  const blenderMcp = enabledMcpServers.find((s) => /blender/i.test(s.name) || s.preset === 'blender');
 
   const capturePayload = {
     clipId: target.kind === 'clip' ? clipObj?.id : undefined,
@@ -642,7 +640,7 @@ export function SpatialDirectorStudio({
   const sendDirectorPrompt = (text: string) => {
     const clean = text.trim();
     if (!clean) return;
-    setAgentInput('');
+    setRightTab('agent');
     const prefix = isCodeTarget && compObj
       ? `【3D 导演棚 · 组件 ${compObj.name} (${compObj.id})】`
       : `【3D 导演棚 · ${title}】`;
@@ -722,16 +720,16 @@ export function SpatialDirectorStudio({
         <div className="sds-top-right">
           <button
             type="button"
-            className={`sds-mcp-pill ${blenderMcp ? 'connected' : ''}`}
+            className={`sds-mcp-pill ${enabledMcpServers.length > 0 ? 'connected' : ''}`}
             title={
-              blenderMcp
-                ? `已配置 ${blenderMcp.name} MCP，点击在 AI 协同栏联动 Blender`
-                : '配置 Blender MCP 或其他外部 MCP 服务'
+              enabledMcpServers.length > 0
+                ? `已启用 ${enabledMcpServers.map((s) => s.name).join('、')}，点击管理 MCP 连接配置`
+                : '配置外部 MCP 服务连接（JSON）'
             }
-            onClick={() => (blenderMcp ? setRightTab('ai') : onOpenMcpSettings())}
+            onClick={onOpenMcpSettings}
           >
             <Cable size={12} />
-            {blenderMcp ? 'Blender MCP' : '接 Blender MCP'}
+            {enabledMcpServers.length > 0 ? `MCP · ${enabledMcpServers.length}` : 'MCP'}
           </button>
           <span className="sds-sep" />
           <button
@@ -1038,10 +1036,10 @@ export function SpatialDirectorStudio({
             </button>
             <button
               type="button"
-              className={rightTab === 'ai' ? 'active' : ''}
-              onClick={() => setRightTab('ai')}
+              className={rightTab === 'agent' ? 'active' : ''}
+              onClick={() => setRightTab('agent')}
             >
-              <Wand2 size={12} /> AI 与 MCP 协同
+              <Sparkles size={12} /> Agent
             </button>
           </div>
 
@@ -1263,93 +1261,7 @@ export function SpatialDirectorStudio({
               )}
             </div>
           ) : (
-            <div className="sds-panel-scroll">
-              <section className="sds-group">
-                <h4>导演自然语言调度</h4>
-                <p className="sds-muted">
-                  直接描述镜头轨迹、人物走位、光影风格或让 Agent 调用外部 MCP 服务（如 Blender）联动生成资产。
-                </p>
-                <div className="sds-prompt-box">
-                  <textarea
-                    rows={3}
-                    placeholder="例如：把摄像机压低做低空掠过推进，加入冷暖对比体积雾，然后录成 3 秒预演视频…"
-                    value={agentInput}
-                    onChange={(e) => setAgentInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                        e.preventDefault();
-                        sendDirectorPrompt(agentInput);
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="sds-send-btn"
-                    disabled={!agentInput.trim()}
-                    onClick={() => sendDirectorPrompt(agentInput)}
-                  >
-                    <Send size={12} /> 发送给 Agent（⌘↵）
-                  </button>
-                </div>
-                <div className="sds-quick-chips">
-                  {[
-                    '改为低空环绕推进镜头，增强电影纵深感',
-                    '切换黄金时刻逆光剪影，增加柔和雾气氛围',
-                    '让人物从远景沿弧线走近中景特写并转身',
-                    '切为极简建筑白模，增强阴影对比',
-                  ].map((preset) => (
-                    <button key={preset} type="button" onClick={() => sendDirectorPrompt(preset)}>
-                      {preset}
-                    </button>
-                  ))}
-                </div>
-              </section>
-
-              <section className="sds-group">
-                <div className="sds-group-head">
-                  <h4>外部 MCP 3D 联动</h4>
-                  <button type="button" className="sds-link-btn" onClick={onOpenMcpSettings}>
-                    管理 MCP
-                  </button>
-                </div>
-                {blenderMcp ? (
-                  <div className="sds-mcp-card active">
-                    <b>已启用 · {blenderMcp.name}</b>
-                    <p>内置 Agent 可直接调用 Blender MCP 工具建模、打光与导出资产回 CoCraft。</p>
-                    <div className="sds-quick-chips">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          sendDirectorPrompt(
-                            '通过 Blender MCP 查看当前场景并优化布光，将场景导出为 .glb 文件保存到工作区并调用 import_asset 导入 CoCraft。',
-                          )
-                        }
-                      >
-                        同步 Blender 场景导出 .glb 导入
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          sendDirectorPrompt(
-                            '通过 Blender MCP 渲染一张高清透视参考图保存到工作区并调用 import_asset 导入画布。',
-                          )
-                        }
-                      >
-                        用 Blender 渲染参考帧回画布
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="sds-mcp-card">
-                    <b>尚未连接 Blender MCP</b>
-                    <p>在「设置 → MCP 服务」一键添加 Blender MCP（uvx blender-mcp），即可让内置 Agent 跨软件联动建模与渲染。</p>
-                    <button type="button" className="sds-out-btn" onClick={onOpenMcpSettings}>
-                      <Cable size={12} /> 前往配置 Blender MCP
-                    </button>
-                  </div>
-                )}
-              </section>
-            </div>
+            <div className="sds-agent-host">{agentSlot}</div>
           )}
         </aside>
       </div>

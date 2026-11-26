@@ -733,27 +733,21 @@ export interface System1UsageStats {
   byFeature: { reframeBox: number; qualityGate: number; omnibarRouter: number; autoTag: number };
 }
 
-export type McpServerTransport = 'stdio' | 'http';
+export type McpServerTransport = 'auto' | 'streamable-http' | 'sse';
 
 export interface McpServerConfig {
   id: string;
   name: string;
   enabled: boolean;
-  transport: McpServerTransport;
-  command?: string;
-  args?: string[];
-  cwd?: string;
-  /** Write-only env vars submitted during save/test; stripped before returning to renderer */
-  env?: Record<string, string>;
-  /** Keys of encrypted env vars currently stored on disk */
-  envKeys?: string[];
-  url?: string;
+  /** Running MCP endpoint URL (Streamable HTTP or SSE) */
+  url: string;
+  /** Protocol preference; defaults to 'auto' (Streamable HTTP first, fallback to SSE) */
+  transport?: McpServerTransport;
   /** Write-only HTTP headers submitted during save/test; stripped before returning to renderer */
   headers?: Record<string, string>;
   /** Keys of encrypted HTTP headers currently stored on disk */
   headerKeys?: string[];
   disabledTools?: string[];
-  preset?: string;
 }
 
 export interface McpRemoteToolInfo {
@@ -770,8 +764,12 @@ export interface McpServerStatus {
   id: string;
   name: string;
   enabled: boolean;
+  url: string;
   transport: McpServerTransport;
+  /** Negotiated protocol while connected */
+  activeTransport?: 'streamable-http' | 'sse';
   connected: boolean;
+  serverVersion?: { name: string; version: string };
   error?: string;
   tools: McpRemoteToolInfo[];
   lastCheckedAt?: string;
