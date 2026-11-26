@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { uid } from '../../src/core/project';
+import { findFreeCanvasPlacement } from '../../src/lib/canvasLayout';
 import {
   DEFAULT_SPATIAL_BOOKMARKS,
   computeStageSceneSignature,
@@ -198,10 +199,12 @@ export const stageIpcHandlers: IpcHandlerMap = {
       ];
       operations.push({ type: 'addAsset', asset });
       if (arg.placement) {
-        nextLayout[`asset:${asset.id}`] = {
-          x: Math.round(Number(arg.placement.x)),
-          y: Math.round(Number(arg.placement.y) + i * 195),
-        };
+        nextLayout[`asset:${asset.id}`] = findFreeCanvasPlacement(
+          nextLayout,
+          { x: Number(arg.placement.x), y: Number(arg.placement.y) + i * 195 },
+          { w: 256, h: 172 },
+          `asset:${asset.id}`,
+        );
       }
       captured.push({ pass, asset });
     }
@@ -317,15 +320,18 @@ export const stageIpcHandlers: IpcHandlerMap = {
 
     const operations: EditOperation[] = [{ type: 'addAsset', asset }];
     if (arg.placement) {
+      const freePos = findFreeCanvasPlacement(
+        p.canvasLayout,
+        { x: Number(arg.placement.x), y: Number(arg.placement.y) },
+        { w: 256, h: 172 },
+        `asset:${asset.id}`,
+      );
       operations.push({
         type: 'updateProject',
         changes: {
           canvasLayout: {
             ...(p.canvasLayout || {}),
-            [`asset:${asset.id}`]: {
-              x: Math.round(Number(arg.placement.x)),
-              y: Math.round(Number(arg.placement.y)),
-            },
+            [`asset:${asset.id}`]: freePos,
           },
         },
       });
@@ -434,10 +440,12 @@ export const stageIpcHandlers: IpcHandlerMap = {
       pairAssets.push(asset);
       pairOps.push({ type: 'addAsset', asset });
       if (arg.placement) {
-        nextLayout[`asset:${asset.id}`] = {
-          x: Math.round(Number(arg.placement.x)),
-          y: Math.round(Number(arg.placement.y) + (idx === 0 ? -68 : 118)),
-        };
+        nextLayout[`asset:${asset.id}`] = findFreeCanvasPlacement(
+          nextLayout,
+          { x: Number(arg.placement.x), y: Number(arg.placement.y) + (idx === 0 ? -68 : 118) },
+          { w: 256, h: 172 },
+          `asset:${asset.id}`,
+        );
       }
     }
     if (arg.placement) {
@@ -559,10 +567,12 @@ export const stageIpcHandlers: IpcHandlerMap = {
         ];
         createdAssets.push(asset);
         ops.push({ type: 'addAsset', asset });
-        nextLayout[`asset:${asset.id}`] = {
-          x: Math.round(baseX + i * 260),
-          y: Math.round(baseY + pIdx * 200),
-        };
+        nextLayout[`asset:${asset.id}`] = findFreeCanvasPlacement(
+          nextLayout,
+          { x: baseX + i * 260, y: baseY + pIdx * 200 },
+          { w: 256, h: 172 },
+          `asset:${asset.id}`,
+        );
 
         if (addToTimeline && pass === 'beauty') {
           const shotClip: Clip = {
@@ -765,10 +775,12 @@ export const stageIpcHandlers: IpcHandlerMap = {
           shotAssetIds.push(asset.id);
           if (pIdx === 0) primaryAssetId = asset.id;
           ops.push({ type: 'addAsset', asset });
-          nextLayout[`asset:${asset.id}`] = {
-            x: Math.round(baseX + i * 265),
-            y: Math.round(baseY + pIdx * 196),
-          };
+          nextLayout[`asset:${asset.id}`] = findFreeCanvasPlacement(
+            nextLayout,
+            { x: baseX + i * 265, y: baseY + pIdx * 196 },
+            { w: 256, h: 172 },
+            `asset:${asset.id}`,
+          );
 
           if (addToTimeline && pIdx === 0) {
             const imgClip: Clip = {
@@ -861,10 +873,12 @@ export const stageIpcHandlers: IpcHandlerMap = {
           shotAssetIds.push(asset.id);
           if (fIdx === 0) primaryAssetId = asset.id;
           ops.push({ type: 'addAsset', asset });
-          nextLayout[`asset:${asset.id}`] = {
-            x: Math.round(baseX + i * 265),
-            y: Math.round(baseY + fIdx * 196),
-          };
+          nextLayout[`asset:${asset.id}`] = findFreeCanvasPlacement(
+            nextLayout,
+            { x: baseX + i * 265, y: baseY + fIdx * 196 },
+            { w: 256, h: 172 },
+            `asset:${asset.id}`,
+          );
         }
       } else {
         outKind = 'video';
@@ -918,10 +932,12 @@ export const stageIpcHandlers: IpcHandlerMap = {
         shotAssetIds.push(asset.id);
         primaryAssetId = asset.id;
         ops.push({ type: 'addAsset', asset });
-        nextLayout[`asset:${asset.id}`] = {
-          x: Math.round(baseX + i * 265),
-          y: Math.round(baseY),
-        };
+        nextLayout[`asset:${asset.id}`] = findFreeCanvasPlacement(
+          nextLayout,
+          { x: baseX + i * 265, y: baseY },
+          { w: 256, h: 172 },
+          `asset:${asset.id}`,
+        );
         if (addToTimeline) {
           const vidClip: Clip = {
             id: uid('clip'),

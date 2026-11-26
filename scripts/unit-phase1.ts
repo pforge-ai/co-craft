@@ -779,6 +779,55 @@ assert.ok(
     'Legacy stacked cards are automatically separated',
   );
 
+  // Real partial rectangle overlap repair (exact coordinates from live bug: 1652,116 vs 1676,159 -> 80% overlap!)
+  const partialRepaired = resolveNonOverlappingCanvasLayout({
+    assetNodeKeys: ['ent:note1', 'asset:vid1'],
+    shotNodeKeys: [],
+    savedPositions: { 'ent:note1': { x: 1676, y: 159 }, 'asset:vid1': { x: 1652, y: 116 } },
+    assetCols: 2,
+    shotLaneX: 700,
+    getSize: (k) => (k.startsWith('ent:') ? { w: 280, h: 146 } : { w: 248, h: 162 }),
+  });
+  const nPos = partialRepaired['ent:note1'];
+  const vPos = partialRepaired['asset:vid1'];
+  const stillOverlaps = !(
+    nPos.x + 280 <= vPos.x ||
+    vPos.x + 248 <= nPos.x ||
+    nPos.y + 146 <= vPos.y ||
+    vPos.y + 162 <= nPos.y
+  );
+  assert.equal(stillOverlaps, false, `Partial-overlap cards must separate cleanly (${JSON.stringify(nPos)} vs ${JSON.stringify(vPos)})`);
+
+  // Backend/frontend auto-placement collision avoidance
+  const { findFreeCanvasPlacement } = await import('../src/lib/canvasLayout');
+  const avoided = findFreeCanvasPlacement(
+    { 'ent:note1': { x: 1676, y: 159 } },
+    { x: 1652, y: 116 },
+    { w: 256, h: 172 },
+  );
+  assert.ok(
+    avoided.x + 256 <= 1676 || 1676 + 280 <= avoided.x || avoided.y + 172 <= 159 || 159 + 172 <= avoided.y,
+    `findFreeCanvasPlacement avoids occupied card (got ${JSON.stringify(avoided)})`,
+  );
+
+  // 3-zone Tidy Up separates Context, Explore & Shots with zero zone-frame overlap
+  const tidyZones = computeTidyCanvasLayout({
+    assetNodeKeys: ['ent:1', 'gen:1', 'asset:out1'],
+    shotNodeKeys: ['shot:s1'],
+    contextKeys: ['ent:1'],
+    exploreKeys: ['gen:1', 'asset:out1'],
+    groups: [],
+    getSize: (k) => (k.startsWith('gen:') ? { w: 316, h: 268 } : { w: 256, h: 172 }),
+  });
+  assert.ok(
+    tidyZones.positions['ent:1'].x + 256 + 44 < tidyZones.positions['gen:1'].x,
+    'Tidy Up keeps 剧本与设定 and 探索工坊 zone frames cleanly separated',
+  );
+  assert.ok(
+    tidyZones.positions['gen:1'].x + 316 + 44 < tidyZones.positions['shot:s1'].x,
+    'Tidy Up keeps 探索工坊 and 成片分镜序列 zone frames cleanly separated',
+  );
+
   const tidy = computeTidyCanvasLayout({
     assetNodeKeys: ['asset:1', 'asset:2', 'asset:3', 'asset:4'],
     shotNodeKeys: ['shot:s1'],

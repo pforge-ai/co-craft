@@ -55,6 +55,7 @@ import {
   CANVAS_LANE_TOP,
   computeTidyCanvasLayout,
   estimateCanvasNodeSize,
+  findFreeCanvasPlacement,
   formatAssetCardMeta,
   formatCanvasDisplayName,
   resolveNonOverlappingCanvasLayout,
@@ -325,6 +326,7 @@ export function CreateCanvas({
   const [omnibarDraft, setOmnibarDraft] = useState('');
 
   const [nodePositions, setNodePositions] = useState<Record<string, Pt>>(() => project.canvasLayout || {});
+  const [draggingNodeKeys, setDraggingNodeKeys] = useState<ReadonlySet<string> | null>(null);
   const nodePositionsRef = useRef<Record<string, Pt>>(project.canvasLayout || {});
   nodePositionsRef.current = nodePositions;
 
@@ -667,6 +669,7 @@ export function CreateCanvas({
       shotNodeKeys,
       savedPositions: nodePositions,
       occupiedRects,
+      pinnedKeys: draggingNodeKeys || undefined,
       assetCols,
       shotLaneX,
       getSize: nodeSizeFor,
@@ -679,6 +682,7 @@ export function CreateCanvas({
     visibleShots,
     isContextAsset,
     collapsedGroups,
+    draggingNodeKeys,
     assetCols,
     shotLaneX,
     nodePositions,
@@ -768,7 +772,8 @@ export function CreateCanvas({
         outputAssetIds: [],
         updatedAt: new Date().toISOString(),
       };
-      const pos = opts.placement || viewportCenterWorld();
+      const rawPos = opts.placement || viewportCenterWorld();
+      const pos = findFreeCanvasPlacement(layoutRef.current, rawPos, { w: 316, h: 268 }, `gen:${id}`);
       const nextLayout = {
         ...nodePositionsRef.current,
         [`gen:${id}`]: { x: Math.round(pos.x), y: Math.round(pos.y) },
@@ -948,7 +953,8 @@ export function CreateCanvas({
         updatedAt: new Date().toISOString(),
       };
       if (worldPos) {
-        const nextLayout = { ...nodePositionsRef.current, [`ent:${item.id}`]: worldPos };
+        const freePos = findFreeCanvasPlacement(layoutRef.current, worldPos, { w: 280, h: 156 }, `ent:${item.id}`);
+        const nextLayout = { ...nodePositionsRef.current, [`ent:${item.id}`]: freePos };
         nodePositionsRef.current = nextLayout;
         setNodePositions(nextLayout);
         await onEdit(`新建文本节点「${item.name}」`, [
@@ -1091,17 +1097,22 @@ export function CreateCanvas({
   );
 
   const tidyCanvasNodes = useCallback(async () => {
-    const assetNodeKeys = [
+    const contextKeys = [
       ...visibleUpstreamEntities.map((e) => `ent:${e.id}`),
       ...visibleStandaloneAssets.filter((a) => isContextAsset(a)).map((a) => `asset:${a.id}`),
+    ];
+    const exploreKeys = [
       ...visibleGenerators.map((g) => `gen:${g.id}`),
       ...visibleStandaloneAssets.filter((a) => !isContextAsset(a)).map((a) => `asset:${a.id}`),
       ...visibleStandaloneComponents.map((c) => `comp:${c.id}`),
     ];
+    const assetNodeKeys = [...contextKeys, ...exploreKeys];
     const shotNodeKeys = visibleShots.map((sh) => `shot:${sh.id}`);
     const { positions } = computeTidyCanvasLayout({
       assetNodeKeys,
       shotNodeKeys,
+      contextKeys,
+      exploreKeys,
       groups: project.canvasGroups || [],
       getSize: nodeSizeFor,
     });
@@ -2400,6 +2411,7 @@ export function CreateCanvas({
           if (!dragged) {
             dragged = true;
             suppressNextClickRef.current = true;
+            setDraggingNodeKeys(new Set(origMap.keys()));
             if (!selectedIdsRef.current.includes(nodeKey)) setSelectedNodeIds([nodeKey]);
           }
           const dx = Math.round((mx - sx) / zoomRef.current);
@@ -2412,6 +2424,7 @@ export function CreateCanvas({
           setNodePositions(next);
         },
         () => {
+          setDraggingNodeKeys(null);
           if (dragged) {
             requestAnimationFrame(() => {
               suppressNextClickRef.current = false;

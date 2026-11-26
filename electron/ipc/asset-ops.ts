@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { uid } from '../../src/core/project';
+import { findFreeCanvasPlacement } from '../../src/lib/canvasLayout';
 import type { EditOperation, VaultItem } from '../../src/core/types';
 import { binary, importMedia, parseSilenceDetectLog, run } from '../media';
 import type { IpcHandlerMap } from './types';
@@ -12,16 +13,19 @@ function placementOperation(
   placement: any,
 ): EditOperation[] {
   if (!placement || !Number.isFinite(placement.x) || !Number.isFinite(placement.y)) return [];
+  const freePos = findFreeCanvasPlacement(
+    existingLayout,
+    { x: Number(placement.x), y: Number(placement.y) },
+    nodeKey.startsWith('ent:') ? { w: 280, h: 156 } : { w: 256, h: 172 },
+    nodeKey,
+  );
   return [
     {
       type: 'updateProject',
       changes: {
         canvasLayout: {
           ...(existingLayout || {}),
-          [nodeKey]: {
-            x: Math.round(placement.x),
-            y: Math.round(placement.y),
-          },
+          [nodeKey]: freePos,
         },
       },
     },

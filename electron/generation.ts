@@ -20,6 +20,7 @@ import {
   type ProviderRequestOptions,
 } from './providers';
 import { uid } from '../src/core/project';
+import { findFreeCanvasPlacement } from '../src/lib/canvasLayout';
 import {
   modelUses,
   selectedModel,
@@ -1013,12 +1014,15 @@ export class GenerationService {
         Number.isFinite(job.canvas.placement.y) &&
         !p.canvasLayout?.[`asset:${asset.id}`]
       ) {
+        const freePos = findFreeCanvasPlacement(
+          p.canvasLayout,
+          { x: job.canvas.placement.x, y: job.canvas.placement.y },
+          asset.kind === 'audio' ? { w: 248, h: 86 } : { w: 256, h: 172 },
+          `asset:${asset.id}`,
+        );
         projectChanges.canvasLayout = {
           ...(p.canvasLayout || {}),
-          [`asset:${asset.id}`]: {
-            x: Math.round(job.canvas.placement.x),
-            y: Math.round(job.canvas.placement.y),
-          },
+          [`asset:${asset.id}`]: freePos,
         };
       }
       const sourceGenKey = job?.canvas?.sourceNodeKeys?.find((k) => k.startsWith('gen:'));
