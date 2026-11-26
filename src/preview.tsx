@@ -135,6 +135,7 @@ function Preview() {
   const pausedRef = useRef(true);
   const mutedRef = useRef(false);
   const scrubbingRef = useRef(false);
+  const skipMeasureRef = useRef(false);
   const measureRafRef = useRef<number>(0);
   const captureErrorRef = useRef('');
   const [captureEpoch, setCaptureEpoch] = useState(0);
@@ -243,6 +244,7 @@ function Preview() {
       if (msg.type === 'load') {
         if (typeof msg.frame === 'number') pending.current = msg.frame;
         scrubbingRef.current = false;
+        skipMeasureRef.current = false;
         setLiveOverride(null);
         setProps(msg.props);
         scheduleMeasure();
@@ -281,8 +283,9 @@ function Preview() {
         if (pausedRef.current && !scrubbingRef.current) scheduleMeasure();
       }
       if (msg.type === 'live-transform') {
+        skipMeasureRef.current = Boolean(msg.skipMeasure);
         setLiveOverride(msg.override ?? null);
-        scheduleMeasure();
+        if (!msg.skipMeasure) scheduleMeasure();
       }
       if (msg.type === 'mute') {
         mutedRef.current = Boolean(msg.muted);
@@ -426,7 +429,7 @@ function Preview() {
   }, [props, s, recoveryEpoch, scheduleMeasure]);
 
   useEffect(() => {
-    if (paused && !scrubbingRef.current) scheduleMeasure();
+    if (paused && !scrubbingRef.current && !skipMeasureRef.current) scheduleMeasure();
   }, [paused, selectedClipId, liveOverride, scheduleMeasure]);
 
   const inputProps = useMemo<FilmProps | null>(

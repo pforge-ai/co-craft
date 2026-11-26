@@ -250,37 +250,111 @@
 }
 .sds-cam-hud {
   position: absolute;
-  left: 22px;
-  right: 22px;
+  left: 50%;
+  transform: translateX(-50%);
   bottom: 10px;
-  display: flex;
+  max-width: calc(100% - 36px);
+  display: inline-flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(14, 15, 19, 0.84);
-  backdrop-filter: blur(8px);
+  gap: 12px;
+  padding: 5px 10px 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(14, 16, 21, 0.86);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
   font-size: 10.5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--dim);
+  z-index: 12;
 }
-.sds-cam-hint {
-  font-family: inherit;
-  color: var(--muted);
+.sds-cam-readout {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.sds-cam-readout b {
+  color: #34d399;
+  font-weight: 700;
+}
+.sds-cam-readout span {
+  color: var(--dim);
+}
+.sds-cam-hud-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
 }
 .sds-cam-hud button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 7px;
-  border-radius: 5px;
-  border: 1px solid var(--line);
-  background: var(--well);
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text);
   font-size: 10.5px;
+  font-family: var(--font);
   cursor: pointer;
+  white-space: nowrap;
+}
+.sds-cam-hud button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.sds-help-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.sds-cam-hud button.sds-hud-icon-btn {
+  width: 22px;
+  padding: 0;
+  justify-content: center;
+  color: var(--muted);
+}
+.sds-cam-hud button.sds-hud-icon-btn.active {
+  color: var(--text);
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(52, 211, 153, 0.14);
+}
+.sds-hotkey-popover {
+  position: absolute;
+  right: 0;
+  bottom: 30px;
+  width: 210px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(16, 18, 24, 0.96);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: var(--font);
+  z-index: 30;
+}
+.sds-hotkey-popover > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+}
+.sds-hotkey-popover b {
+  color: var(--text);
+  font-weight: 500;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+.sds-hotkey-popover span {
+  color: var(--muted);
 }
 .sds-rail {
   border-top: 1px solid var(--line);
@@ -468,6 +542,9 @@
   border-bottom: 1px solid var(--line);
   padding: 6px;
   gap: 4px;
+}
+.sds-tabs.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .sds-tabs.three-col {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1416,5 +1493,335 @@
 .sds-output-lineage-card small {
   font-size: 10px;
   color: var(--muted);
+}
+
+/* Redesigned Figma-Density Director Inspector & 60fps Controls */
+.sds-shot-head-group {
+  gap: 8px;
+}
+.sds-shot-id-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sds-shot-key-pill {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: rgba(52, 211, 153, 0.14);
+  border: 1px solid rgba(52, 211, 153, 0.32);
+  color: #6ee7b7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.sds-shot-name-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.sds-shot-name-input:focus {
+  outline: none;
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(255, 255, 255, 0.04);
+}
+.sds-dur-inline {
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--text);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  flex-shrink: 0;
+}
+.sds-mode-seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #0d0f13;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+.sds-mode-seg button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 27px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.sds-mode-seg button small {
+  font-size: 9.5px;
+  color: var(--muted);
+  opacity: 0.78;
+}
+.sds-mode-seg button:hover {
+  color: var(--text);
+}
+.sds-mode-seg button.active {
+  background: #1c2028;
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.sds-mode-seg button.active svg {
+  color: #34d399;
+}
+.sds-mode-seg button.active small {
+  color: #a7f3d0;
+  opacity: 0.9;
+}
+.sds-ghost-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.sds-ghost-reset:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.sds-lens-seg {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.sds-lens-seg button {
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--dim);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.sds-lens-seg button:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.sds-lens-seg button.active {
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.45);
+  color: #ecfdf5;
+  font-weight: 600;
+}
+.sds-angle-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.sds-angle-presets button {
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.sds-angle-presets button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.sds-angle-presets button.active {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.18);
+  font-weight: 500;
+}
+.sds-scrub-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.sds-scrub {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 7px 0 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #0d0f13;
+  transition: border-color 0.12s ease, background 0.12s ease;
+  min-width: 0;
+}
+.sds-scrub:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.sds-scrub:focus-within,
+.sds-scrub.is-dragging {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(52, 211, 153, 0.06);
+}
+.sds-scrub-label {
+  height: 100%;
+  padding: 0 7px 0 8px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  color: var(--muted);
+  cursor: ew-resize;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 54%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sds-scrub:hover .sds-scrub-label,
+.sds-scrub.is-dragging .sds-scrub-label {
+  color: var(--text);
+}
+.sds-scrub input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  text-align: right;
+  padding: 0;
+  outline: none;
+}
+.sds-scrub-unit {
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: 2px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.sds-micro-hint {
+  margin: 0;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.78;
+}
+.sds-tsx-scope-hint {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.sds-tsx-params-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Slim Pro 60fps Live Slider (Replaces Bulky OS Range Input) */
+.sds-live-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sds-live-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--muted);
+  user-select: none;
+  cursor: default;
+}
+.sds-live-slider-head b {
+  color: var(--text);
+  font-weight: 500;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.sds-live-slider-track {
+  position: relative;
+  height: 16px;
+  display: flex;
+  align-items: center;
+}
+.sds-live-slider-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.sds-live-slider-fill {
+  position: absolute;
+  left: 0;
+  height: 3px;
+  border-radius: 999px;
+  background: #34d399;
+  pointer-events: none;
+}
+.sds-live-slider-track input[type='range'] {
+  position: relative;
+  width: 100%;
+  margin: 0;
+  height: 16px;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.sds-live-slider-track input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: #f4f4f6;
+  border: 1.5px solid #0e1014;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+.sds-live-slider-track input[type='range']:hover::-webkit-slider-thumb,
+.sds-live-slider-track input[type='range']:active::-webkit-slider-thumb {
+  transform: scale(1.18);
+  background: #ffffff;
+}
+.sds-cam-hud button.sds-switch-motion-btn {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+}
+.sds-cam-hud button.sds-switch-motion-btn:hover {
+  background: rgba(56, 189, 248, 0.22);
 }
 

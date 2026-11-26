@@ -14,6 +14,7 @@ import {
   Diamond,
   Film,
   Grid3X3,
+  HelpCircle,
   Image as ImageIcon,
   Layers,
   LayoutGrid,
@@ -79,6 +80,14 @@ import type {
 } from '../core/types';
 import { StageRadarOverlay } from './StageRadarOverlay';
 import { TimelineCurveHeader, TimelineCurveLane } from './TimelineCurveDrawer';
+import { DirectorLiveSlider, DirectorScrubInput, DirectorTextField } from './director/DirectorControls';
+
+const QUICK_ANGLE_PRESETS = [
+  { id: 'eye', label: '平视', yaw: 0, pitch: 0, distance: 1.0 },
+  { id: 'three-quarter', label: '45° 侧拍', yaw: 34, pitch: 12, distance: 1.04 },
+  { id: 'low', label: '低仰拍', yaw: 0, pitch: -16, distance: 0.88 },
+  { id: 'overhead', label: '俯瞰', yaw: 16, pitch: 38, distance: 1.24 },
+] as const;
 
 export type SpatialDirectorTarget =
   | { kind: 'clip'; sequenceId: string; clipId: string }
@@ -241,6 +250,7 @@ export function SpatialDirectorStudio({
   agentSlot,
 }: SpatialDirectorStudioProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const viewportStageRef = useRef<HTMLDivElement>(null);
   const aspectBoxRef = useRef<HTMLDivElement>(null);
   const rulerTrackRef = useRef<HTMLDivElement>(null);
   const portRef = useRef<MessagePort | null>(null);
@@ -270,9 +280,33 @@ export function SpatialDirectorStudio({
   const [liveStageHud, setLiveStageHud] = useState<string | null>(null);
   const [includeDepthNormal, setIncludeDepthNormal] = useState(false);
   const [motionOutputMode, setMotionOutputMode] = useState<MotionOutputMode>('video');
+  const [showHelpTip, setShowHelpTip] = useState(false);
+  const [liveSceneProps, setLiveSceneProps] = useState<Record<string, unknown> | null>(null);
+
+  const liveCamRef = useRef<{
+    yaw: number;
+    pitch: number;
+    distance: number;
+    panX: number;
+    panY: number;
+    lens: number;
+  } | null>(null);
+  const liveCamRafRef = useRef(0);
+  const deferredCamCommitRef = useRef<number | null>(null);
+  const deferredCamLabelRef = useRef('调整 3D 摄像机');
+  const pendingCommitRevRef = useRef<number | null>(null);
+  const pendingClearTimerRef = useRef<number | null>(null);
 
   const resizerCleanupRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => resizerCleanupRef.current?.(), []);
+  useEffect(
+    () => () => {
+      resizerCleanupRef.current?.();
+      if (liveCamRafRef.current) cancelAnimationFrame(liveCamRafRef.current);
+      if (deferredCamCommitRef.current !== null) window.clearTimeout(deferredCamCommitRef.current);
+      if (pendingClearTimerRef.current !== null) window.clearTimeout(pendingClearTimerRef.current);
+    },
+    [],
+  );
 
   const pendingPickRef = useRef<
     Map<string, (res: { objectId: string | null; floorX: number | null; floorZ: number | null }) => void>
@@ -421,8 +455,8 @@ export function SpatialDirectorStudio({
         raw = JSON.parse(currentProps.stageShotsJson);
       } catch {}
     }
-    return normalizeStageShots(raw, currentProps.cameraBookmarks);
-  }, [currentProps.stageShots, currentProps.stageShotsJson, currentProps.cameraBookmarks]);
+    return normalizeStageShots(raw, currentProps.cameraBookmarks, isCodeTarget ? 'code' : 'stage');
+  }, [currentProps.stageShots, currentProps.stageShotsJson, currentProps.cameraBookmarks, isCodeTarget]);
 
   const [localActiveShotId, setLocalActiveShotId] = useState<string>(() =>
     String(currentProps.activeShotId || stageShots[0]?.id || 'shot-1'),
@@ -632,6 +666,80 @@ export function SpatialDirectorStudio({
     };
   }, [targetOrigin]);
 
+  const previewLivePatch = useCallback(
+    (patch: Record<string, unknown>) => {
+      postToStage('live-transform', {
+        override: { clipId: STUDIO_CLIP_ID, props: patch },
+        skipMeasure: true,
+      });
+    },
+    [postToStage],
+  );
+
+  const cancelDeferredCamCommit = useCallback(() => {
+    if (deferredCamCommitRef.current !== null) {
+      window.clearTimeout(deferredCamCommitRef.current);
+      deferredCamCommitRef.current = null;
+    }
+    if (liveCamRafRef.current) {
+      cancelAnimationFrame(liveCamRafRef.current);
+      liveCamRafRef.current = 0;
+    }
+  }, []);
+
+  const markPendingCommit = useCallback(() => {
+    if (pendingClearTimerRef.current !== null) {
+      window.clearTimeout(pendingClearTimerRef.current);
+      pendingClearTimerRef.current = null;
+    }
+    if (target.kind === 'asset') {
+      // Asset target updates React state synchronously — let load effect hand over cleanly next frame
+      pendingCommitRevRef.current = -1;
+    } else {
+      pendingCommitRevRef.current = project.revision;
+    }
+    // Safety net in case an edit was a no-op or rejected by IPC
+    pendingClearTimerRef.current = window.setTimeout(() => {
+      pendingClearTimerRef.current = null;
+      pendingCommitRevRef.current = null;
+      liveCamRef.current = null;
+      setLiveHud(null);
+      setLiveSceneProps(null);
+      postToStage('live-transform', { override: null, skipMeasure: true });
+    }, 520);
+  }, [target.kind, project.revision, postToStage]);
+
+  const pushLiveCamera = useCallback(
+    (next: { yaw: number; pitch: number; distance: number; panX: number; panY: number; lens: number }) => {
+      liveCamRef.current = next;
+      if (!liveCamRafRef.current) {
+        liveCamRafRef.current = requestAnimationFrame(() => {
+          liveCamRafRef.current = 0;
+          const cur = liveCamRef.current;
+          if (!cur) return;
+          setLiveHud(cur);
+          previewLivePatch({
+            cameraYaw: cur.yaw,
+            cameraPitch: cur.pitch,
+            cameraDistance: cur.distance,
+            cameraPanX: cur.panX,
+            cameraPanY: cur.panY,
+            ...(cur.lens > 0 ? { cameraLens: cur.lens } : {}),
+          });
+        });
+      }
+    },
+    [previewLivePatch],
+  );
+
+  const pushLiveSceneProp = useCallback(
+    (patch: Record<string, unknown>) => {
+      setLiveSceneProps((prev) => ({ ...(prev || {}), ...patch }));
+      previewLivePatch(patch);
+    },
+    [previewLivePatch],
+  );
+
   // Push synthetic 3D project into studio iframe whenever scene/shot/keyframes change
   useEffect(() => {
     if (!iframeReady) return;
@@ -639,7 +747,19 @@ export function SpatialDirectorStudio({
       props: { project: studioProject, sequenceId: STUDIO_SEQ_ID, mediaOrigin: previewOrigin },
       frame: clampedFrame,
     });
-  }, [iframeReady, studioProject, previewOrigin, postToStage]);
+    // Zero-snap-back handover: clear live draft ONLY once the committed revision has been pushed to iframe!
+    const awaiting = pendingCommitRevRef.current;
+    if (awaiting !== null && (awaiting === -1 || project.revision > awaiting)) {
+      pendingCommitRevRef.current = null;
+      if (pendingClearTimerRef.current !== null) {
+        window.clearTimeout(pendingClearTimerRef.current);
+        pendingClearTimerRef.current = null;
+      }
+      liveCamRef.current = null;
+      setLiveHud(null);
+      setLiveSceneProps(null);
+    }
+  }, [iframeReady, studioProject, previewOrigin, postToStage, project.revision]);
 
   const seekTo = useCallback(
     (nextFrame: number) => {
@@ -667,6 +787,16 @@ export function SpatialDirectorStudio({
     (shotId: string) => {
       const next = stageShots.find((s) => s.id === shotId);
       if (!next) return;
+      cancelDeferredCamCommit();
+      pendingCommitRevRef.current = null;
+      if (pendingClearTimerRef.current !== null) {
+        window.clearTimeout(pendingClearTimerRef.current);
+        pendingClearTimerRef.current = null;
+      }
+      liveCamRef.current = null;
+      setLiveHud(null);
+      setLiveSceneProps(null);
+      postToStage('live-transform', { override: null, skipMeasure: true });
       setLocalActiveShotId(next.id);
       setCurveSelectedFrame(null);
       if (next.mode === 'still') {
@@ -679,7 +809,7 @@ export function SpatialDirectorStudio({
         postToStage('seek', { frame: 0 });
       }
     },
-    [stageShots, postToStage],
+    [stageShots, postToStage, cancelDeferredCamCommit],
   );
 
   // Persist Scene-layer OR Shot-layer prop patches atomically back to Clip / VaultItem / CodeComponent / Asset
@@ -768,6 +898,57 @@ export function SpatialDirectorStudio({
       commitStageShots(label, nextShots);
     },
     [stageShots, clampedFrame, commitStageShots],
+  );
+
+  // Smooth 60fps wheel & keyboard flight: updates live WebGL every frame, persists ONCE after pause!
+  const updateActiveShotCameraRef = useRef(updateActiveShotCamera);
+  updateActiveShotCameraRef.current = updateActiveShotCamera;
+  const resolvedCamRef = useRef(resolvedCam);
+  resolvedCamRef.current = resolvedCam;
+
+  const scheduleDeferredCamCommit = useCallback(
+    (
+      label: string,
+      mutate: (base: { yaw: number; pitch: number; distance: number; panX: number; panY: number; lens: number }) => {
+        yaw: number;
+        pitch: number;
+        distance: number;
+        panX: number;
+        panY: number;
+        lens: number;
+      },
+      delayMs = 200,
+    ) => {
+      const base = liveCamRef.current || {
+        yaw: resolvedCamRef.current.yaw,
+        pitch: resolvedCamRef.current.pitch,
+        distance: resolvedCamRef.current.distance,
+        panX: resolvedCamRef.current.panX,
+        panY: resolvedCamRef.current.panY,
+        lens: resolvedCamRef.current.lens,
+      };
+      const next = mutate(base);
+      deferredCamLabelRef.current = label;
+      pushLiveCamera(next);
+      if (deferredCamCommitRef.current !== null) {
+        window.clearTimeout(deferredCamCommitRef.current);
+      }
+      deferredCamCommitRef.current = window.setTimeout(() => {
+        deferredCamCommitRef.current = null;
+        const finalCam = liveCamRef.current;
+        if (!finalCam) return;
+        markPendingCommit();
+        updateActiveShotCameraRef.current(deferredCamLabelRef.current, {
+          cameraYaw: finalCam.yaw,
+          cameraPitch: finalCam.pitch,
+          cameraDistance: finalCam.distance,
+          cameraPanX: finalCam.panX,
+          cameraPanY: finalCam.panY,
+          ...(finalCam.lens > 0 ? { cameraLens: finalCam.lens } : {}),
+        });
+      }, delayMs);
+    },
+    [pushLiveCamera, markPendingCommit],
   );
 
   const updateActiveShot = useCallback(
@@ -918,15 +1099,6 @@ export function SpatialDirectorStudio({
     commitScenePatch(`移除舞台物体「${targetObj?.name || ''}」`, { stageObjects: nextList });
   };
 
-  const previewLivePatch = useCallback(
-    (patch: Record<string, unknown>) => {
-      postToStage('live-transform', {
-        override: { clipId: STUDIO_CLIP_ID, props: patch },
-      });
-    },
-    [postToStage],
-  );
-
   const queryStageRaycast = useCallback(
     (action: 'pick' | 'floor', clientX: number, clientY: number) => {
       const box = aspectBoxRef.current?.getBoundingClientRect();
@@ -1043,32 +1215,38 @@ export function SpatialDirectorStudio({
       }
       if (viewportTool === 'camera' && ['w', 's', 'a', 'd', 'q', 'e'].includes(k)) {
         e.preventDefault();
-        const dollyStep = e.shiftKey ? 0.2 : 0.08;
-        const panStep = e.shiftKey ? 0.45 : 0.18;
+        const dollyStep = e.shiftKey ? 0.16 : 0.06;
+        const panStep = e.shiftKey ? 0.36 : 0.14;
         if (k === 'w') {
-          updateActiveShotCamera('推近镜头', {
-            cameraDistance: Math.max(0.35, Number((resolvedCam.distance - dollyStep).toFixed(2))),
-          });
+          scheduleDeferredCamCommit('推近镜头', (c) => ({
+            ...c,
+            distance: Math.max(0.35, Number((c.distance - dollyStep).toFixed(2))),
+          }), 220);
         } else if (k === 's') {
-          updateActiveShotCamera('拉远镜头', {
-            cameraDistance: Math.min(3.0, Number((resolvedCam.distance + dollyStep).toFixed(2))),
-          });
+          scheduleDeferredCamCommit('拉远镜头', (c) => ({
+            ...c,
+            distance: Math.min(3.0, Number((c.distance + dollyStep).toFixed(2))),
+          }), 220);
         } else if (k === 'a') {
-          updateActiveShotCamera('左移机位', {
-            cameraPanX: Math.max(-5, Number((resolvedCam.panX - panStep).toFixed(2))),
-          });
+          scheduleDeferredCamCommit('左移机位', (c) => ({
+            ...c,
+            panX: Math.max(-5, Number((c.panX - panStep).toFixed(2))),
+          }), 220);
         } else if (k === 'd') {
-          updateActiveShotCamera('右移机位', {
-            cameraPanX: Math.min(5, Number((resolvedCam.panX + panStep).toFixed(2))),
-          });
+          scheduleDeferredCamCommit('右移机位', (c) => ({
+            ...c,
+            panX: Math.min(5, Number((c.panX + panStep).toFixed(2))),
+          }), 220);
         } else if (k === 'e') {
-          updateActiveShotCamera('抬升机位', {
-            cameraPanY: Math.min(4, Number((resolvedCam.panY + panStep).toFixed(2))),
-          });
+          scheduleDeferredCamCommit('抬升机位', (c) => ({
+            ...c,
+            panY: Math.min(4, Number((c.panY + panStep).toFixed(2))),
+          }), 220);
         } else if (k === 'q') {
-          updateActiveShotCamera('压低机位', {
-            cameraPanY: Math.max(-4, Number((resolvedCam.panY - panStep).toFixed(2))),
-          });
+          scheduleDeferredCamCommit('压低机位', (c) => ({
+            ...c,
+            panY: Math.max(-4, Number((c.panY - panStep).toFixed(2))),
+          }), 220);
         }
       }
     };
@@ -1083,12 +1261,12 @@ export function SpatialDirectorStudio({
     isSpatialStageTarget,
     viewportTool,
     dropMotionKeyframeAt,
-    updateActiveShotCamera,
-    resolvedCam,
+    scheduleDeferredCamCommit,
   ]);
 
   // Native 3D viewport pointer interaction routed by ViewportTool: camera | block | path
   const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (showHelpTip) setShowHelpTip(false);
     if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
     e.preventDefault();
 
@@ -1212,8 +1390,8 @@ export function SpatialDirectorStudio({
         const drag = activeBlockDragRef.current;
         activeBlockDragRef.current = null;
         setLiveStageHud(null);
-        postToStage('live-transform', { override: null });
         if (drag?.changed) {
+          markPendingCommit();
           if (drag.latestObjects) {
             commitScenePatch('3D 视口拖拽物体摆位', { stageObjects: drag.latestObjects });
           } else if (drag.latestHero) {
@@ -1222,6 +1400,8 @@ export function SpatialDirectorStudio({
               actorStartZ: drag.latestHero.sz,
             });
           }
+        } else {
+          postToStage('live-transform', { override: null, skipMeasure: true });
         }
       };
 
@@ -1231,25 +1411,23 @@ export function SpatialDirectorStudio({
       return;
     }
 
-    // Camera Orbit / Pan mode
+    // Camera Orbit / Pan mode (60fps live-transform with zero-snap-back commit handover!)
+    cancelDeferredCamCommit();
     const isPan = e.button === 2 || e.button === 1 || e.shiftKey;
     const startX = e.clientX;
     const startY = e.clientY;
     const pointerId = e.pointerId;
-    const startCam = { ...resolvedCam };
+    const startCam = liveCamRef.current
+      ? { ...liveCamRef.current }
+      : {
+          yaw: resolvedCam.yaw,
+          pitch: resolvedCam.pitch,
+          distance: resolvedCam.distance,
+          panX: resolvedCam.panX,
+          panY: resolvedCam.panY,
+          lens: resolvedCam.lens,
+        };
     let latest = { ...startCam };
-    let raf = 0;
-
-    const flush = () => {
-      raf = 0;
-      setLiveHud(latest);
-      previewLivePatch({
-        cameraYaw: latest.yaw,
-        cameraPitch: latest.pitch,
-        cameraPanX: latest.panX,
-        cameraPanY: latest.panY,
-      });
-    };
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
@@ -1264,29 +1442,25 @@ export function SpatialDirectorStudio({
       } else {
         latest = {
           ...startCam,
-          yaw: Math.round((((startCam.yaw + dx * 0.45 + 180) % 360) + 360) % 360 - 180),
-          pitch: Math.max(-75, Math.min(82, Math.round(startCam.pitch + dy * 0.35))),
+          yaw: Math.round((((startCam.yaw + dx * 0.42 + 180) % 360) + 360) % 360 - 180),
+          pitch: Math.max(-75, Math.min(82, Math.round(startCam.pitch + dy * 0.34))),
         };
       }
-      if (!raf) raf = requestAnimationFrame(flush);
+      pushLiveCamera(latest);
     };
 
     const finish = (ev?: PointerEvent) => {
       if (ev && ev.pointerId !== pointerId) return;
-      if (raf) {
-        cancelAnimationFrame(raf);
-        raf = 0;
-      }
       window.removeEventListener('pointermove', onMove, true);
       window.removeEventListener('pointerup', finish, true);
       window.removeEventListener('pointercancel', finish, true);
-      setLiveHud(null);
-      postToStage('live-transform', { override: null });
       if (isPan) {
         if (latest.panX !== startCam.panX || latest.panY !== startCam.panY) {
+          markPendingCommit();
           updateActiveShotCamera('平移 3D 机位', { cameraPanX: latest.panX, cameraPanY: latest.panY });
         }
       } else if (latest.yaw !== startCam.yaw || latest.pitch !== startCam.pitch) {
+        markPendingCommit();
         updateActiveShotCamera('旋转 3D 摄像机视角', { cameraYaw: latest.yaw, cameraPitch: latest.pitch });
       }
     };
@@ -1296,16 +1470,40 @@ export function SpatialDirectorStudio({
     window.addEventListener('pointercancel', finish, true);
   };
 
-  const handleViewportWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    if (e.altKey) {
-      const nextLens = Math.max(18, Math.min(120, Math.round(resolvedCam.lens + e.deltaY * 0.08)));
-      if (nextLens !== resolvedCam.lens) updateActiveShotCamera('调整镜头焦段', { cameraLens: nextLens });
-    } else {
-      const nextDist = Math.max(0.35, Math.min(3.0, Number((resolvedCam.distance + e.deltaY * 0.0012).toFixed(2))));
-      if (nextDist !== resolvedCam.distance) updateActiveShotCamera('推拉机位距离', { cameraDistance: nextDist });
-    }
-  };
+  // Native non-passive wheel listener: eliminates React passive-wheel preventDefault error & prevents macOS bounce
+  useEffect(() => {
+    const el = viewportStageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl?.closest('.sds-vp-toolbar, .sds-cam-hud, .sds-radar-card')) return;
+      e.preventDefault();
+      if (e.altKey) {
+        const deltaLens = Math.max(-8, Math.min(8, e.deltaY * 0.06));
+        scheduleDeferredCamCommit(
+          '调整镜头焦段',
+          (c) => ({
+            ...c,
+            lens: Math.max(18, Math.min(120, Math.round(c.lens + deltaLens))),
+          }),
+          180,
+        );
+      } else {
+        // Smooth proportional dolly: feels silky on both macOS high-DPI trackpads and mouse wheels
+        const factor = Math.exp(Math.max(-0.18, Math.min(0.18, e.deltaY * 0.0011)));
+        scheduleDeferredCamCommit(
+          '推拉机位距离',
+          (c) => ({
+            ...c,
+            distance: Math.max(0.35, Math.min(3.0, Number((c.distance * factor).toFixed(2)))),
+          }),
+          180,
+        );
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [scheduleDeferredCamCommit]);
 
   // Unified Shoot Trigger (1 shot, stale shots, or all shots!)
   const capturePayload = {
@@ -1729,10 +1927,10 @@ export function SpatialDirectorStudio({
         {/* Center Column: Pure 3D Viewfinder + Conditional Single-Shot Rehearsal Timeline (Motion ONLY!) */}
         <div className="sds-viewport-col">
           <div
+            ref={viewportStageRef}
             className={`sds-viewport-stage tool-${viewportTool}`}
             onContextMenu={(e) => e.preventDefault()}
             onPointerDown={handleViewportPointerDown}
-            onWheel={handleViewportWheel}
           >
             {/* Floating Darkroom 3D Viewport Tool & Overlay Pill */}
             {isSpatialStageTarget && (
@@ -1858,54 +2056,96 @@ export function SpatialDirectorStudio({
                 }}
                 onPreviewStagePatch={(patch) => previewLivePatch(patch)}
                 onCommitStagePatch={(label, patch) => {
-                  postToStage('live-transform', { override: null });
+                  markPendingCommit();
                   commitScenePatch(label, patch);
                 }}
                 onClose={() => setShowRadar(false)}
               />
             )}
 
-            {/* Subtle Floating Camera & Tool Telemetry HUD */}
-            <div className="sds-cam-hud" onPointerDown={(e) => e.stopPropagation()}>
+            {/* Sleek Single-Row Floating Camera & Tool Telemetry HUD */}
+            <div
+              className="sds-cam-hud"
+              onPointerDown={(e) => e.stopPropagation()}
+              onWheel={(e) => e.stopPropagation()}
+            >
               {liveStageHud ? (
                 <span className="sds-live-mode-msg">{liveStageHud}</span>
               ) : (
                 <>
-                  <span>
-                    <b>{activeShot.shortKey}</b> · {activeShot.name} · Yaw {Math.round(resolvedCam.yaw)}° · Pitch{' '}
-                    {Math.round(resolvedCam.pitch)}° · Dist {resolvedCam.distance.toFixed(2)}× ·{' '}
-                    {resolvedCam.hasExplicitLens ? `${Math.round(resolvedCam.lens)}mm` : '原焦段'}
+                  <span className="sds-cam-readout">
+                    <b>{activeShot.shortKey}</b>
+                    <span>Yaw {Math.round(resolvedCam.yaw)}°</span>
+                    <span>Pitch {Math.round(resolvedCam.pitch)}°</span>
+                    <span>{resolvedCam.distance.toFixed(2)}×</span>
+                    <span>{resolvedCam.hasExplicitLens ? `${Math.round(resolvedCam.lens)}mm` : '原焦段'}</span>
                   </span>
-                  <span className="sds-cam-hint">
-                    {viewportTool === 'block'
-                      ? '点选物体拖地移位 · 右键平移视角 · V 返回摄像机'
-                      : viewportTool === 'path'
-                        ? '点击地面定起点再点定终点 · Esc 退出走线'
-                        : '左键环绕 · 右键/Shift 平移 · 滚轮推拉 · Alt+滚轮变焦 · WASD 游走'}
-                  </span>
-                  <button
-                    type="button"
-                    title="复位当前镜头摄像机机位"
-                    onClick={() =>
-                      updateActiveShotCamera('复位当前镜头机位', {
-                        cameraYaw: 0,
-                        cameraPitch: 0,
-                        cameraDistance: 1.0,
-                        cameraPanX: 0,
-                        cameraPanY: 0,
-                        cameraLens: isCodeTarget ? 0 : 35,
-                      })
-                    }
-                  >
-                    <RotateCcw size={11} /> 复位
-                  </button>
+                  <div className="sds-cam-hud-actions">
+                    <div className="sds-help-wrap">
+                      <button
+                        type="button"
+                        className={`sds-hud-icon-btn ${showHelpTip ? 'active' : ''}`}
+                        aria-label="视口操作快捷键说明"
+                        title="查看 3D 视口操作快捷键"
+                        onClick={() => setShowHelpTip((v) => !v)}
+                      >
+                        <HelpCircle size={12} />
+                      </button>
+                      {showHelpTip && (
+                        <div className="sds-hotkey-popover" role="tooltip">
+                          <div><b>左键拖动</b><span>环绕视角</span></div>
+                          <div><b>右键 / Shift+拖</b><span>平移机位</span></div>
+                          <div><b>滚轮 / 双指</b><span>平滑推拉</span></div>
+                          <div><b>Alt + 滚轮</b><span>调节焦段</span></div>
+                          <div><b>WASD / QE</b><span>漫游升降</span></div>
+                          {isMotionShot && <div><b>Space / K</b><span>播放 / 打关键帧</span></div>}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      title="复位当前镜头摄像机机位"
+                      onClick={() => {
+                        cancelDeferredCamCommit();
+                        markPendingCommit();
+                        pushLiveCamera({
+                          yaw: 0,
+                          pitch: 0,
+                          distance: 1.0,
+                          panX: 0,
+                          panY: 0,
+                          lens: isCodeTarget ? 35 : 35,
+                        });
+                        updateActiveShotCamera('复位当前镜头机位', {
+                          cameraYaw: 0,
+                          cameraPitch: 0,
+                          cameraDistance: 1.0,
+                          cameraPanX: 0,
+                          cameraPanY: 0,
+                          cameraLens: isCodeTarget ? 0 : 35,
+                        });
+                      }}
+                    >
+                      <RotateCcw size={11} /> 复位
+                    </button>
+                    {!isMotionShot && (
+                      <button
+                        type="button"
+                        className="sds-switch-motion-btn"
+                        title="把当前镜头切换为带时间轴和曲线的动态运镜"
+                        onClick={() => setActiveShotMode('motion')}
+                      >
+                        <Film size={11} /> 转为动态运镜
+                      </button>
+                    )}
+                  </div>
                 </>
               )}
             </div>
           </div>
 
-          {/* Conditional Bottom Strip: Static Shots have ZERO Playback Bar; Motion Shots get Precision 1:1 Aligned Rehearsal Timeline! */}
-          {isMotionShot ? (
+          {/* Conditional Bottom Strip: Static Shots stay clean & maximized; Motion Shots get Precision 1:1 Aligned Rehearsal Timeline! */}
+          {isMotionShot && (
             <footer className="sds-rail sds-motion-rail" aria-label="动态镜头单镜预演时间轴">
               <div className="sds-rail-top">
                 <div className="sds-rail-transport">
@@ -2057,19 +2297,6 @@ export function SpatialDirectorStudio({
                 </div>
               )}
             </footer>
-          ) : (
-            <footer className="sds-still-bar" aria-label="静态定机位取景状态条">
-              <span>
-                <Camera size={12} /> <b>{activeShot.shortKey} · {activeShot.name}</b> 为静态定机位取景（无时间轴干扰）· 调整好构图后点右上角「{primaryShootLabel}」
-              </span>
-              <button
-                type="button"
-                className="sds-switch-motion-btn"
-                onClick={() => setActiveShotMode('motion')}
-              >
-                <Film size={11} /> 转为动态运镜 →
-              </button>
-            </footer>
           )}
         </div>
 
@@ -2099,21 +2326,23 @@ export function SpatialDirectorStudio({
             }}
           />
 
-          <div className="sds-tabs three-col">
+          <div className={`sds-tabs ${isCodeTarget ? 'two-col' : 'three-col'}`}>
             <button
               type="button"
-              className={rightTab === 'shot' ? 'active' : ''}
+              className={rightTab === 'shot' || (isCodeTarget && rightTab === 'scene') ? 'active' : ''}
               onClick={() => setRightTab('shot')}
             >
-              <Camera size={12} /> 镜头调度
+              <Camera size={12} /> {isCodeTarget ? '镜头与参数' : '镜头调度'}
             </button>
-            <button
-              type="button"
-              className={rightTab === 'scene' ? 'active' : ''}
-              onClick={() => setRightTab('scene')}
-            >
-              <SlidersHorizontal size={12} /> 布景{stageObjects.length > 0 ? ` (${stageObjects.length})` : ''}
-            </button>
+            {!isCodeTarget && (
+              <button
+                type="button"
+                className={rightTab === 'scene' ? 'active' : ''}
+                onClick={() => setRightTab('scene')}
+              >
+                <SlidersHorizontal size={12} /> 布景{stageObjects.length > 0 ? ` (${stageObjects.length})` : ''}
+              </button>
+            )}
             <button
               type="button"
               className={rightTab === 'agent' ? 'active' : ''}
@@ -2123,97 +2352,260 @@ export function SpatialDirectorStudio({
             </button>
           </div>
 
-          {rightTab === 'shot' ? (
+          {rightTab === 'shot' || (isCodeTarget && rightTab === 'scene') ? (
             <div className="sds-panel-scroll">
-              <section className="sds-group">
-                <div className="sds-group-head">
-                  <h4>当前镜头 · {activeShot.shortKey}</h4>
-                  <span className={`sds-shot-mode ${activeShot.mode}`}>
-                    {activeShot.mode === 'motion' ? '动态运镜' : '静态定机位'}
-                  </span>
-                </div>
-                <label className="sds-field">
-                  <span>镜头名称</span>
-                  <input
-                    type="text"
+              {/* Section 1: Compact Shot Identity + Output Mode (Zero Duplicate Badges) */}
+              <section className="sds-group sds-shot-head-group">
+                <div className="sds-shot-id-row">
+                  <span className="sds-shot-key-pill">{activeShot.shortKey}</span>
+                  <DirectorTextField
+                    className="sds-shot-name-input"
+                    ariaLabel="镜头名称"
+                    placeholder="输入镜头名称…"
                     value={activeShot.name}
-                    onChange={(e) => updateActiveShot('修改镜头名称', { name: e.target.value })}
+                    onCommit={(nextName) => updateActiveShot('修改镜头名称', { name: nextName })}
                   />
-                </label>
-                <div className="sds-chip-row">
+                  {isMotionShot && (
+                    <select
+                      aria-label="镜头时长"
+                      className="sds-dur-inline"
+                      value={String(activeShot.durationSec || 4)}
+                      onChange={(e) => {
+                        const nextSec = Number(e.target.value) || 4;
+                        updateActiveShot(`调整「${activeShot.name}」时长为 ${nextSec}s`, {
+                          durationSec: nextSec,
+                        });
+                      }}
+                    >
+                      {[2, 3, 4, 5, 8, 10].map((sec) => (
+                        <option key={sec} value={sec}>
+                          {sec}s
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div className="sds-mode-seg" role="group" aria-label="镜头拍摄类型">
                   <button
                     type="button"
                     className={activeShot.mode === 'still' ? 'active' : ''}
                     onClick={() => setActiveShotMode('still')}
                   >
-                    <Camera size={11} /> 静态定机位
+                    <Camera size={11} />
+                    <span>定机位</span>
+                    <small>拍图</small>
                   </button>
                   <button
                     type="button"
                     className={activeShot.mode === 'motion' ? 'active' : ''}
                     onClick={() => setActiveShotMode('motion')}
                   >
-                    <Film size={11} /> 动态运镜
+                    <Film size={11} />
+                    <span>动态运镜</span>
+                    <small>录视频</small>
                   </button>
                 </div>
               </section>
 
+              {/* Section 2: Framing & Lens — Figma-Density 60fps Scrub Grid + Instant Angles */}
               <section className="sds-group">
-                <h4>机位构图与焦段</h4>
-                <div className="sds-chip-row">
+                <div className="sds-group-head">
+                  <h4>取景构图</h4>
+                  <button
+                    type="button"
+                    className="sds-ghost-reset"
+                    title="重置当前镜头 6 轴机位与焦段"
+                    onClick={() => {
+                      cancelDeferredCamCommit();
+                      markPendingCommit();
+                      pushLiveCamera({ yaw: 0, pitch: 0, distance: 1.0, panX: 0, panY: 0, lens: 35 });
+                      updateActiveShotCamera('复位当前镜头机位', {
+                        cameraYaw: 0,
+                        cameraPitch: 0,
+                        cameraDistance: 1.0,
+                        cameraPanX: 0,
+                        cameraPanY: 0,
+                        cameraLens: isCodeTarget ? 0 : 35,
+                      });
+                    }}
+                  >
+                    <RotateCcw size={10} /> 复位
+                  </button>
+                </div>
+
+                <div className="sds-lens-seg" role="group" aria-label="镜头焦段预设">
                   {[24, 35, 50, 85].map((mm) => (
                     <button
                       key={mm}
                       type="button"
                       className={resolvedCam.hasExplicitLens && Math.round(resolvedCam.lens) === mm ? 'active' : ''}
-                      onClick={() => updateActiveShotCamera(`切焦段 ${mm}mm`, { cameraLens: mm })}
+                      onClick={() => {
+                        cancelDeferredCamCommit();
+                        markPendingCommit();
+                        pushLiveCamera({ ...resolvedCam, lens: mm });
+                        updateActiveShotCamera(`切焦段 ${mm}mm`, { cameraLens: mm });
+                      }}
                     >
                       {mm}mm
                     </button>
                   ))}
                 </div>
-                <label className="sds-slider">
-                  <div>
-                    <span>水平旋转 Yaw</span>
-                    <b>{Math.round(resolvedCam.yaw)}°</b>
-                  </div>
-                  <input
-                    type="range"
-                    min={-180}
-                    max={180}
-                    step={1}
+
+                <div className="sds-angle-presets" role="group" aria-label="一键构图视角">
+                  {QUICK_ANGLE_PRESETS.map((p) => {
+                    const isNear =
+                      Math.abs(resolvedCam.yaw - p.yaw) <= 4 &&
+                      Math.abs(resolvedCam.pitch - p.pitch) <= 4 &&
+                      Math.abs(resolvedCam.distance - p.distance) <= 0.08;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={isNear ? 'active' : ''}
+                        onClick={() => {
+                          cancelDeferredCamCommit();
+                          markPendingCommit();
+                          pushLiveCamera({
+                            yaw: p.yaw,
+                            pitch: p.pitch,
+                            distance: p.distance,
+                            panX: 0,
+                            panY: 0,
+                            lens: resolvedCam.lens,
+                          });
+                          updateActiveShotCamera(`一键构图「${p.label}」`, {
+                            cameraYaw: p.yaw,
+                            cameraPitch: p.pitch,
+                            cameraDistance: p.distance,
+                            cameraPanX: 0,
+                            cameraPanY: 0,
+                          });
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="sds-scrub-grid">
+                  <DirectorScrubInput
+                    label="水平"
+                    ariaLabel="水平旋转 Yaw"
                     value={Math.round(resolvedCam.yaw)}
-                    onChange={(e) => updateActiveShotCamera('调整水平角', { cameraYaw: Number(e.target.value) })}
+                    defaultValue={0}
+                    step={1}
+                    dragSpeed={0.6}
+                    wrap360
+                    suffix="°"
+                    onLiveChange={(v) => {
+                      cancelDeferredCamCommit();
+                      pushLiveCamera({ ...resolvedCam, yaw: v });
+                    }}
+                    onCommit={(v) => {
+                      markPendingCommit();
+                      updateActiveShotCamera('调整水平角', { cameraYaw: v });
+                    }}
                   />
-                </label>
-                <label className="sds-slider">
-                  <div>
-                    <span>俯仰角 Pitch</span>
-                    <b>{Math.round(resolvedCam.pitch)}°</b>
-                  </div>
-                  <input
-                    type="range"
+                  <DirectorScrubInput
+                    label="俯仰"
+                    ariaLabel="俯仰角 Pitch"
+                    value={Math.round(resolvedCam.pitch)}
+                    defaultValue={0}
                     min={-75}
                     max={80}
                     step={1}
-                    value={Math.round(resolvedCam.pitch)}
-                    onChange={(e) => updateActiveShotCamera('调整俯仰角', { cameraPitch: Number(e.target.value) })}
+                    dragSpeed={0.5}
+                    suffix="°"
+                    onLiveChange={(v) => {
+                      cancelDeferredCamCommit();
+                      pushLiveCamera({ ...resolvedCam, pitch: v });
+                    }}
+                    onCommit={(v) => {
+                      markPendingCommit();
+                      updateActiveShotCamera('调整俯仰角', { cameraPitch: v });
+                    }}
                   />
-                </label>
-                <label className="sds-slider">
-                  <div>
-                    <span>机位推拉倍率 Distance</span>
-                    <b>{resolvedCam.distance.toFixed(2)}×</b>
-                  </div>
-                  <input
-                    type="range"
+                  <DirectorScrubInput
+                    label="距离"
+                    ariaLabel="机位推拉倍率 Distance"
+                    value={resolvedCam.distance}
+                    defaultValue={1.0}
                     min={0.35}
                     max={3.0}
-                    step={0.05}
-                    value={resolvedCam.distance}
-                    onChange={(e) => updateActiveShotCamera('调整机位距离', { cameraDistance: Number(e.target.value) })}
+                    step={0.02}
+                    decimals={2}
+                    dragSpeed={0.6}
+                    suffix="×"
+                    onLiveChange={(v) => {
+                      cancelDeferredCamCommit();
+                      pushLiveCamera({ ...resolvedCam, distance: v });
+                    }}
+                    onCommit={(v) => {
+                      markPendingCommit();
+                      updateActiveShotCamera('调整机位距离', { cameraDistance: v });
+                    }}
                   />
-                </label>
+                  <DirectorScrubInput
+                    label="焦段"
+                    ariaLabel="镜头焦段 Lens"
+                    value={Math.round(resolvedCam.lens)}
+                    defaultValue={35}
+                    min={18}
+                    max={120}
+                    step={1}
+                    dragSpeed={0.4}
+                    suffix="mm"
+                    onLiveChange={(v) => {
+                      cancelDeferredCamCommit();
+                      pushLiveCamera({ ...resolvedCam, lens: v });
+                    }}
+                    onCommit={(v) => {
+                      markPendingCommit();
+                      updateActiveShotCamera('调整镜头焦段', { cameraLens: v });
+                    }}
+                  />
+                  <DirectorScrubInput
+                    label="横移"
+                    ariaLabel="水平平移 Pan X"
+                    value={resolvedCam.panX}
+                    defaultValue={0}
+                    min={-5}
+                    max={5}
+                    step={0.05}
+                    decimals={2}
+                    dragSpeed={0.45}
+                    onLiveChange={(v) => {
+                      cancelDeferredCamCommit();
+                      pushLiveCamera({ ...resolvedCam, panX: v });
+                    }}
+                    onCommit={(v) => {
+                      markPendingCommit();
+                      updateActiveShotCamera('水平平移机位', { cameraPanX: v });
+                    }}
+                  />
+                  <DirectorScrubInput
+                    label="升降"
+                    ariaLabel="垂直升降 Pan Y"
+                    value={resolvedCam.panY}
+                    defaultValue={0}
+                    min={-4}
+                    max={4}
+                    step={0.05}
+                    decimals={2}
+                    dragSpeed={0.45}
+                    onLiveChange={(v) => {
+                      cancelDeferredCamCommit();
+                      pushLiveCamera({ ...resolvedCam, panY: v });
+                    }}
+                    onCommit={(v) => {
+                      markPendingCommit();
+                      updateActiveShotCamera('垂直升降机位', { cameraPanY: v });
+                    }}
+                  />
+                </div>
+                <p className="sds-micro-hint">按住标签左右拖 60fps 微调 · 双击单格复位</p>
               </section>
 
               {isMotionShot && (
@@ -2342,7 +2734,7 @@ export function SpatialDirectorStudio({
               {isCodeTarget && (
                 <section className="sds-group">
                   <div className="sds-group-head">
-                    <h4>TSX 组件自定义参数</h4>
+                    <h4>TSX 场景参数</h4>
                     {compObj && onOpenCodeEditor && (
                       <button
                         type="button"
@@ -2353,39 +2745,62 @@ export function SpatialDirectorStudio({
                       </button>
                     )}
                   </div>
+                  <p className="sds-tsx-scope-hint">
+                    上方导演棚接管机位与通道；下方调节 TSX 场景自身参数。
+                    {!isMotionShot && editableCompProps.some(([k]) => /orbit|speed|turn|anim|spin|wave|phase/i.test(k))
+                      ? '（定机位定格于首帧，切为「动态运镜」可预览组件动画）'
+                      : ''}
+                  </p>
                   {editableCompProps.length > 0 ? (
-                    editableCompProps.map(([key, val]) =>
-                      typeof val === 'boolean' ? (
-                        <label key={key} className="sds-toggle-row">
-                          <span>{key}</span>
-                          <input
-                            type="checkbox"
-                            className="switch"
-                            checked={val}
-                            onChange={(e) => commitScenePatch(`调整参数 ${key}`, { [key]: e.target.checked })}
-                          />
-                        </label>
-                      ) : typeof val === 'number' ? (
-                        <label key={key} className="sds-field">
-                          <span>{key}</span>
-                          <input
-                            type="number"
-                            step={Math.abs(val) <= 2 ? 0.1 : 1}
-                            value={val}
-                            onChange={(e) => commitScenePatch(`调整参数 ${key}`, { [key]: Number(e.target.value) })}
-                          />
-                        </label>
-                      ) : (
-                        <label key={key} className="sds-field">
-                          <span>{key}</span>
-                          <input
-                            type="text"
-                            value={val}
-                            onChange={(e) => commitScenePatch(`调整参数 ${key}`, { [key]: e.target.value })}
-                          />
-                        </label>
-                      ),
-                    )
+                    <div className="sds-tsx-params-list">
+                      {editableCompProps.map(([key, rawVal]) => {
+                        const liveVal =
+                          liveSceneProps && key in liveSceneProps ? liveSceneProps[key] : rawVal;
+                        if (typeof rawVal === 'boolean') {
+                          return (
+                            <label key={key} className="sds-toggle-row">
+                              <span>{key}</span>
+                              <input
+                                type="checkbox"
+                                className="switch"
+                                checked={Boolean(liveVal)}
+                                onChange={(e) => commitScenePatch(`调整参数 ${key}`, { [key]: e.target.checked })}
+                              />
+                            </label>
+                          );
+                        }
+                        if (typeof rawVal === 'number') {
+                          const numVal = Number(liveVal);
+                          const fineStep = Math.abs(rawVal) <= 5 ? 0.05 : 1;
+                          return (
+                            <DirectorScrubInput
+                              key={key}
+                              label={key}
+                              ariaLabel={`TSX 参数 ${key}`}
+                              value={Number.isFinite(numVal) ? numVal : rawVal}
+                              step={fineStep}
+                              decimals={fineStep < 1 ? 2 : 0}
+                              dragSpeed={0.45}
+                              onLiveChange={(v) => pushLiveSceneProp({ [key]: v })}
+                              onCommit={(v) => {
+                                markPendingCommit();
+                                commitScenePatch(`调整参数 ${key}`, { [key]: v });
+                              }}
+                            />
+                          );
+                        }
+                        return (
+                          <label key={key} className="sds-field">
+                            <span>{key}</span>
+                            <DirectorTextField
+                              ariaLabel={`TSX 参数 ${key}`}
+                              value={String(liveVal ?? '')}
+                              onCommit={(v) => commitScenePatch(`调整参数 ${key}`, { [key]: v })}
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
                   ) : (
                     <div className="sds-empty-note">
                       <p>当前 TSX 3D 片场已由导演棚自动接管全部多机位、运镜与 5 通道渲染，无需改源码。</p>
@@ -2542,38 +2957,44 @@ export function SpatialDirectorStudio({
                           </label>
                         ))}
                       </div>
-                      <label className="sds-slider">
-                        <div>
-                          <span>水平朝向 Rotation Y</span>
-                          <b>{Math.round(selectedStageObj.rotationY)}°</b>
-                        </div>
-                        <input
-                          type="range"
-                          min={-180}
-                          max={180}
-                          step={5}
-                          value={Math.round(selectedStageObj.rotationY)}
-                          onChange={(e) =>
-                            updateStageObject(selectedStageObj.id, { rotationY: Number(e.target.value) }, '旋转物体朝向')
-                          }
-                        />
-                      </label>
-                      <label className="sds-slider">
-                        <div>
-                          <span>缩放 Scale</span>
-                          <b>{selectedStageObj.scale.toFixed(2)}×</b>
-                        </div>
-                        <input
-                          type="range"
-                          min={0.3}
-                          max={2.6}
-                          step={0.05}
-                          value={selectedStageObj.scale}
-                          onChange={(e) =>
-                            updateStageObject(selectedStageObj.id, { scale: Number(e.target.value) }, '缩放舞台物体')
-                          }
-                        />
-                      </label>
+                      <DirectorLiveSlider
+                        label="水平朝向 Rotation Y"
+                        valueText={`${Math.round(selectedStageObj.rotationY)}°`}
+                        value={Math.round(selectedStageObj.rotationY)}
+                        defaultValue={0}
+                        min={-180}
+                        max={180}
+                        step={5}
+                        onLiveChange={(v) => {
+                          const nextList = stageObjects.map((o) =>
+                            o.id === selectedStageObj.id ? { ...o, rotationY: v } : o,
+                          );
+                          previewLivePatch({ stageObjects: nextList });
+                        }}
+                        onCommit={(v) => {
+                          markPendingCommit();
+                          updateStageObject(selectedStageObj.id, { rotationY: v }, '旋转物体朝向');
+                        }}
+                      />
+                      <DirectorLiveSlider
+                        label="缩放 Scale"
+                        valueText={`${selectedStageObj.scale.toFixed(2)}×`}
+                        value={selectedStageObj.scale}
+                        defaultValue={1.0}
+                        min={0.3}
+                        max={2.6}
+                        step={0.05}
+                        onLiveChange={(v) => {
+                          const nextList = stageObjects.map((o) =>
+                            o.id === selectedStageObj.id ? { ...o, scale: v } : o,
+                          );
+                          previewLivePatch({ stageObjects: nextList });
+                        }}
+                        onCommit={(v) => {
+                          markPendingCommit();
+                          updateStageObject(selectedStageObj.id, { scale: v }, '缩放舞台物体');
+                        }}
+                      />
                       {selectedStageObj.kind === 'actor' && (
                         <>
                           <label className="sds-field">
@@ -2611,24 +3032,27 @@ export function SpatialDirectorStudio({
                       )}
                       {selectedStageObj.kind === 'light' && (
                         <>
-                          <label className="sds-slider">
-                            <div>
-                              <span>灯光强度 Intensity</span>
-                              <b>{(selectedStageObj.intensity ?? 2.6).toFixed(1)}</b>
-                            </div>
-                            <input
-                              type="range"
-                              min={0.2}
-                              max={8}
-                              step={0.2}
-                              value={selectedStageObj.intensity ?? 2.6}
-                              onChange={(e) =>
-                                updateStageObject(selectedStageObj.id, { intensity: Number(e.target.value) }, '调整灯光强度')
-                              }
-                            />
-                          </label>
-                          <label className="sds-slider">
-                            <div>
+                          <DirectorLiveSlider
+                            label="灯光强度 Intensity"
+                            valueText={(selectedStageObj.intensity ?? 2.6).toFixed(1)}
+                            value={selectedStageObj.intensity ?? 2.6}
+                            defaultValue={2.6}
+                            min={0.2}
+                            max={8}
+                            step={0.2}
+                            onLiveChange={(v) => {
+                              const nextList = stageObjects.map((o) =>
+                                o.id === selectedStageObj.id ? { ...o, intensity: v } : o,
+                              );
+                              previewLivePatch({ stageObjects: nextList });
+                            }}
+                            onCommit={(v) => {
+                              markPendingCommit();
+                              updateStageObject(selectedStageObj.id, { intensity: v }, '调整灯光强度');
+                            }}
+                          />
+                          <DirectorLiveSlider
+                            label={
                               <span className="sds-temp-label">
                                 灯光色温
                                 <i
@@ -2636,19 +3060,24 @@ export function SpatialDirectorStudio({
                                   style={{ background: kelvinToHex(selectedStageObj.temperature ?? 3800) }}
                                 />
                               </span>
-                              <b>{Math.round(selectedStageObj.temperature ?? 3800)}K</b>
-                            </div>
-                            <input
-                              type="range"
-                              min={2200}
-                              max={9000}
-                              step={100}
-                              value={Math.round(selectedStageObj.temperature ?? 3800)}
-                              onChange={(e) =>
-                                updateStageObject(selectedStageObj.id, { temperature: Number(e.target.value) }, '调整灯光色温')
-                              }
-                            />
-                          </label>
+                            }
+                            valueText={`${Math.round(selectedStageObj.temperature ?? 3800)}K`}
+                            value={Math.round(selectedStageObj.temperature ?? 3800)}
+                            defaultValue={3800}
+                            min={2200}
+                            max={9000}
+                            step={100}
+                            onLiveChange={(v) => {
+                              const nextList = stageObjects.map((o) =>
+                                o.id === selectedStageObj.id ? { ...o, temperature: v } : o,
+                              );
+                              previewLivePatch({ stageObjects: nextList });
+                            }}
+                            onCommit={(v) => {
+                              markPendingCommit();
+                              updateStageObject(selectedStageObj.id, { temperature: v }, '调整灯光色温');
+                            }}
+                          />
                         </>
                       )}
                     </section>
@@ -2724,37 +3153,42 @@ export function SpatialDirectorStudio({
                         </button>
                       ))}
                     </div>
-                    <label className="sds-slider">
-                      <div>
-                        <span>主光方位 Key Yaw</span>
-                        <b>{Math.round(keyLightYawVal)}°</b>
-                      </div>
-                      <input
-                        type="range"
-                        min={-180}
-                        max={180}
-                        step={2}
-                        value={Math.round(keyLightYawVal)}
-                        onChange={(e) => commitScenePatch('旋转主光方位', { keyLightYaw: Number(e.target.value) })}
-                      />
-                    </label>
-                    <label className="sds-slider">
-                      <div>
+                    <DirectorLiveSlider
+                      label="主光方位 Key Yaw"
+                      valueText={`${Math.round(Number(liveSceneProps?.keyLightYaw ?? keyLightYawVal))}°`}
+                      value={Math.round(Number(liveSceneProps?.keyLightYaw ?? keyLightYawVal))}
+                      defaultValue={38}
+                      min={-180}
+                      max={180}
+                      step={2}
+                      onLiveChange={(v) => pushLiveSceneProp({ keyLightYaw: v })}
+                      onCommit={(v) => {
+                        markPendingCommit();
+                        commitScenePatch('旋转主光方位', { keyLightYaw: v });
+                      }}
+                    />
+                    <DirectorLiveSlider
+                      label={
                         <span className="sds-temp-label">
                           主光色温
-                          <i className="sds-temp-dot" style={{ background: kelvinToHex(keyLightTempVal) }} />
+                          <i
+                            className="sds-temp-dot"
+                            style={{ background: kelvinToHex(Number(liveSceneProps?.keyLightTemp ?? keyLightTempVal)) }}
+                          />
                         </span>
-                        <b>{Math.round(keyLightTempVal)}K</b>
-                      </div>
-                      <input
-                        type="range"
-                        min={2600}
-                        max={9000}
-                        step={100}
-                        value={Math.round(keyLightTempVal)}
-                        onChange={(e) => commitScenePatch('调整主光色温', { keyLightTemp: Number(e.target.value) })}
-                      />
-                    </label>
+                      }
+                      valueText={`${Math.round(Number(liveSceneProps?.keyLightTemp ?? keyLightTempVal))}K`}
+                      value={Math.round(Number(liveSceneProps?.keyLightTemp ?? keyLightTempVal))}
+                      defaultValue={5600}
+                      min={2600}
+                      max={9000}
+                      step={100}
+                      onLiveChange={(v) => pushLiveSceneProp({ keyLightTemp: v })}
+                      onCommit={(v) => {
+                        markPendingCommit();
+                        commitScenePatch('调整主光色温', { keyLightTemp: v });
+                      }}
+                    />
                     <label className="sds-field">
                       <span>空间氛围粒子</span>
                       <select
@@ -2769,54 +3203,54 @@ export function SpatialDirectorStudio({
                       </select>
                     </label>
                     {currentSceneType === 'parallax-25d' && (
-                      <label className="sds-slider">
-                        <div>
-                          <span>立体景深起伏 Depth</span>
-                          <b>{Number(currentProps.depthStrength ?? 0.65).toFixed(2)}</b>
-                        </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={1.4}
-                          step={0.05}
-                          value={Number(currentProps.depthStrength ?? 0.65)}
-                          onChange={(e) => commitScenePatch('调整景深起伏', { depthStrength: Number(e.target.value) })}
-                        />
-                      </label>
+                      <DirectorLiveSlider
+                        label="立体景深起伏 Depth"
+                        valueText={Number(liveSceneProps?.depthStrength ?? currentProps.depthStrength ?? 0.65).toFixed(2)}
+                        value={Number(liveSceneProps?.depthStrength ?? currentProps.depthStrength ?? 0.65)}
+                        defaultValue={0.65}
+                        min={0}
+                        max={1.4}
+                        step={0.05}
+                        onLiveChange={(v) => pushLiveSceneProp({ depthStrength: v })}
+                        onCommit={(v) => {
+                          markPendingCommit();
+                          commitScenePatch('调整景深起伏', { depthStrength: v });
+                        }}
+                      />
                     )}
                     {(currentSceneType === 'turbine' ||
                       currentSceneType === 'chip-stack' ||
                       currentSceneType === 'factory-flow' ||
                       assetObj?.kind === 'model-3d') && (
-                      <label className="sds-slider">
-                        <div>
-                          <span>结构爆炸拆解 Explode</span>
-                          <b>{Math.round(Number(currentProps.explode ?? 0) * 100)}%</b>
-                        </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={1}
-                          step={0.02}
-                          value={Number(currentProps.explode ?? 0)}
-                          onChange={(e) => commitScenePatch('调整结构拆解', { explode: Number(e.target.value) })}
-                        />
-                      </label>
-                    )}
-                    <label className="sds-slider">
-                      <div>
-                        <span>辉光强度 Bloom</span>
-                        <b>{Math.round(Number(currentProps.bloomStrength ?? 22))}%</b>
-                      </div>
-                      <input
-                        type="range"
+                      <DirectorLiveSlider
+                        label="结构爆炸拆解 Explode"
+                        valueText={`${Math.round(Number(liveSceneProps?.explode ?? currentProps.explode ?? 0) * 100)}%`}
+                        value={Number(liveSceneProps?.explode ?? currentProps.explode ?? 0)}
+                        defaultValue={0}
                         min={0}
-                        max={80}
-                        step={2}
-                        value={Math.round(Number(currentProps.bloomStrength ?? 22))}
-                        onChange={(e) => commitScenePatch('调整辉光强度', { bloomStrength: Number(e.target.value) })}
+                        max={1}
+                        step={0.02}
+                        onLiveChange={(v) => pushLiveSceneProp({ explode: v })}
+                        onCommit={(v) => {
+                          markPendingCommit();
+                          commitScenePatch('调整结构拆解', { explode: v });
+                        }}
                       />
-                    </label>
+                    )}
+                    <DirectorLiveSlider
+                      label="辉光强度 Bloom"
+                      valueText={`${Math.round(Number(liveSceneProps?.bloomStrength ?? currentProps.bloomStrength ?? 22))}%`}
+                      value={Math.round(Number(liveSceneProps?.bloomStrength ?? currentProps.bloomStrength ?? 22))}
+                      defaultValue={22}
+                      min={0}
+                      max={80}
+                      step={2}
+                      onLiveChange={(v) => pushLiveSceneProp({ bloomStrength: v })}
+                      onCommit={(v) => {
+                        markPendingCommit();
+                        commitScenePatch('调整辉光强度', { bloomStrength: v });
+                      }}
+                    />
                     {hasCustomActorPath && (
                       <div className="sds-custom-path-row">
                         <span>

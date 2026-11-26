@@ -365,6 +365,92 @@ export const DEFAULT_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
   },
 ];
 
+/** Universal defaults for custom TSX 3D / architectural / object scenes without actor blocking. */
+export const DEFAULT_SCENE_DIRECTOR_SHOTS: SpatialDirectorShot[] = [
+  {
+    id: 'shot-1',
+    shortKey: 'S1',
+    name: '主景建立',
+    mode: 'still',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 35,
+      cameraYaw: 0,
+      cameraPitch: 8,
+      cameraDistance: 1.0,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    durationSec: 3,
+    renderPass: 'beauty',
+  },
+  {
+    id: 'shot-2',
+    shortKey: 'S2',
+    name: '细节特写',
+    mode: 'still',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 85,
+      cameraYaw: -22,
+      cameraPitch: 12,
+      cameraDistance: 0.82,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    durationSec: 3,
+    renderPass: 'beauty',
+  },
+  {
+    id: 'shot-3',
+    shortKey: 'S3',
+    name: '推轨环绕',
+    mode: 'motion',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 35,
+      cameraYaw: -24,
+      cameraPitch: 10,
+      cameraDistance: 1.12,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    endCamera: {
+      cameraPreset: 'static',
+      cameraLens: 50,
+      cameraYaw: 20,
+      cameraPitch: 6,
+      cameraDistance: 0.84,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    durationSec: 4,
+    renderPass: 'beauty',
+    keyframes: buildMotionShotKeyframes(
+      { cameraPreset: 'static', cameraLens: 35, cameraYaw: -24, cameraPitch: 10, cameraDistance: 1.12, cameraPanX: 0, cameraPanY: 0 },
+      { cameraPreset: 'static', cameraLens: 50, cameraYaw: 20, cameraPitch: 6, cameraDistance: 0.84, cameraPanX: 0, cameraPanY: 0 },
+      120,
+    ),
+  },
+  {
+    id: 'shot-4',
+    shortKey: 'S4',
+    name: '高空俯瞰',
+    mode: 'still',
+    camera: {
+      cameraPreset: 'static',
+      cameraLens: 24,
+      cameraYaw: 16,
+      cameraPitch: 38,
+      cameraDistance: 1.24,
+      cameraPanX: 0,
+      cameraPanY: 0,
+    },
+    durationSec: 3,
+    renderPass: 'beauty',
+  },
+];
+
 /**
  * Deterministic lightweight signature of the Scene / Set layer (shared environment, lighting, props, cast).
  * Camera framing / active shot selection intentionally excluded so editing Shot 2 does not mark Shot 1 stale!
@@ -400,7 +486,11 @@ export function computeStageSceneSignature(props: Record<string, unknown>): stri
   return `sc_${(h >>> 0).toString(16)}`;
 }
 
-export function normalizeStageShots(rawShots: unknown, fallbackBookmarks?: unknown): SpatialDirectorShot[] {
+export function normalizeStageShots(
+  rawShots: unknown,
+  fallbackBookmarks?: unknown,
+  presetKind: 'stage' | 'code' = 'stage',
+): SpatialDirectorShot[] {
   if (Array.isArray(rawShots) && rawShots.length > 0) {
     const clean: SpatialDirectorShot[] = [];
     for (let i = 0; i < rawShots.length; i++) {
@@ -473,7 +563,8 @@ export function normalizeStageShots(rawShots: unknown, fallbackBookmarks?: unkno
       renderPass: 'beauty' as SpatialRenderPass,
     }));
   }
-  return DEFAULT_DIRECTOR_SHOTS.map((s) => ({
+  const defaults = presetKind === 'code' ? DEFAULT_SCENE_DIRECTOR_SHOTS : DEFAULT_DIRECTOR_SHOTS;
+  return defaults.map((s) => ({
     ...s,
     camera: { ...s.camera },
     endCamera: s.endCamera ? { ...s.endCamera } : undefined,
