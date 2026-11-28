@@ -13,7 +13,7 @@ CoCraft 是一款面向 Apple Silicon macOS 的 **「3D 导演控镜 + 可编程
 - **创造画布 & 3D 导演棚**：在无限画布串联文本、演员声纹、设定多状态变体、原位 AI 工坊卡（支持多图融合、首尾帧、动作迁移、换人与对口型）、3D 空间摄影棚与分镜序列；从任意 3D 卡、GLB/3DGS 模型或 TSX 3D 组件一键进入「3D 导演棚」，按 `场景（片场）→ 调度（定机位 / 运镜镜头单）→ 素材（批量拍摄与场景变更重拍）` 组织拍摄。
 - **专业剪辑与交付**：支持自由增删命名多轨（视频/声音/字幕）、刀片直切、J/L Cut 音画分离、轨道独奏、片段正下方 1:1 帧对齐贝塞尔关键帧曲线抽屉、成片平行分支（含真 9:16 Auto-Reframe）、内容指纹锁保护重连、导出预检与 H.264/AAC MP4 交付。
 
-[愿景](docs/VISION.md) · [PRD](docs/PRD.md) · [技术架构 v0.6](docs/ARCHITECTURE.md) · [决策记录](docs/DECISIONS.md) · [迭代验收](docs/ROADMAP.md) · [横版样片](artifacts/CoCraft-Phase-Study-1080p.mp4)
+[愿景](docs/VISION.md) · [PRD](docs/PRD.md) · [技术架构 v0.6](docs/ARCHITECTURE.md) · [决策记录](docs/DECISIONS.md) · [迭代验收](docs/ROADMAP.md) · [CI 发布指南](docs/RELEASE.md) · [横版样片](artifacts/CoCraft-Phase-Study-1080p.mp4)
 
 ## 源码运行
 
@@ -35,7 +35,9 @@ npm run smoke:mcp       # 内置本地受控 MCP 服务端（0600 鉴权 + 真�
 npm run test:redblue    # 固定红蓝片创作者交付信任回归（像素 RGB 与音轨 dB 实测解码）
 npm run test:v04        # 打包版全流程端到端验收与真实 MP4 导出
 npm run package         # 构建 Apple Silicon .app（输出至 release/0.6/mac-arm64/CoCraft.app）
+npm run package:dmg     # 构建 macOS Apple Silicon DMG 安装包（release/0.6/CoCraft-<version>-arm64.dmg）
 npm run package:release # Hardened Runtime 签名 + DMG 封装 + Apple Notarization 公证装订
+# 推送版本 Tag（如 git tag -a v0.6.0 -m "Release v0.6.0" && git push origin v0.6.0）即可触发 GitHub Actions 自动产出 macOS .dmg Release，详见 docs/RELEASE.md
 ```
 
 如果 npm 被全局配置为忽略安装脚本，需要执行 `node node_modules/electron/install.js` 安装 Electron 运行时。

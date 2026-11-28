@@ -23,6 +23,7 @@ const appPath = join(outDir, 'mac-arm64', 'CoCraft.app');
 const dmgPath = join(outDir, `CoCraft-${version}-arm64.dmg`);
 const entitlements = resolve(root, 'build/entitlements.mac.plist');
 const notaryProfile = process.env.COCRAFT_NOTARY_PROFILE || 'cocraft-notary';
+const keychainPath = process.env.COCRAFT_KEYCHAIN_PATH || '';
 const skipNotarize = process.env.COCRAFT_SKIP_NOTARIZE === '1';
 const skipBuild = process.env.COCRAFT_SKIP_BUILD === '1';
 
@@ -39,9 +40,10 @@ function sleepSync(ms) {
 }
 
 function codesignWithRetry(args, label) {
+  const fullArgs = keychainPath ? ['--keychain', keychainPath, ...args] : args;
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = spawnSync('codesign', args, { encoding: 'utf8', cwd: root });
+    const res = spawnSync('codesign', fullArgs, { encoding: 'utf8', cwd: root });
     if (res.status === 0) return;
     const errText = `${res.stdout || ''}\n${res.stderr || ''}`.trim();
     const isTransient = /timestamp service is not available|timed out|connection|network/i.test(errText);
@@ -58,7 +60,9 @@ function codesignWithRetry(args, label) {
 function detectIdentity() {
   if (process.env.COCRAFT_SIGN_IDENTITY) return process.env.COCRAFT_SIGN_IDENTITY;
   if (process.env.CSC_NAME) return process.env.CSC_NAME;
-  const out = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
+  const securityArgs = ['find-identity', '-v', '-p', 'codesigning'];
+  if (keychainPath) securityArgs.push(keychainPath);
+  const out = execFileSync('security', securityArgs, { encoding: 'utf8' });
   const match = out.match(/"(Developer ID Application:[^"]+)"/);
   if (!match) {
     throw new Error(
@@ -192,11 +196,21 @@ codesignWithRetry(
 run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
 
 // 3. Build DMG from the signed & verified CoCraft.app (without re-signing .app) and sign the DMG itself
-run(
-  'npx',
-  ['electron-builder', '--mac', 'dmg', '--arm64', '--prepackaged', appPath, '-c.mac.identity=null'],
-  { env: noAutoSignEnv },
-);
+// Retry once on transient macOS hdiutil "Resource busy" locks common on CI runners.
+for (let attempt = 1; attempt <= 2; attempt++) {
+  try {
+    run(
+      'npx',
+      ['electron-builder', '--mac', 'dmg', '--arm64', '--prepackaged', appPath, '-c.mac.identity=null'],
+      { env: noAutoSignEnv },
+    );
+    break;
+  } catch (err) {
+    if (attempt === 2) throw err;
+    console.warn('DMG creation failed on attempt 1 (possibly hdiutil busy), retrying in 5s...');
+    sleepSync(5000);
+  }
+}
 console.log('\nSigning DMG...');
 codesignWithRetry(['--force', '--sign', identity, '--timestamp', dmgPath], dmgPath);
 run('codesign', ['--verify', '--verbose=2', dmgPath]);
@@ -204,11 +218,18 @@ run('codesign', ['--verify', '--verbose=2', dmgPath]);
 // 4. Submit DMG to Apple Notarization Service & wait for result
 if (!skipNotarize) {
   console.log('\nSubmitting DMG to Apple Notarization Service (typically 1–4 minutes)...');
-  const notaryRes = spawnSync(
-    'xcrun',
-    ['notarytool', 'submit', dmgPath, '--keychain-profile', notaryProfile, '--wait', '--output-format', 'json'],
-    { encoding: 'utf8', cwd: root },
-  );
+  const submitArgs = [
+    'notarytool',
+    'submit',
+    dmgPath,
+    '--keychain-profile',
+    notaryProfile,
+    ...(keychainPath ? ['--keychain', keychainPath] : []),
+    '--wait',
+    '--output-format',
+    'json',
+  ];
+  const notaryRes = spawnSync('xcrun', submitArgs, { encoding: 'utf8', cwd: root });
   console.log(notaryRes.stdout || '');
   if (notaryRes.stderr) console.error(notaryRes.stderr);
 
@@ -220,7 +241,15 @@ if (!skipNotarize) {
   if (notaryRes.status !== 0 || parsed?.status !== 'Accepted') {
     if (parsed?.id) {
       console.error(`\nNotarization failed (id=${parsed.id}). Fetching detailed Apple log...`);
-      spawnSync('xcrun', ['notarytool', 'log', parsed.id, '--keychain-profile', notaryProfile], { stdio: 'inherit' });
+      const logArgs = [
+        'notarytool',
+        'log',
+        parsed.id,
+        '--keychain-profile',
+        notaryProfile,
+        ...(keychainPath ? ['--keychain', keychainPath] : []),
+      ];
+      spawnSync('xcrun', logArgs, { stdio: 'inherit' });
     }
     throw new Error(`Apple Notarization did not succeed (status=${parsed?.status || notaryRes.status})`);
   }
@@ -236,4 +265,6 @@ if (!skipNotarize) {
   run('spctl', ['-a', '-t', 'open', '--context', 'context:primary-signature', '-vvv', dmgPath]);
 }
 
-console.log(`\n✅ Signed & Notarized release ready: ${dmgPath}`);
+console.log(
+  `\n✅ ${skipNotarize ? 'Signed release ready (notarization skipped)' : 'Signed & Notarized release ready'}: ${dmgPath}`,
+);

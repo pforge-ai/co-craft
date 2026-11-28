@@ -1,0 +1,354 @@
+name: Release macOS Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publish GitHub Release for v<package.json version> (unchecked = build artifact only)'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark GitHub Release as pre-release'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-mac-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac-arm64:
+    name: Build macOS Apple Silicon DMG
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Resolve version & validate tag alignment
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          OUT_DIR=$(node -p "require('./package.json').build?.directories?.output || 'release/0.6'")
+          PRODUCT_NAME=$(node -p "require('./package.json').build?.productName || 'CoCraft'")
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            TAG_CLEAN="${TAG_NAME#v}"
+            if [[ "${TAG_CLEAN}" != "${PKG_VERSION}" && "${TAG_CLEAN}" != "${PKG_VERSION}-"* ]]; then
+              echo "::error::Tag ${TAG_NAME} does not match package.json version ${PKG_VERSION}. Update package.json or push tag v${PKG_VERSION}."
+              exit 1
+            fi
+            SHOULD_RELEASE="true"
+          else
+            TAG_NAME="v${PKG_VERSION}"
+            SHOULD_RELEASE="${{ inputs.create_release || false }}"
+          fi
+
+          IS_PRERELEASE="false"
+          if [[ "${TAG_NAME}" == *-* || "${{ inputs.prerelease || false }}" == "true" ]]; then
+            IS_PRERELEASE="true"
+          fi
+
+          DMG_NAME="${PRODUCT_NAME}-${PKG_VERSION}-arm64.dmg"
+          DMG_PATH="${OUT_DIR}/${DMG_NAME}"
+
+          {
+            echo "version=${PKG_VERSION}"
+            echo "tag=${TAG_NAME}"
+            echo "out_dir=${OUT_DIR}"
+            echo "product_name=${PRODUCT_NAME}"
+            echo "dmg_name=${DMG_NAME}"
+            echo "dmg_path=${DMG_PATH}"
+            echo "should_release=${SHOULD_RELEASE}"
+            echo "is_prerelease=${IS_PRERELEASE}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Resolved release metadata:"
+          echo "  Tag:          ${TAG_NAME}"
+          echo "  Version:      ${PKG_VERSION}"
+          echo "  Output Dir:   ${OUT_DIR}"
+          echo "  DMG Path:     ${DMG_PATH}"
+          echo "  Pre-release:  ${IS_PRERELEASE}"
+          echo "  Publish:      ${SHOULD_RELEASE}"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          if [ ! -d "node_modules/electron/dist/Electron.app" ]; then
+            node node_modules/electron/install.js
+          fi
+
+      - name: Run quality gate (TypeScript + Unit Tests + Core Smoke)
+        run: |
+          npx tsc --noEmit
+          npm run test:unit
+          npm run smoke
+
+      - name: Detect Apple Developer signing & notarization secrets
+        id: signing
+        shell: bash
+        env:
+          MAC_CERT_BASE64: ${{ secrets.MAC_CERT_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${MAC_CERT_BASE64}" && -n "${MAC_CERT_PASSWORD}" ]]; then
+            if [[ -n "${APPLE_ID}" && -n "${APPLE_APP_SPECIFIC_PASSWORD}" && -n "${APPLE_TEAM_ID}" ]]; then
+              echo "mode=notarized" >> "${GITHUB_OUTPUT}"
+              echo "Signing mode: Developer ID Application + Apple Notarization"
+            else
+              echo "mode=signed" >> "${GITHUB_OUTPUT}"
+              echo "Signing mode: Developer ID Application (notarization secrets not configured)"
+            fi
+          else
+            echo "mode=adhoc" >> "${GITHUB_OUTPUT}"
+            echo "Signing mode: Ad-hoc (MAC_CERT_BASE64 / MAC_CERT_PASSWORD secrets not configured)"
+          fi
+
+      - name: Build, sign & package DMG (Developer ID / Apple Notarization)
+        if: steps.signing.outputs.mode != 'adhoc'
+        shell: bash
+        env:
+          MAC_CERT_BASE64: ${{ secrets.MAC_CERT_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SIGN_MODE: ${{ steps.signing.outputs.mode }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="${RUNNER_TEMP}/cocraft-signing.keychain-db"
+          CERT_PATH="${RUNNER_TEMP}/cocraft-cert.p12"
+          KEYCHAIN_PASS="$(openssl rand -hex 24)"
+
+          security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+
+          echo "${MAC_CERT_BASE64}" | base64 --decode > "${CERT_PATH}"
+          security import "${CERT_PATH}" -P "${MAC_CERT_PASSWORD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security list-keychains -d user -s "${KEYCHAIN_PATH}" login.keychain-db
+          security default-keychain -s "${KEYCHAIN_PATH}"
+          rm -f "${CERT_PATH}"
+
+          export COCRAFT_KEYCHAIN_PATH="${KEYCHAIN_PATH}"
+          if [[ "${SIGN_MODE}" == "notarized" ]]; then
+            xcrun notarytool store-credentials cocraft-notary \
+              --apple-id "${APPLE_ID}" \
+              --team-id "${APPLE_TEAM_ID}" \
+              --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+              --keychain "${KEYCHAIN_PATH}"
+            node scripts/release-mac.mjs
+          else
+            COCRAFT_SKIP_NOTARIZE=1 node scripts/release-mac.mjs
+          fi
+
+      - name: Build & package DMG (Ad-hoc fallback)
+        if: steps.signing.outputs.mode == 'adhoc'
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          set -euo pipefail
+          npm run build
+          # Retry once on transient macOS hdiutil "Resource busy" locks on CI runners.
+          for attempt in 1 2; do
+            if npx electron-builder --mac dmg --arm64; then
+              break
+            fi
+            if [[ "${attempt}" == "2" ]]; then
+              exit 1
+            fi
+            echo "DMG packaging failed on attempt 1 (possibly hdiutil busy), retrying in 5s..."
+            sleep 5
+          done
+
+      - name: Cleanup temporary signing keychain
+        if: always() && steps.signing.outputs.mode != 'adhoc'
+        shell: bash
+        run: |
+          rm -f "${RUNNER_TEMP}/cocraft-cert.p12"
+          security delete-keychain "${RUNNER_TEMP}/cocraft-signing.keychain-db" 2>/dev/null || true
+
+      - name: Verify DMG layout & generate SHA-256 checksum
+        id: verify
+        shell: bash
+        env:
+          OUT_DIR: ${{ steps.meta.outputs.out_dir }}
+          DMG_NAME: ${{ steps.meta.outputs.dmg_name }}
+          DMG_PATH: ${{ steps.meta.outputs.dmg_path }}
+          PRODUCT_NAME: ${{ steps.meta.outputs.product_name }}
+        run: |
+          set -euo pipefail
+          test -f "${DMG_PATH}"
+
+          # Mount read-only and verify installer contents
+          MOUNT_DIR="${RUNNER_TEMP}/dmg-mount"
+          mkdir -p "${MOUNT_DIR}"
+          hdiutil attach "${DMG_PATH}" -mountpoint "${MOUNT_DIR}" -nobrowse -readonly
+          trap 'hdiutil detach "${MOUNT_DIR}" -force >/dev/null 2>&1 || true' EXIT
+
+          test -d "${MOUNT_DIR}/${PRODUCT_NAME}.app"
+          test -L "${MOUNT_DIR}/Applications"
+          ls -la "${MOUNT_DIR}"
+          codesign --verify --verbose=2 "${MOUNT_DIR}/${PRODUCT_NAME}.app"
+          hdiutil detach "${MOUNT_DIR}"
+          trap - EXIT
+
+          DMG_SIZE_MB=$(node -e "const fs=require('node:fs'); console.log((fs.statSync(process.env.DMG_PATH).size / 1024 / 1024).toFixed(1));")
+          (
+            cd "${OUT_DIR}"
+            shasum -a 256 "${DMG_NAME}" > SHA256SUMS.txt
+          )
+          SHA256=$(awk '{print $1}' "${OUT_DIR}/SHA256SUMS.txt")
+          cat "${OUT_DIR}/SHA256SUMS.txt"
+
+          {
+            echo "dmg_size_mb=${DMG_SIZE_MB}"
+            echo "sha256=${SHA256}"
+            echo "checksum_path=${OUT_DIR}/SHA256SUMS.txt"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload DMG & checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoCraft-${{ steps.meta.outputs.version }}-macos-arm64
+          path: |
+            ${{ steps.meta.outputs.dmg_path }}
+            ${{ steps.verify.outputs.checksum_path }}
+          retention-days: 14
+
+      - name: Generate release notes
+        if: steps.meta.outputs.should_release == 'true'
+        shell: bash
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          DMG_NAME: ${{ steps.meta.outputs.dmg_name }}
+          DMG_SIZE_MB: ${{ steps.verify.outputs.dmg_size_mb }}
+          SHA256: ${{ steps.verify.outputs.sha256 }}
+          SIGN_MODE: ${{ steps.signing.outputs.mode }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+
+          PREV_TAG=$(git tag --sort=-v:refname | grep -Fxv "${TAG_NAME}" | head -n 1 || true)
+          if [[ -n "${PREV_TAG}" ]]; then
+            CHANGELOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (\`%h\`)" --no-merges | head -n 40)
+            RANGE_LABEL="${PREV_TAG} → ${TAG_NAME}"
+          else
+            CHANGELOG=$(git log -n 20 --pretty=format:"- %s (\`%h\`)" --no-merges)
+            RANGE_LABEL="最近 20 条主要提交"
+          fi
+
+          if [[ "${SIGN_MODE}" == "notarized" ]]; then
+            SIGN_BADGE="Apple Developer ID 已签名并通过 Apple 公证（Notarized）"
+            INSTALL_STEPS=$(cat <<'EOF'
+          1. 下载下方 `CoCraft-*.dmg` 安装包并双击挂载。
+          2. 将 **CoCraft.app** 拖入右侧 **Applications（应用程序）** 文件夹。
+          3. 直接打开运行（已通过 Apple Gatekeeper 公证，无需手动放行）。
+          EOF
+            )
+          elif [[ "${SIGN_MODE}" == "signed" ]]; then
+            SIGN_BADGE="Apple Developer ID 已签名（未启用 Apple 公证）"
+            INSTALL_STEPS=$(cat <<'EOF'
+          1. 下载下方 `CoCraft-*.dmg` 安装包并双击挂载。
+          2. 将 **CoCraft.app** 拖入右侧 **Applications（应用程序）** 文件夹。
+          3. 首次打开如遇 macOS 提示未公证，可右键点击 **CoCraft.app → 打开**，或在终端执行：
+             ```bash
+             xattr -cr /Applications/CoCraft.app
+             ```
+          EOF
+            )
+          else
+            SIGN_BADGE="Ad-hoc 签名构建（未配置 Apple 公证证书）"
+            INSTALL_STEPS=$(cat <<'EOF'
+          1. 下载下方 `CoCraft-*.dmg` 安装包并双击挂载。
+          2. 将 **CoCraft.app** 拖入右侧 **Applications（应用程序）** 文件夹。
+          3. 首次打开如遇 macOS 提示“无法验证开发者”或“应用已损坏”，在终端运行以下命令解除隔离属性后即可正常打开：
+             ```bash
+             xattr -cr /Applications/CoCraft.app
+             ```
+          EOF
+            )
+          fi
+
+          cat > "${NOTES_FILE}" <<EOF
+          ## CoCraft ${TAG_NAME} (macOS Apple Silicon)
+
+          面向 Apple Silicon Mac（\`macOS 13+\`，推荐 \`macOS 15+\`）的一体化 **3D 导演控镜 + 可编程创造 + AI 分镜画布 + 专业多轨剪辑** 桌面工作台。
+
+          ### 安装包信息
+
+          | 项目 | 详情 |
+          | --- | --- |
+          | 安装包 | \`${DMG_NAME}\` (${DMG_SIZE_MB} MB) |
+          | 目标平台 | macOS Apple Silicon (\`arm64\`, macOS 13.0+) |
+          | 签名状态 | ${SIGN_BADGE} |
+          | SHA-256 | \`${SHA256}\` |
+
+          ### 安装步骤
+
+          ${INSTALL_STEPS}
+
+          ### 变更日志（${RANGE_LABEL}）
+
+          ${CHANGELOG}
+          EOF
+
+          cat "${NOTES_FILE}"
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.should_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.meta.outputs.tag }}
+          DMG_PATH: ${{ steps.meta.outputs.dmg_path }}
+          CHECKSUM_PATH: ${{ steps.verify.outputs.checksum_path }}
+          IS_PRERELEASE: ${{ steps.meta.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          TITLE="CoCraft ${TAG_NAME} (macOS Apple Silicon)"
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Updating existing GitHub Release ${TAG_NAME}..."
+            gh release upload "${TAG_NAME}" "${DMG_PATH}" "${CHECKSUM_PATH}" --clobber
+            gh release edit "${TAG_NAME}" --title "${TITLE}" --notes-file "${NOTES_FILE}"
+          else
+            EXTRA_ARGS=()
+            if [[ "${IS_PRERELEASE}" == "true" ]]; then
+              EXTRA_ARGS+=(--prerelease)
+            fi
+            echo "Creating GitHub Release ${TAG_NAME}..."
+            gh release create "${TAG_NAME}" \
+              "${DMG_PATH}" \
+              "${CHECKSUM_PATH}" \
+              --target "${GITHUB_SHA}" \
+              --title "${TITLE}" \
+              --notes-file "${NOTES_FILE}" \
+              "${EXTRA_ARGS[@]}"
+          fi
