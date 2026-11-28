@@ -34,3 +34,16 @@
 - 更新 `docs/ROADMAP.md` 中已验收状态。方向改变时更新 `docs/DECISIONS.md`，保留必要历史。
 - 与用户保持中文沟通；开发细节写入技术资料，产品主界面优先显示创作内容与结果。
 - 每次完成代码修改并通过打包构建（`npm run package`）后，主动关闭旧进程并启动最新的 `release/0.6/mac-arm64/CoCraft.app`（或告知已拉起前台），方便用户直接上手试用查看。
+
+## 发版与安装包（macOS Release）
+
+- **绝不把任何证书（`.p12` / `.p8`）、密码、Apple ID 或团队凭据写入代码仓库或提交历史**；所有云端签名凭据仅通过 GitHub Actions Secrets 注入，本地凭据仅存于 macOS 钥匙串。
+- **方式 A · 云端 Tag + GitHub Actions 自动发版（推荐，日常主力）**：
+  1. 确保 `package.json` 的 `version` 与目标版本一致，工作区仅提交已验收的干净改动并推送 `origin main`。
+  2. 打注解 Tag 并推送：`git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`（预发布可用 `vX.Y.Z-rc.1`），自动触发 `.github/workflows/release-mac.yml` 在 `macos-15` 完成 `tsc` / `test:unit` / `smoke` 门禁、`.dmg` 封装、只读挂载校验、`SHA256SUMS.txt` 与 GitHub Release 发布。
+  3. 云端公证优先使用 **`.p12` 证书 + App Store Connect API Key（`.p8`，推荐）**，也兼容 **Apple ID + App 专用密码**；若仓库尚未配置 Secrets，工作流会自动回退产出 Ad-hoc `.dmg`。配置方法见 `docs/RELEASE.md`。
+- **方式 B · 本地签名公证后上传 Release（证书不出本机）**：
+  1. 在干净版本上执行 `npm run package:release`（调用 `scripts/release-mac.mjs`，自动复用本机钥匙串中的 `Developer ID Application` 证书与 `cocraft-notary` 公证凭证，完成 Hardened Runtime 签名、DMG 封装、Apple 公证与双端装订）。
+  2. 生成校验文件：`(cd release/0.6 && shasum -a 256 CoCraft-<version>-arm64.dmg > SHA256SUMS.txt)`。
+  3. 上传至对应 Tag 的 GitHub Release（在网页 Release 编辑页替换附件，或使用 `gh release upload vX.Y.Z release/0.6/CoCraft-<version>-arm64.dmg release/0.6/SHA256SUMS.txt --clobber`）。
+- **发版纪律**：工作区存在并行未提交改动时，禁止 `git add .` 误提交无关 WIP 文件，须精确暂存并通过隔离干净 worktree 或 CI 验证后再打 Tag。
